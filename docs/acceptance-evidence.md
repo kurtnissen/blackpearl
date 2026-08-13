@@ -21,10 +21,10 @@ Tested from the `research/portable-filesystem` branch on an Apple Silicon Mac wi
 | macOS Plex NFS mount | Pass | Unmodified official Plex container reads the exact 3,417,699-byte virtual MP4 through Docker's local NFS volume |
 | Plex library scan | Pass on macOS | Plex indexed `BlackPearl POC (2026)` as 1280x720 H.264/AAC MP4 from `/blackpearl/Movies` |
 | Plex original-media range | Pass on macOS | Plex returned HTTP 206 for bytes 1,048,576-1,114,111 and the 64 KiB SHA-256 matched the source |
-| Plex client Direct Play and seek | Pending manual check | Requires playback evidence from Plex Dashboard at `http://localhost:32400/web` |
+| Plex client Direct Play and seek | Pass on macOS | Plex Web played the fixture through the portable stack; the server decision log recorded `MDE=1000, Direct play OK`, served the original MP4, and timeline events confirmed seeks from 6 seconds to 3 seconds and back to 6 seconds |
 | Cross-container Plex mount | Pending Ubuntu | Docker Desktop bind propagation cannot prove this Linux-host behavior |
 
-The current result includes locally verified FUSE and portable NFS adapters plus macOS Plex scan and range evidence. It is not yet client-observed Direct Play evidence or Windows/native-Linux portability evidence.
+The current result includes locally verified FUSE and portable NFS adapters plus macOS Plex scan, exact-range, client Direct Play, and seek evidence. Windows and native-Linux portability remain unverified.
 
 ## Acceptance checklist
 
@@ -39,7 +39,7 @@ The current result includes locally verified FUSE and portable NFS adapters plus
 - [x] Containerized fixture has the intended H.264/AAC profile.
 - [x] Portable Docker profile mounts PearlNFS into an unmodified Plex image.
 - [x] Plex scans the fixture through PearlNFS and serves arbitrary source ranges unchanged.
-- [ ] Plex client dashboard reports Direct Play and a manual seek succeeds.
+- [x] A macOS Plex Web client Direct Plays the fixture and manual seeks succeed.
 - [ ] CI passes after publishing the repository.
 - [ ] Both Linux AMD64 and ARM64 image builds pass in CI.
 - [ ] Ubuntu host propagation makes the file readable in the Plex container.
