@@ -9,6 +9,15 @@ token="${PLEX_TOKEN:-}"
 movie='/blackpearl/Movies/BlackPearl POC (2026)/BlackPearl POC (2026).mp4'
 fixture=/opt/blackpearl/fixtures/blackpearl-poc.mp4
 
+if [[ -z "${token}" ]]; then
+  token="$("${compose[@]}" exec -T plex sh -eu -c '
+    preferences="/config/Library/Application Support/Plex Media Server/Preferences.xml"
+    if test -r "${preferences}"; then
+      sed -n '\''s/.*PlexOnlineToken="\([^\"]*\)".*/\1/p'\'' "${preferences}"
+    fi
+  ')"
+fi
+
 curl_headers=(-H 'Accept: application/xml')
 if [[ -n "${token}" ]]; then
   curl_headers+=(-H "X-Plex-Token: ${token}")

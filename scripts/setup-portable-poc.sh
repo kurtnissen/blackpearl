@@ -7,16 +7,25 @@ compose=(docker compose -f "${repository_root}/compose.portable.yaml")
 plex_url="${PLEX_URL:-http://localhost:32400}"
 token="${PLEX_TOKEN:-}"
 
-curl_headers=(-H 'Accept: application/xml')
-if [[ -n "${token}" ]]; then
-  curl_headers+=(-H "X-Plex-Token: ${token}")
-fi
-
 # Recreate both services together so Plex receives a fresh NFS mount whenever
 # the development BlackPearl image is rebuilt. The POC NFS handler intentionally
 # keeps file handles in memory; preserving Plex across a server replacement
 # would otherwise leave the client with stale handles.
 "${compose[@]}" up --build --force-recreate -d --wait
+
+if [[ -z "${token}" ]]; then
+  token="$("${compose[@]}" exec -T plex sh -eu -c '
+    preferences="/config/Library/Application Support/Plex Media Server/Preferences.xml"
+    if test -r "${preferences}"; then
+      sed -n '\''s/.*PlexOnlineToken="\([^\"]*\)".*/\1/p'\'' "${preferences}"
+    fi
+  ')"
+fi
+
+curl_headers=(-H 'Accept: application/xml')
+if [[ -n "${token}" ]]; then
+  curl_headers+=(-H "X-Plex-Token: ${token}")
+fi
 
 sections="$(curl --fail --silent --show-error "${curl_headers[@]}" "${plex_url}/library/sections")"
 section_id="$(python3 -c '
