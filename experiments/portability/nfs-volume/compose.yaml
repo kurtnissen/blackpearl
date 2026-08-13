@@ -1,0 +1,66 @@
+name: blackpearl-portability-nfs
+
+services:
+  fixture:
+    image: blackpearl:poc
+    build:
+      context: ../../..
+      target: poc
+    entrypoint: [sh, -euc]
+    command:
+      - |
+        mkdir -p '/data/Movies/BlackPearl POC (2026)'
+        cp /opt/blackpearl/fixtures/blackpearl-poc.mp4 '/data/Movies/BlackPearl POC (2026)/BlackPearl POC (2026).mp4'
+        truncate -s 1T /data/logical-1TiB.bin
+    volumes:
+      - source-data:/data
+
+  nfs:
+    image: rclone/rclone:1.75.0
+    command:
+      - serve
+      - nfs
+      - /data
+      - --addr
+      - 0.0.0.0:2049
+      - --nfs-cache-type
+      - memory
+      - --read-only
+    depends_on:
+      fixture:
+        condition: service_completed_successfully
+    ports:
+      - 127.0.0.1:20491:2049/tcp
+    volumes:
+      - source-data:/data:ro
+    healthcheck:
+      test: [CMD, nc, -z, 127.0.0.1, "2049"]
+      interval: 1s
+      timeout: 1s
+      retries: 20
+
+  consumer:
+    image: debian:bookworm-slim
+    depends_on:
+      nfs:
+        condition: service_healthy
+    entrypoint: [sh, -euc]
+    command:
+      - |
+        movie='/blackpearl/Movies/BlackPearl POC (2026)/BlackPearl POC (2026).mp4'
+        test "$$(stat -c %s "$${movie}")" = 3417699
+        test "$$(stat -c %s /blackpearl/logical-1TiB.bin)" = 1099511627776
+        actual_hash="$$(dd if="$${movie}" bs=1 skip=2097152 count=65536 status=none | sha256sum | cut -d ' ' -f 1)"
+        test "$${actual_hash}" = 2162efc9cd7068e55d9d7bd94334e95ef6daf3fb7193e58cc7322080f79d6143
+        printf 'compose_nfs_volume=PASS\n'
+    volumes:
+      - library:/blackpearl:ro
+
+volumes:
+  source-data:
+  library:
+    driver: local
+    driver_opts:
+      type: nfs
+      device: :/
+      o: addr=127.0.0.1,vers=3,tcp,nolock,port=20491,mountport=20491,ro
