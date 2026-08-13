@@ -6,6 +6,8 @@ import (
 	"errors"
 	"log/slog"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"sync/atomic"
@@ -82,16 +84,18 @@ func TestRunCleansDatabaseWhenMountFails(t *testing.T) {
 
 func testConfig(root string, source string) config.Config {
 	return config.Config{
-		DataDir:        filepath.Join(root, "data"),
-		DBPath:         filepath.Join(root, "data", "blackpearl.db"),
-		CacheDir:       filepath.Join(root, "data", "cache"),
-		MountPath:      filepath.Join(root, "mount"),
-		POCSource:      source,
-		HTTPAddr:       "127.0.0.1:0",
-		LogLevel:       "debug",
-		StorageMode:    domain.StorageModePersistent,
-		FilesystemMode: "fuse",
-		NFSAddr:        "127.0.0.1:0",
+		DataDir:         filepath.Join(root, "data"),
+		DBPath:          filepath.Join(root, "data", "blackpearl.db"),
+		CacheDir:        filepath.Join(root, "data", "cache"),
+		MountPath:       filepath.Join(root, "mount"),
+		POCSource:       source,
+		HTTPAddr:        "127.0.0.1:0",
+		LogLevel:        "debug",
+		StorageMode:     domain.StorageModePersistent,
+		CacheChunkBytes: 262_144,
+		RangeTimeout:    30 * time.Second,
+		FilesystemMode:  "fuse",
+		NFSAddr:         "127.0.0.1:0",
 	}
 }
 
@@ -124,6 +128,9 @@ func TestRunStartsNFSWithoutInvokingFUSEAndStopsOnCancellation(t *testing.T) {
 	}()
 	select {
 	case <-started:
+	case err := <-result:
+		require.NoError(t, err)
+		return
 	case <-time.After(5 * time.Second):
 		t.Fatal("service did not start NFS")
 	}
@@ -157,18 +164,58 @@ func TestRunCleansDatabaseWhenNFSStartFails(t *testing.T) {
 	require.NoError(t, repository.Close())
 }
 
-func TestRunRejectsRollingModeBeforeCreatingRuntimePaths(t *testing.T) {
-	t.Parallel()
+func TestRunRollingModeRegistersRemotePOCAndStartsNFS(t *testing.T) {
 	root := t.TempDir()
+	origin := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		require.Equal(t, "/media/movie.mp4", request.URL.Path)
+		require.Equal(t, http.MethodHead, request.Method)
+		writer.Header().Set("Content-Length", "8")
+		writer.Header().Set("ETag", `"rolling-v1"`)
+		writer.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(origin.Close)
 	cfg := testConfig(root, "")
 	cfg.StorageMode = domain.StorageModeRolling
-	cfg.CacheMaxBytes = 40 * 1024 * 1024 * 1024
+	cfg.CacheMaxBytes = 8
+	cfg.CacheChunkBytes = 4
+	cfg.RangeOriginURL = origin.URL + "/media/"
+	cfg.RangeObjectID = "movie.mp4"
+	cfg.RangeTimeout = time.Second
+	cfg.FilesystemMode = "nfs"
+	started := make(chan struct{})
+	nfs := &fakeNFSServer{address: fakeAddress("127.0.0.1:2049")}
+	deps := defaultDependencies()
+	deps.httpClient = origin.Client()
+	deps.serveNFS = func(_ context.Context, _ string, catalog nfsCatalog) (nfsServer, error) {
+		items, err := catalog.List(context.Background())
+		require.NoError(t, err)
+		require.Len(t, items, 1)
+		require.Equal(t, int64(8), items[0].Size)
+		require.Equal(t, domain.BackingRef{Provider: "http-range", ObjectID: "movie.mp4"}, items[0].Backing)
+		close(started)
+		return nfs, nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		result <- run(ctx, cfg, testLogger(), deps)
+	}()
 
-	err := run(context.Background(), cfg, testLogger(), defaultDependencies())
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("rolling service did not start NFS")
+	}
+	cancel()
 
-	require.ErrorIs(t, err, domain.ErrNotConfigured)
-	_, statErr := os.Stat(cfg.DataDir)
-	require.ErrorIs(t, statErr, os.ErrNotExist)
+	require.NoError(t, <-result)
+	require.True(t, nfs.closed)
+	require.True(t, nfs.waited)
+	require.NoError(t, filepath.WalkDir(cfg.CacheDir, func(path string, entry os.DirEntry, walkErr error) error {
+		require.NoError(t, walkErr)
+		require.NotEqual(t, ".mp4", filepath.Ext(entry.Name()), path)
+		return nil
+	}))
 }
 
 func TestRunValidatesModeAndDependenciesBeforeCreatingPaths(t *testing.T) {
@@ -284,7 +331,11 @@ func TestExecuteLoadsConfigurationAndShutsDownTelemetry(t *testing.T) {
 	t.Setenv("BLACKPEARL_HTTP_ADDR", "127.0.0.1:0")
 	t.Setenv("BLACKPEARL_LOG_LEVEL", "error")
 	t.Setenv("BLACKPEARL_STORAGE_MODE", "rolling")
-	t.Setenv("BLACKPEARL_CACHE_MAX_BYTES", "42949672960")
+	t.Setenv("BLACKPEARL_CACHE_MAX_BYTES", "1048576")
+	t.Setenv("BLACKPEARL_CACHE_CHUNK_BYTES", "262144")
+	t.Setenv("BLACKPEARL_RANGE_ORIGIN_URL", "http://127.0.0.1:1/media/")
+	t.Setenv("BLACKPEARL_RANGE_OBJECT_ID", "movie.mp4")
+	t.Setenv("BLACKPEARL_RANGE_TIMEOUT", "100ms")
 	t.Setenv("BLACKPEARL_POC_SOURCE", "")
 	t.Setenv("BLACKPEARL_PLEX_URL", "")
 	t.Setenv("BLACKPEARL_PLEX_TOKEN", "")
@@ -294,9 +345,9 @@ func TestExecuteLoadsConfigurationAndShutsDownTelemetry(t *testing.T) {
 
 	err := execute(context.Background())
 
-	require.ErrorIs(t, err, domain.ErrNotConfigured)
+	require.ErrorContains(t, err, "range object metadata")
 	_, statErr := os.Stat(filepath.Join(root, "data"))
-	require.ErrorIs(t, statErr, os.ErrNotExist)
+	require.NoError(t, statErr)
 }
 
 func TestExecuteReportsConfigurationFailure(t *testing.T) {

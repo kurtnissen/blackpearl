@@ -15,6 +15,7 @@ import (
 	"github.com/blackpearl-media/blackpearl/internal/config"
 	"github.com/blackpearl-media/blackpearl/internal/core"
 	"github.com/blackpearl-media/blackpearl/internal/domain"
+	"github.com/blackpearl-media/blackpearl/internal/gateway/httporigin"
 	"github.com/blackpearl-media/blackpearl/internal/httpserver"
 	"github.com/blackpearl-media/blackpearl/internal/pearlfs"
 	"github.com/blackpearl-media/blackpearl/internal/pearlnfs"
@@ -67,7 +68,6 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger, deps depen
 	switch cfg.StorageMode {
 	case domain.StorageModePersistent:
 	case domain.StorageModeRolling:
-		return fmt.Errorf("%w: rolling storage mode", domain.ErrNotConfigured)
 	default:
 		return fmt.Errorf("unsupported storage mode: %q", cfg.StorageMode)
 	}
@@ -106,17 +106,55 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger, deps depen
 	defer func() {
 		runErr = errors.Join(runErr, repository.Close())
 	}()
-	cacheStore, err := cache.New(cfg.CacheDir)
-	if err != nil {
-		return fmt.Errorf("open cache: %w", err)
-	}
-	catalog := core.NewCatalog(repository, cacheStore, cacheStore)
-	if cfg.POCSource != "" {
-		media, importErr := catalog.ImportPOC(ctx, cfg.POCSource)
-		if importErr != nil {
-			return importErr
+	var catalog *core.Catalog
+	switch cfg.StorageMode {
+	case domain.StorageModePersistent:
+		cacheStore, cacheErr := cache.New(cfg.CacheDir)
+		if cacheErr != nil {
+			return fmt.Errorf("open cache: %w", cacheErr)
 		}
-		logger.InfoContext(ctx, "imported POC fixture", "mediaId", media.ID, "virtualPath", media.VirtualPath, "sizeBytes", media.Size)
+		catalog = core.NewCatalog(repository, cacheStore, cacheStore)
+		if cfg.POCSource != "" {
+			media, importErr := catalog.ImportPOC(ctx, cfg.POCSource)
+			if importErr != nil {
+				return importErr
+			}
+			logger.InfoContext(ctx, "imported POC fixture", "mediaId", media.ID, "virtualPath", media.VirtualPath, "sizeBytes", media.Size)
+		}
+	case domain.StorageModeRolling:
+		rangeClient := *deps.httpClient
+		rangeClient.Timeout = cfg.RangeTimeout
+		gateway, gatewayErr := httporigin.New(cfg.RangeOriginURL, &rangeClient)
+		if gatewayErr != nil {
+			return fmt.Errorf("configure HTTP range gateway: %w", gatewayErr)
+		}
+		rollingSource, rollingErr := cache.NewRolling(ctx, cache.RollingOptions{
+			Root:         cfg.CacheDir,
+			MaxBytes:     cfg.CacheMaxBytes,
+			ChunkBytes:   cfg.CacheChunkBytes,
+			FetchTimeout: cfg.RangeTimeout,
+		}, gateway)
+		if rollingErr != nil {
+			return fmt.Errorf("open rolling cache: %w", rollingErr)
+		}
+		backing, backingErr := domain.NewBackingRef("http-range", cfg.RangeObjectID)
+		if backingErr != nil {
+			return fmt.Errorf("construct rolling POC backing: %w", backingErr)
+		}
+		metadataSource, openErr := gateway.Open(ctx, backing)
+		if openErr != nil {
+			return fmt.Errorf("open rolling POC metadata: %w", openErr)
+		}
+		logicalSize := metadataSource.Size()
+		if closeErr := metadataSource.Close(); closeErr != nil {
+			return fmt.Errorf("close rolling POC metadata: %w", closeErr)
+		}
+		catalog = core.NewCatalog(repository, nil, rollingSource)
+		media, registerErr := catalog.RegisterPOC(ctx, backing, logicalSize)
+		if registerErr != nil {
+			return registerErr
+		}
+		logger.InfoContext(ctx, "registered rolling POC", "mediaId", media.ID, "virtualPath", media.VirtualPath, "sizeBytes", media.Size)
 	}
 	var stopFilesystem func() error
 	var waitFilesystem func() error
