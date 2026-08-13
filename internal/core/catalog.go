@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	"github.com/blackpearl-media/blackpearl/internal/domain"
+	"go.opentelemetry.io/otel"
 )
 
 const (
@@ -43,6 +44,8 @@ func NewCatalog(repository Repository, cacheStore Cache) *Catalog {
 
 // ImportPOC imports the legal synthetic fixture and persists its canonical catalog entry.
 func (c *Catalog) ImportPOC(ctx context.Context, source string) (domain.Media, error) {
+	ctx, span := otel.Tracer("blackpearl/core").Start(ctx, "catalog.import_poc")
+	defer span.End()
 	key, size, err := c.cache.Import(ctx, source)
 	if err != nil {
 		return domain.Media{}, fmt.Errorf("import POC fixture: %w", err)

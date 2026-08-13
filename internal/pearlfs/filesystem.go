@@ -169,7 +169,9 @@ func (h *fileHandle) Release(_ context.Context) syscall.Errno {
 
 func inodeFor(virtualPath string) uint64 {
 	hasher := fnv.New64a()
-	_, _ = hasher.Write([]byte(virtualPath))
+	if _, err := hasher.Write([]byte(virtualPath)); err != nil {
+		return 2
+	}
 	value := hasher.Sum64()
 	if value < 2 {
 		return value + 2

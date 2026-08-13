@@ -10,6 +10,8 @@ import (
 	"net/url"
 	"strings"
 	"unicode"
+
+	"go.opentelemetry.io/otel"
 )
 
 const maximumErrorBodyBytes = 4 * 1024
@@ -42,6 +44,8 @@ func New(baseURL string, token string, sectionID string, client *http.Client) (*
 
 // Refresh requests a scan of the configured Plex library section.
 func (g *Gateway) Refresh(ctx context.Context) error {
+	ctx, span := otel.Tracer("blackpearl/plex").Start(ctx, "plex.refresh_library")
+	defer span.End()
 	requestURL := strings.TrimRight(g.baseURL.String(), "/") +
 		"/library/sections/" + url.PathEscape(g.sectionID) + "/refresh"
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
