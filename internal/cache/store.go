@@ -11,16 +11,14 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+
+	"github.com/blackpearl-media/blackpearl/internal/domain"
 )
 
 var cacheKeyPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 // Reader supports the random-access reads required by Plex and FUSE.
-type Reader interface {
-	io.ReaderAt
-	io.Closer
-	Size() int64
-}
+type Reader = domain.Reader
 
 // Store owns a content-addressed directory.
 type Store struct {

@@ -4,6 +4,7 @@ package domain
 import (
 	"errors"
 	"fmt"
+	"io"
 	"path"
 	"strings"
 )
@@ -36,6 +37,13 @@ type Media struct {
 	VirtualPath string
 	Size        int64
 	CacheKey    string
+}
+
+// Reader is a sized, random-access media object.
+type Reader interface {
+	io.ReaderAt
+	io.Closer
+	Size() int64
 }
 
 // NewMovie validates movie metadata and derives its Plex-compatible virtual path.
