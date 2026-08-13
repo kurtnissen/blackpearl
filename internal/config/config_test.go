@@ -22,6 +22,53 @@ func TestParseUsesIsolatedContainerDefaults(t *testing.T) {
 	require.Equal(t, domain.StorageModePersistent, cfg.StorageMode)
 	require.Zero(t, cfg.CacheMaxBytes)
 	require.False(t, cfg.Plex.Enabled())
+	require.Equal(t, "fuse", cfg.FilesystemMode)
+	require.Equal(t, ":2049", cfg.NFSAddr)
+}
+
+func TestParseAcceptsNFSFilesystemMode(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := config.Parse(map[string]string{
+		"BLACKPEARL_FILESYSTEM_MODE": "nfs",
+		"BLACKPEARL_NFS_ADDR":        "0.0.0.0:2049",
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, "nfs", cfg.FilesystemMode)
+	require.Equal(t, "0.0.0.0:2049", cfg.NFSAddr)
+}
+
+func TestParseRejectsInvalidFilesystemConfiguration(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name        string
+		environment map[string]string
+		message     string
+	}{
+		{
+			name:        "unsupported mode",
+			environment: map[string]string{"BLACKPEARL_FILESYSTEM_MODE": "webdav"},
+			message:     "FILESYSTEM_MODE",
+		},
+		{
+			name: "malformed NFS address",
+			environment: map[string]string{
+				"BLACKPEARL_FILESYSTEM_MODE": "nfs",
+				"BLACKPEARL_NFS_ADDR":        "2049",
+			},
+			message: "NFS_ADDR",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := config.Parse(test.environment)
+
+			require.ErrorContains(t, err, test.message)
+		})
+	}
 }
 
 func TestParseAcceptsRollingModeOnlyWithPositiveQuota(t *testing.T) {

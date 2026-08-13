@@ -4,8 +4,10 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"path/filepath"
+	"strconv"
 
 	"github.com/blackpearl-media/blackpearl/internal/domain"
 	"github.com/caarlos0/env/v11"
@@ -25,16 +27,18 @@ func (p Plex) Enabled() bool {
 
 // Config contains all process configuration.
 type Config struct {
-	DataDir       string             `env:"BLACKPEARL_DATA_DIR" envDefault:"/var/lib/blackpearl"`
-	DBPath        string             `env:"BLACKPEARL_DB_PATH" envDefault:"/var/lib/blackpearl/blackpearl.db"`
-	CacheDir      string             `env:"BLACKPEARL_CACHE_DIR" envDefault:"/var/lib/blackpearl/cache"`
-	MountPath     string             `env:"BLACKPEARL_MOUNT_PATH" envDefault:"/mnt/blackpearl"`
-	POCSource     string             `env:"BLACKPEARL_POC_SOURCE"`
-	HTTPAddr      string             `env:"BLACKPEARL_HTTP_ADDR" envDefault:":8080"`
-	LogLevel      string             `env:"BLACKPEARL_LOG_LEVEL" envDefault:"info"`
-	StorageMode   domain.StorageMode `env:"BLACKPEARL_STORAGE_MODE" envDefault:"persistent"`
-	CacheMaxBytes int64              `env:"BLACKPEARL_CACHE_MAX_BYTES" envDefault:"0"`
-	Plex          Plex
+	DataDir        string             `env:"BLACKPEARL_DATA_DIR" envDefault:"/var/lib/blackpearl"`
+	DBPath         string             `env:"BLACKPEARL_DB_PATH" envDefault:"/var/lib/blackpearl/blackpearl.db"`
+	CacheDir       string             `env:"BLACKPEARL_CACHE_DIR" envDefault:"/var/lib/blackpearl/cache"`
+	MountPath      string             `env:"BLACKPEARL_MOUNT_PATH" envDefault:"/mnt/blackpearl"`
+	POCSource      string             `env:"BLACKPEARL_POC_SOURCE"`
+	HTTPAddr       string             `env:"BLACKPEARL_HTTP_ADDR" envDefault:":8080"`
+	LogLevel       string             `env:"BLACKPEARL_LOG_LEVEL" envDefault:"info"`
+	StorageMode    domain.StorageMode `env:"BLACKPEARL_STORAGE_MODE" envDefault:"persistent"`
+	CacheMaxBytes  int64              `env:"BLACKPEARL_CACHE_MAX_BYTES" envDefault:"0"`
+	FilesystemMode string             `env:"BLACKPEARL_FILESYSTEM_MODE" envDefault:"fuse"`
+	NFSAddr        string             `env:"BLACKPEARL_NFS_ADDR" envDefault:":2049"`
+	Plex           Plex
 }
 
 // Load parses configuration from the current process environment.
@@ -62,6 +66,20 @@ func Parse(environment map[string]string) (Config, error) {
 }
 
 func (c Config) validate() error {
+	switch c.FilesystemMode {
+	case "fuse":
+	case "nfs":
+		_, portValue, err := net.SplitHostPort(c.NFSAddr)
+		if err != nil {
+			return fmt.Errorf("BLACKPEARL_NFS_ADDR must be a TCP listen address: %q", c.NFSAddr)
+		}
+		port, err := strconv.Atoi(portValue)
+		if err != nil || port < 1 || port > 65535 {
+			return fmt.Errorf("BLACKPEARL_NFS_ADDR must contain a numeric port from 1 to 65535: %q", c.NFSAddr)
+		}
+	default:
+		return fmt.Errorf("BLACKPEARL_FILESYSTEM_MODE must be fuse or nfs: %q", c.FilesystemMode)
+	}
 	switch c.StorageMode {
 	case domain.StorageModePersistent:
 		if c.CacheMaxBytes < 0 {
