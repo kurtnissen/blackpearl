@@ -280,7 +280,7 @@ Gate the kernel test with `BLACKPEARL_FUSE_TEST=1`. Mount into `t.TempDir()`, co
 
 - [ ] **Step 6: Run mounted smoke in Linux**
 
-Run: `docker run --rm --privileged -v "$PWD":/src -w /src golang:1.24-bookworm sh -c 'BLACKPEARL_FUSE_TEST=1 go test -race ./internal/pearlfs -run TestMounted'`
+Run: `docker run --rm --privileged -v "$PWD":/src -w /src golang:1.24-bookworm sh -c 'apt-get update -qq && apt-get install -y -qq fuse3 >/dev/null && BLACKPEARL_FUSE_TEST=1 go test -race ./internal/pearlfs -run TestMounted'`
 
 Expected: mounted byte comparison and seek test pass.
 

@@ -4,7 +4,9 @@ go 1.24.0
 
 require (
 	github.com/caarlos0/env/v11 v11.3.1
+	github.com/hanwen/go-fuse/v2 v2.11.0
 	github.com/stretchr/testify v1.11.1
+	modernc.org/sqlite v1.40.1
 )
 
 require (
@@ -21,5 +23,4 @@ require (
 	modernc.org/libc v1.66.10 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
-	modernc.org/sqlite v1.40.1 // indirect
 )
