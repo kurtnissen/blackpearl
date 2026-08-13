@@ -14,6 +14,7 @@ import (
 	"github.com/blackpearl-media/blackpearl/internal/cache"
 	"github.com/blackpearl-media/blackpearl/internal/config"
 	"github.com/blackpearl-media/blackpearl/internal/core"
+	"github.com/blackpearl-media/blackpearl/internal/domain"
 	"github.com/blackpearl-media/blackpearl/internal/httpserver"
 	"github.com/blackpearl-media/blackpearl/internal/pearlfs"
 	"github.com/blackpearl-media/blackpearl/internal/plex"
@@ -46,6 +47,13 @@ func defaultDependencies() dependencies {
 }
 
 func run(ctx context.Context, cfg config.Config, logger *slog.Logger, deps dependencies) (runErr error) {
+	switch cfg.StorageMode {
+	case domain.StorageModePersistent:
+	case domain.StorageModeRolling:
+		return fmt.Errorf("%w: rolling storage mode", domain.ErrNotConfigured)
+	default:
+		return fmt.Errorf("unsupported storage mode: %q", cfg.StorageMode)
+	}
 	if deps.mount == nil {
 		return errors.New("mount dependency is required")
 	}
@@ -72,7 +80,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger, deps depen
 	if err != nil {
 		return fmt.Errorf("open cache: %w", err)
 	}
-	catalog := core.NewCatalog(repository, cacheStore)
+	catalog := core.NewCatalog(repository, cacheStore, cacheStore)
 	if cfg.POCSource != "" {
 		media, importErr := catalog.ImportPOC(ctx, cfg.POCSource)
 		if importErr != nil {

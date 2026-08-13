@@ -25,6 +25,7 @@ Automated tests prove byte-for-byte reads through the filesystem implementation.
 ### Included
 
 - One Go 1.24+ service and one process.
+- One binary with explicit persistent and rolling storage modes. Milestone 1 implements the persistent local-fixture path; rolling selection fails clearly until its later milestone.
 - FUSE filesystem mounted by BlackPearl using `go-fuse/v2`.
 - SQLite catalog and schema migrations owned by BlackPearl.
 - A local cache directory owned by BlackPearl.
@@ -33,6 +34,7 @@ Automated tests prove byte-for-byte reads through the filesystem implementation.
 - Health and readiness HTTP endpoints.
 - A narrow Plex refresh gateway, disabled unless a base URL, token, and library section are configured.
 - Generic acquisition-provider and resolver contracts with no network provider implementation.
+- Context-aware, offset-based read contracts that never require a complete local object.
 - Docker image, production-oriented Compose file, opt-in Plex POC override, and Ubuntu setup/verification scripts.
 - Unit, integration, FUSE smoke, build, and documentation checks.
 
@@ -61,10 +63,14 @@ PearlFS (FUSE adapter)
 Core catalog service
    |           |
    v           v
-SQLite state   Cache reader
+SQLite state   Media source
                    |
                    v
-             BlackPearl-owned file
+             PearlCache
+             |         |
+        persistent   rolling (later)
+                         |
+                    backing provider
 
 Core service --> Resolver contract --> Acquisition Provider contract
 Core service --> Plex gateway (optional refresh request)
@@ -77,7 +83,40 @@ FUSE/HTTP adapters -> core service -> repository/gateway interfaces
                                   -> SQLite/cache/Plex implementations
 ```
 
-The core package does not import FUSE, HTTP-server, SQLite-driver, or Plex HTTP details. Interfaces are defined at the consuming service boundary. The acquisition package contains domain request/result types; the resolver service owns the narrow provider interface it consumes.
+The core package does not import FUSE, HTTP-server, SQLite-driver, or Plex HTTP details. Interfaces are defined at the consuming service boundary. The acquisition package contains provider-neutral discovery and arbitrary-range types; discovery and byte retrieval remain separate narrow interfaces.
+
+## Storage modes and range-oriented reads
+
+Both storage modes use one logical path:
+
+    PearlFS Read(offset, length)
+            |
+            v
+    core opens a logical media handle
+            |
+            v
+    handle.ReadAt(ctx, buffer, offset)
+            |
+            v
+    PearlCache hit, or backing-source range read
+
+Media.Size is the logical object size reported to Plex. It is not evidence that all bytes exist locally. A catalog record stores a provider-neutral backing reference made of a provider name and object ID, not a cache filename.
+
+The common handle is context-aware, random-access, sized, and closeable:
+
+    type ReadHandle interface {
+        ReadAt(ctx context.Context, destination []byte, offset int64) (int, error)
+        Size() int64
+        Close() error
+    }
+
+PearlFS passes each request context and offset to this handle. It must not distinguish a persistent local object from a rolling remote-backed object.
+
+Persistent mode may retain the complete object and satisfy reads locally. This is the only mode exercised by the Milestone 1 fixture.
+
+Rolling mode will keep a configurable byte-bounded set of chunks. A miss can be satisfied by an authorized backing source capable of arbitrary ranged reads. Later policy will define request coalescing, read-ahead, active-reader pinning, retries, integrity checks, and eviction. No complete local file is promised. The intended rolling deployment uses roughly 40-80 GB on a low-storage VPS, while persistent mode can use multi-terabyte home-server storage.
+
+The same binary and catalog schema select the media-source implementation from configuration. Until rolling mode has its own tested milestone, selecting it fails explicitly instead of silently falling back to persistent behavior.
 
 ## Package responsibilities
 
@@ -87,29 +126,31 @@ Wires typed configuration, structured logging, SQLite, cache, core service, opti
 
 ### `internal/domain`
 
-Defines zero-infrastructure-dependency media identifiers, catalog entries, virtual paths, byte ranges, and typed sentinel errors.
+Defines zero-infrastructure-dependency media identifiers, catalog entries, virtual paths, logical sizes, provider-neutral backing references, context-aware read handles, byte ranges, storage modes, and typed sentinel errors.
 
 ### `internal/core`
 
-Owns catalog orchestration and the repository/cache interfaces it consumes. At startup it imports the configured POC fixture into the cache if absent, persists the catalog entry, and exposes immutable lookup/list/open operations to PearlFS.
+Owns catalog orchestration and the repository/importer/media-source interfaces it consumes. At startup it imports the configured POC fixture through persistent PearlCache, persists the catalog entry, and exposes immutable lookup/list/open operations to PearlFS. Open delegates the entire media record to a source and never converts a backing reference into a local path.
 
 ### `internal/state`
 
-Implements catalog persistence with SQLite. Migrations are embedded and applied transactionally at startup. The initial schema stores media ID, title, year, virtual path, media type, size, cache key, and timestamps.
+Implements catalog persistence with SQLite. Migrations are embedded and applied transactionally at startup. The initial schema stores media ID, title, year, virtual path, media type, logical size, backing provider, backing object ID, and timestamps.
 
 ### `internal/cache`
 
-Owns cache paths and safe local-file reads. Imports use a temporary file, content hashing, `fsync`, and atomic rename. Callers use opaque cache keys rather than arbitrary paths. The FUSE adapter never opens operator-supplied filesystem paths directly.
+PearlCache owns cache paths and read policy. Its Milestone 1 persistent implementation imports through a temporary file, content hashing, synchronization, and atomic rename, then exposes the common context-aware read handle. Callers use provider-neutral backing references rather than arbitrary paths. The FUSE adapter never opens operator-supplied filesystem paths directly.
+
+The later rolling implementation stores independently addressable chunks under a byte quota, delegates misses through an authorized ranged backing source, and evicts only unpinned chunks. It never promises that a complete file exists on disk.
 
 ### `internal/pearlfs`
 
-Maps the catalog into a read-only hierarchy and implements the minimum operations Plex requires: root and directory lookup/readdir, file lookup/getattr/open, and offset-based reads. It exposes:
+Maps the catalog into a read-only hierarchy and implements the minimum operations Plex requires: root and directory lookup/readdir, file lookup/getattr/open, and context-aware offset-based reads. It exposes:
 
 ```text
 /Movies/BlackPearl POC (2026)/BlackPearl POC (2026).mp4
 ```
 
-Mutation operations are unsupported. File handles are read-only and allow random access so Plex can probe media headers and seek.
+Mutation operations are unsupported. File handles are read-only and allow random access so Plex can probe media headers and seek. PearlFS never checks whether a complete local file exists.
 
 ### `internal/plex`
 
@@ -117,7 +158,7 @@ Implements a small HTTP gateway for a configured Plex library refresh. It sends 
 
 ### `internal/acquisition`
 
-Defines generic provider-neutral request, candidate, object metadata, and ranged-reader concepts. It does not name or implement any future provider.
+Defines generic provider-neutral discovery requests, candidates, object metadata, and context-aware arbitrary-range source concepts. It does not name or implement any future provider.
 
 ### `internal/resolver`
 
@@ -132,11 +173,12 @@ Exposes `/healthz` for process liveness and `/readyz` for SQLite/cache/catalog/F
 1. Configuration is loaded from environment variables and validated before side effects.
 2. BlackPearl creates only its configured data, cache, and mount directories.
 3. SQLite opens with foreign keys, busy timeout, and WAL mode; embedded migrations run.
-4. If `BLACKPEARL_POC_SOURCE` is configured, core imports that file into the cache and upserts the single POC catalog record.
-5. PearlFS mounts the catalog at `BLACKPEARL_MOUNT_PATH` in read-only mode.
-6. The readiness endpoint becomes successful only after the database, cached POC object, and FUSE mount are ready.
-7. Plex scans the propagated mount from its own read-only bind.
-8. Plex metadata probes and playback reads reach PearlFS, which resolves the catalog entry and performs offset reads against the cached object.
+4. The configured storage mode selects a media-source implementation. Milestone 1 accepts persistent mode; rolling mode returns a clear not-implemented error.
+5. If `BLACKPEARL_POC_SOURCE` is configured, core imports that file into persistent PearlCache and upserts the POC record with a provider-neutral backing reference.
+6. PearlFS mounts the catalog at `BLACKPEARL_MOUNT_PATH` in read-only mode.
+7. The readiness endpoint becomes successful only after the database, selected media source, catalog, and FUSE mount are ready.
+8. Plex scans the propagated mount from its own read-only bind.
+9. Plex metadata probes and playback reads reach PearlFS, which resolves the catalog entry and performs logical offset reads through the selected media source.
 
 Shutdown first marks the service unready, then stops HTTP, unmounts FUSE, closes open resources, and closes SQLite.
 
@@ -149,6 +191,8 @@ All paths default inside the container and must be absolute:
 | `BLACKPEARL_DATA_DIR` | `/var/lib/blackpearl` | Service-owned persistent state |
 | `BLACKPEARL_DB_PATH` | `/var/lib/blackpearl/blackpearl.db` | SQLite database |
 | `BLACKPEARL_CACHE_DIR` | `/var/lib/blackpearl/cache` | Cached objects |
+| `BLACKPEARL_STORAGE_MODE` | `persistent` | `persistent` or `rolling` source selection |
+| `BLACKPEARL_CACHE_MAX_BYTES` | `0` | Cache byte quota; zero means unlimited only in persistent mode |
 | `BLACKPEARL_MOUNT_PATH` | `/mnt/blackpearl` | FUSE mountpoint |
 | `BLACKPEARL_POC_SOURCE` | empty | Optional generated fixture path |
 | `BLACKPEARL_HTTP_ADDR` | `:8080` | Diagnostics listener |
@@ -157,7 +201,7 @@ All paths default inside the container and must be absolute:
 | `BLACKPEARL_PLEX_TOKEN` | empty | Optional Plex server token |
 | `BLACKPEARL_PLEX_SECTION_ID` | empty | Optional library section to refresh |
 
-The three Plex values are all-or-none. Secrets are supplied through the environment for the POC and are never persisted by BlackPearl.
+The three Plex values are all-or-none. Secrets are supplied through the environment for the POC and are never persisted by BlackPearl. Rolling mode requires a positive cache quota even before its implementation is available; 40 GiB and 80 GiB are expected low-storage VPS configurations.
 
 ## Container and host model
 
@@ -172,6 +216,8 @@ No Compose file references `/media`, an existing Plex config, or an *arr directo
 - Invalid configuration fails before mounting.
 - A missing or invalid POC fixture fails startup with contextual errors.
 - Cache imports never expose a partial object.
+- Logical reads are bounded by Media.Size; local cache occupancy is independent of logical size.
+- Backing-source cancellation and range errors propagate through the read handle and become stable FUSE errno values.
 - SQLite errors are wrapped with operation context and mapped to domain sentinel errors where applicable.
 - FUSE maps not-found and invalid-range conditions to stable errno values.
 - The filesystem is read-only; unlink, rename, create, and write are rejected.
@@ -184,9 +230,10 @@ No Compose file references `/media`, an existing Plex config, or an *arr directo
 ### Unit
 
 - Domain virtual-path validation and deterministic catalog mapping.
-- Cache import, hashing, atomic replacement, full reads, partial reads, and bounds.
+- Persistent cache import, hashing, atomic replacement, context-aware full/partial reads, and bounds.
+- Storage-mode parsing, persistent-mode selection, rolling-mode explicit failure, and quota validation.
 - Core import/upsert and catalog lookup with fakes at repository/cache boundaries.
-- Resolver behavior with provider fakes.
+- Resolver discovery and arbitrary-range source behavior with provider fakes.
 - Plex refresh request method/path/header and error mapping with `httptest`.
 - Configuration all-or-none and absolute-path validation.
 
@@ -198,11 +245,11 @@ No Compose file references `/media`, an existing Plex config, or an *arr directo
 
 ### Linux FUSE smoke
 
-An opt-in test mounts PearlFS in a temporary directory, compares the exposed MP4 to the cached fixture byte-for-byte, performs nonsequential range reads, and cleanly unmounts. It runs inside the privileged BlackPearl container and on Ubuntu CI runners with `/dev/fuse`.
+An opt-in test mounts PearlFS in a temporary directory, compares the exposed MP4 to the persistent fixture byte-for-byte, performs nonsequential range reads through the common context-aware handle, and cleanly unmounts. It runs inside the privileged BlackPearl container and on Ubuntu CI runners with `/dev/fuse`.
 
 ### Plex acceptance
 
-The Ubuntu guide records a manual evidence checklist: Plex container healthy, virtual movie visible from the Plex container, library scan finds exactly the POC title, playback starts, seeking succeeds, and BlackPearl logs show reads. This is not replaced by unit tests or a successful container build.
+The Ubuntu guide records a manual evidence checklist: Plex container healthy, virtual movie visible from the Plex container, library scan finds exactly the POC title, Direct Play starts without BlackPearl transcoding, seeking succeeds, and BlackPearl logs show offset reads. The fixture uses a broadly Direct Play-compatible MP4/H.264/AAC profile. This is not replaced by unit tests or a successful container build.
 
 ## Acceptance criteria
 
@@ -213,11 +260,12 @@ Milestone 1 is accepted only when all of the following are true:
 3. `docker build` succeeds for both `linux/amd64` and `linux/arm64`, or the unavailable architecture is clearly reported rather than inferred.
 4. Compose configuration renders successfully with no production host paths.
 5. The Linux FUSE smoke test proves exact bytes and offset reads through the mounted virtual file.
-6. On Ubuntu Server, the Plex container sees the propagated virtual path read-only.
-7. Plex scans `BlackPearl POC (2026)` from the isolated library.
-8. Plex starts playback and can seek in the synthetic MP4.
-9. Stopping the stack cleanly unmounts PearlFS.
-10. Cleanup affects only the BlackPearl repository's `runtime/` directory.
+6. Tests prove the PearlFS/core read path does not require a local path or complete local object and can read from a fake arbitrary-range source.
+7. On Ubuntu Server, the Plex container sees the propagated virtual path read-only.
+8. Plex scans `BlackPearl POC (2026)` from the isolated library.
+9. Plex starts Direct Play and can seek in the synthetic MP4.
+10. Stopping the stack cleanly unmounts PearlFS.
+11. Cleanup affects only the BlackPearl repository's `runtime/` directory.
 
 Criteria 6-8 require an actual Ubuntu/Plex run. Until that evidence is recorded, the repository may be described as code-complete or locally verified but not as having proven Plex acceptance.
 
@@ -225,8 +273,8 @@ Criteria 6-8 require an actual Ubuntu/Plex run. Until that evidence is recorded,
 
 1. Provider-neutral resolver and candidate ranking with contract tests.
 2. One authorized acquisition provider behind the generic interface.
-3. Sparse/read-through cache with range integrity and backpressure.
-4. Progressive retrieval and seek-aware scheduling.
+3. Rolling chunk cache with byte quotas, range integrity, active-reader pinning, and backpressure.
+4. Progressive retrieval and seek-aware scheduling through arbitrary-range backing sources.
 5. Next-episode prefetch policy with bounded concurrency.
 6. Quota-based eviction with pinning and active-reader protection.
 7. Optional Prowlarr discovery gateway and additional authorized providers.

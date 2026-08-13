@@ -17,8 +17,10 @@ import (
 
 var cacheKeyPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
-// Reader supports the random-access reads required by Plex and FUSE.
-type Reader = domain.Reader
+const backingProvider = "pearlcache"
+
+// Reader supports context-aware random-access reads required by Plex and FUSE.
+type Reader = domain.ReadHandle
 
 // Store owns a content-addressed directory.
 type Store struct {
@@ -37,10 +39,10 @@ func New(root string) (*Store, error) {
 }
 
 // Import copies a source into the cache atomically and returns its SHA-256 key.
-func (s *Store) Import(ctx context.Context, source string) (key string, size int64, err error) {
+func (s *Store) Import(ctx context.Context, source string) (backing domain.BackingRef, size int64, err error) {
 	input, err := os.Open(source)
 	if err != nil {
-		return "", 0, fmt.Errorf("open cache import source: %w", err)
+		return domain.BackingRef{}, 0, fmt.Errorf("open cache import source: %w", err)
 	}
 	defer func() {
 		err = errors.Join(err, input.Close())
@@ -48,7 +50,7 @@ func (s *Store) Import(ctx context.Context, source string) (key string, size int
 
 	temporary, err := os.CreateTemp(s.root, ".import-*")
 	if err != nil {
-		return "", 0, fmt.Errorf("create cache import temporary file: %w", err)
+		return domain.BackingRef{}, 0, fmt.Errorf("create cache import temporary file: %w", err)
 	}
 	temporaryPath := temporary.Name()
 	keepTemporary := true
@@ -62,40 +64,47 @@ func (s *Store) Import(ctx context.Context, source string) (key string, size int
 	written, copyErr := io.Copy(io.MultiWriter(temporary, hasher), contextReader{ctx: ctx, reader: input})
 	if copyErr != nil {
 		closeErr := temporary.Close()
-		return "", 0, errors.Join(fmt.Errorf("copy cache import: %w", copyErr), closeErr)
+		return domain.BackingRef{}, 0, errors.Join(fmt.Errorf("copy cache import: %w", copyErr), closeErr)
 	}
 	if syncErr := temporary.Sync(); syncErr != nil {
 		closeErr := temporary.Close()
-		return "", 0, errors.Join(fmt.Errorf("sync cache import: %w", syncErr), closeErr)
+		return domain.BackingRef{}, 0, errors.Join(fmt.Errorf("sync cache import: %w", syncErr), closeErr)
 	}
 	if closeErr := temporary.Close(); closeErr != nil {
-		return "", 0, fmt.Errorf("close cache import: %w", closeErr)
+		return domain.BackingRef{}, 0, fmt.Errorf("close cache import: %w", closeErr)
 	}
 
-	key = hex.EncodeToString(hasher.Sum(nil))
+	key := hex.EncodeToString(hasher.Sum(nil))
 	destination := s.objectPath(key)
 	if renameErr := os.Rename(temporaryPath, destination); renameErr != nil {
-		return "", 0, fmt.Errorf("publish cache import: %w", renameErr)
+		return domain.BackingRef{}, 0, fmt.Errorf("publish cache import: %w", renameErr)
 	}
 	keepTemporary = false
 	if chmodErr := os.Chmod(destination, 0o640); chmodErr != nil {
-		return "", 0, fmt.Errorf("set cache object permissions: %w", chmodErr)
+		return domain.BackingRef{}, 0, fmt.Errorf("set cache object permissions: %w", chmodErr)
 	}
 	if syncErr := syncDirectory(s.root); syncErr != nil {
-		return "", 0, syncErr
+		return domain.BackingRef{}, 0, syncErr
 	}
-	return key, written, nil
+	backing, err = domain.NewBackingRef(backingProvider, key)
+	if err != nil {
+		return domain.BackingRef{}, 0, fmt.Errorf("construct cache backing reference: %w", err)
+	}
+	return backing, written, nil
 }
 
 // Open opens an immutable cache object for random-access reads.
-func (s *Store) Open(ctx context.Context, key string) (Reader, error) {
+func (s *Store) Open(ctx context.Context, media domain.Media) (Reader, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, fmt.Errorf("open cache object: %w", err)
 	}
-	if !cacheKeyPattern.MatchString(key) {
-		return nil, fmt.Errorf("invalid cache key: %q", key)
+	if media.Backing.Provider != backingProvider {
+		return nil, fmt.Errorf("unsupported backing provider: %q", media.Backing.Provider)
 	}
-	file, err := os.Open(s.objectPath(key))
+	if !cacheKeyPattern.MatchString(media.Backing.ObjectID) {
+		return nil, fmt.Errorf("invalid cache object ID: %q", media.Backing.ObjectID)
+	}
+	file, err := os.Open(s.objectPath(media.Backing.ObjectID))
 	if err != nil {
 		return nil, fmt.Errorf("open cache object: %w", err)
 	}
@@ -104,7 +113,26 @@ func (s *Store) Open(ctx context.Context, key string) (Reader, error) {
 		closeErr := file.Close()
 		return nil, errors.Join(fmt.Errorf("stat cache object: %w", err), closeErr)
 	}
-	return &fileReader{File: file, size: info.Size()}, nil
+	if !info.Mode().IsRegular() {
+		closeErr := file.Close()
+		return nil, errors.Join(errors.New("cache object is not a regular file"), closeErr)
+	}
+	return &fileReader{file: file, logicalSize: media.Size}, nil
+}
+
+// Ready verifies that the persistent cache root remains accessible.
+func (s *Store) Ready(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("check cache readiness: %w", err)
+	}
+	info, err := os.Stat(s.root)
+	if err != nil {
+		return fmt.Errorf("stat cache root: %w", err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("cache root is not a directory: %s", s.root)
+	}
+	return nil
 }
 
 func (s *Store) objectPath(key string) string {
@@ -112,12 +140,23 @@ func (s *Store) objectPath(key string) string {
 }
 
 type fileReader struct {
-	*os.File
-	size int64
+	file        *os.File
+	logicalSize int64
 }
 
 func (r *fileReader) Size() int64 {
-	return r.size
+	return r.logicalSize
+}
+
+func (r *fileReader) ReadAt(ctx context.Context, destination []byte, offset int64) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	return r.file.ReadAt(destination, offset)
+}
+
+func (r *fileReader) Close() error {
+	return r.file.Close()
 }
 
 type contextReader struct {

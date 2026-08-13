@@ -81,14 +81,29 @@ func TestRunCleansDatabaseWhenMountFails(t *testing.T) {
 
 func testConfig(root string, source string) config.Config {
 	return config.Config{
-		DataDir:   filepath.Join(root, "data"),
-		DBPath:    filepath.Join(root, "data", "blackpearl.db"),
-		CacheDir:  filepath.Join(root, "data", "cache"),
-		MountPath: filepath.Join(root, "mount"),
-		POCSource: source,
-		HTTPAddr:  "127.0.0.1:0",
-		LogLevel:  "debug",
+		DataDir:     filepath.Join(root, "data"),
+		DBPath:      filepath.Join(root, "data", "blackpearl.db"),
+		CacheDir:    filepath.Join(root, "data", "cache"),
+		MountPath:   filepath.Join(root, "mount"),
+		POCSource:   source,
+		HTTPAddr:    "127.0.0.1:0",
+		LogLevel:    "debug",
+		StorageMode: domain.StorageModePersistent,
 	}
+}
+
+func TestRunRejectsRollingModeBeforeCreatingRuntimePaths(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	cfg := testConfig(root, "")
+	cfg.StorageMode = domain.StorageModeRolling
+	cfg.CacheMaxBytes = 40 * 1024 * 1024 * 1024
+
+	err := run(context.Background(), cfg, testLogger(), defaultDependencies())
+
+	require.ErrorIs(t, err, domain.ErrNotConfigured)
+	_, statErr := os.Stat(cfg.DataDir)
+	require.ErrorIs(t, statErr, os.ErrNotExist)
 }
 
 func testLogger() *slog.Logger {

@@ -2,6 +2,7 @@
 package acquisition
 
 import (
+	"context"
 	"errors"
 
 	"github.com/blackpearl-media/blackpearl/internal/domain"
@@ -33,8 +34,17 @@ type Request struct {
 
 // Candidate is a normalized provider result.
 type Candidate struct {
-	Provider string
-	ObjectID string
-	Size     int64
-	Cached   bool
+	Backing domain.BackingRef
+	Size    int64
+	Cached  bool
+}
+
+// RangeSource is an opened provider object capable of arbitrary logical reads.
+//
+// A consumer may wrap this source with persistent or rolling PearlCache policy.
+// Implementations must not require callers to download the complete object.
+type RangeSource interface {
+	ReadAt(ctx context.Context, destination []byte, offset int64) (int, error)
+	Size() int64
+	Close() error
 }

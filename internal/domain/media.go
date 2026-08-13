@@ -2,6 +2,7 @@
 package domain
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -22,10 +23,34 @@ type MediaID string
 // MediaType identifies the Plex-compatible catalog hierarchy for an item.
 type MediaType string
 
+// StorageMode selects a PearlCache retention strategy.
+type StorageMode string
+
 const (
 	// MediaTypeMovie represents a movie catalog item.
 	MediaTypeMovie MediaType = "movie"
+	// StorageModePersistent retains complete acquired objects when capacity permits.
+	StorageModePersistent StorageMode = "persistent"
+	// StorageModeRolling retains a byte-bounded rolling set of object ranges.
+	StorageModeRolling StorageMode = "rolling"
 )
+
+// BackingRef identifies an object without exposing provider-specific types or local paths.
+type BackingRef struct {
+	Provider string
+	ObjectID string
+}
+
+// NewBackingRef validates a provider-neutral object reference.
+func NewBackingRef(provider string, objectID string) (BackingRef, error) {
+	if err := validateProvider(provider); err != nil {
+		return BackingRef{}, err
+	}
+	if strings.TrimSpace(objectID) == "" || strings.ContainsRune(objectID, 0) {
+		return BackingRef{}, errors.New("backing object ID is required and must not contain NUL")
+	}
+	return BackingRef{Provider: provider, ObjectID: objectID}, nil
+}
 
 // Media describes an immutable item exposed by PearlFS.
 type Media struct {
@@ -36,18 +61,22 @@ type Media struct {
 	Extension   string
 	VirtualPath string
 	Size        int64
-	CacheKey    string
+	Backing     BackingRef
 }
 
-// Reader is a sized, random-access media object.
-type Reader interface {
-	io.ReaderAt
+// ReadHandle is a context-aware, sized, random-access logical media object.
+//
+// Implementations may fetch a range from local persistent storage, a rolling
+// cache, or an authorized backing provider. A complete local file is not
+// required.
+type ReadHandle interface {
+	ReadAt(ctx context.Context, destination []byte, offset int64) (int, error)
 	io.Closer
 	Size() int64
 }
 
 // NewMovie validates movie metadata and derives its Plex-compatible virtual path.
-func NewMovie(id MediaID, title string, year int, extension string, size int64, cacheKey string) (Media, error) {
+func NewMovie(id MediaID, title string, year int, extension string, size int64, backing BackingRef) (Media, error) {
 	if id == "" {
 		return Media{}, errors.New("media id is required")
 	}
@@ -66,8 +95,8 @@ func NewMovie(id MediaID, title string, year int, extension string, size int64, 
 	if size < 0 {
 		return Media{}, fmt.Errorf("size must not be negative: %d", size)
 	}
-	if strings.TrimSpace(cacheKey) == "" {
-		return Media{}, errors.New("cache key is required")
+	if _, err := NewBackingRef(backing.Provider, backing.ObjectID); err != nil {
+		return Media{}, fmt.Errorf("invalid backing reference: %w", err)
 	}
 
 	displayName := fmt.Sprintf("%s (%d)", title, year)
@@ -79,8 +108,23 @@ func NewMovie(id MediaID, title string, year int, extension string, size int64, 
 		Extension:   extension,
 		VirtualPath: path.Join("Movies", displayName, displayName+extension),
 		Size:        size,
-		CacheKey:    cacheKey,
+		Backing:     backing,
 	}, nil
+}
+
+func validateProvider(provider string) error {
+	if provider == "" {
+		return errors.New("backing provider is required")
+	}
+	for index, character := range provider {
+		valid := character >= 'a' && character <= 'z' ||
+			character >= '0' && character <= '9' ||
+			(index > 0 && (character == '.' || character == '_' || character == '-'))
+		if !valid {
+			return fmt.Errorf("backing provider contains invalid character %q", character)
+		}
+	}
+	return nil
 }
 
 func validatePathSegment(name string, value string) error {

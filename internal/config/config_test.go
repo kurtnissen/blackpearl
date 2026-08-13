@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/blackpearl-media/blackpearl/internal/config"
+	"github.com/blackpearl-media/blackpearl/internal/domain"
 	"github.com/stretchr/testify/require"
 )
 
@@ -18,7 +19,30 @@ func TestParseUsesIsolatedContainerDefaults(t *testing.T) {
 	require.Equal(t, "/var/lib/blackpearl/cache", cfg.CacheDir)
 	require.Equal(t, "/mnt/blackpearl", cfg.MountPath)
 	require.Equal(t, ":8080", cfg.HTTPAddr)
+	require.Equal(t, domain.StorageModePersistent, cfg.StorageMode)
+	require.Zero(t, cfg.CacheMaxBytes)
 	require.False(t, cfg.Plex.Enabled())
+}
+
+func TestParseAcceptsRollingModeOnlyWithPositiveQuota(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := config.Parse(map[string]string{
+		"BLACKPEARL_STORAGE_MODE":    "rolling",
+		"BLACKPEARL_CACHE_MAX_BYTES": "42949672960",
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, domain.StorageModeRolling, cfg.StorageMode)
+	require.Equal(t, int64(42_949_672_960), cfg.CacheMaxBytes)
+}
+
+func TestParseRejectsRollingModeWithoutPositiveQuota(t *testing.T) {
+	t.Parallel()
+
+	_, err := config.Parse(map[string]string{"BLACKPEARL_STORAGE_MODE": "rolling"})
+
+	require.ErrorContains(t, err, "CACHE_MAX_BYTES")
 }
 
 func TestParseRejectsRelativeStoragePaths(t *testing.T) {

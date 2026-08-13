@@ -10,7 +10,7 @@ import (
 func TestNewMovieBuildsCanonicalPlexPath(t *testing.T) {
 	t.Parallel()
 
-	media, err := domain.NewMovie("poc", "BlackPearl POC", 2026, ".mp4", 42, "abc")
+	media, err := domain.NewMovie("poc", "BlackPearl POC", 2026, ".mp4", 42, validBacking())
 
 	require.NoError(t, err)
 	require.Equal(t, "Movies/BlackPearl POC (2026)/BlackPearl POC (2026).mp4", media.VirtualPath)
@@ -35,7 +35,7 @@ func TestNewMovieRejectsUnsafePathSegments(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 
-			_, err := domain.NewMovie("id", test.title, 2026, test.extension, 1, "key")
+			_, err := domain.NewMovie("id", test.title, 2026, test.extension, 1, validBacking())
 
 			require.Error(t, err)
 		})
@@ -46,27 +46,54 @@ func TestNewMovieRejectsInvalidRequiredValues(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name     string
-		id       domain.MediaID
-		title    string
-		year     int
-		size     int64
-		cacheKey string
+		name    string
+		id      domain.MediaID
+		title   string
+		year    int
+		size    int64
+		backing domain.BackingRef
 	}{
-		{name: "empty id", title: "Movie", year: 2026, size: 1, cacheKey: "key"},
-		{name: "empty title", id: "id", year: 2026, size: 1, cacheKey: "key"},
-		{name: "invalid year", id: "id", title: "Movie", size: 1, cacheKey: "key"},
-		{name: "negative size", id: "id", title: "Movie", year: 2026, size: -1, cacheKey: "key"},
-		{name: "empty cache key", id: "id", title: "Movie", year: 2026, size: 1},
+		{name: "empty id", title: "Movie", year: 2026, size: 1, backing: validBacking()},
+		{name: "empty title", id: "id", year: 2026, size: 1, backing: validBacking()},
+		{name: "invalid year", id: "id", title: "Movie", size: 1, backing: validBacking()},
+		{name: "negative size", id: "id", title: "Movie", year: 2026, size: -1, backing: validBacking()},
+		{name: "empty backing", id: "id", title: "Movie", year: 2026, size: 1},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 
-			_, err := domain.NewMovie(test.id, test.title, test.year, ".mp4", test.size, test.cacheKey)
+			_, err := domain.NewMovie(test.id, test.title, test.year, ".mp4", test.size, test.backing)
 
 			require.Error(t, err)
 		})
 	}
+}
+
+func TestNewBackingRefRejectsUnsafeOrMissingParts(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		provider string
+		objectID string
+	}{
+		{provider: "", objectID: "object"},
+		{provider: "pearlcache", objectID: ""},
+		{provider: "../provider", objectID: "object"},
+		{provider: "pearlcache", objectID: "\x00object"},
+	}
+
+	for _, test := range tests {
+		_, err := domain.NewBackingRef(test.provider, test.objectID)
+		require.Error(t, err)
+	}
+}
+
+func validBacking() domain.BackingRef {
+	backing, err := domain.NewBackingRef("pearlcache", "object")
+	if err != nil {
+		panic(err)
+	}
+	return backing
 }

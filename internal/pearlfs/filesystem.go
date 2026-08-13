@@ -21,7 +21,7 @@ import (
 // Catalog is the business boundary consumed by PearlFS.
 type Catalog interface {
 	List(ctx context.Context) ([]domain.Media, error)
-	Open(ctx context.Context, virtualPath string) (domain.Reader, error)
+	Open(ctx context.Context, virtualPath string) (domain.ReadHandle, error)
 }
 
 // Root is the read-only PearlFS root node.
@@ -149,14 +149,14 @@ func (n *fileNode) Open(ctx context.Context, flags uint32) (fs.FileHandle, uint3
 }
 
 type fileHandle struct {
-	reader domain.Reader
+	reader domain.ReadHandle
 }
 
-func (h *fileHandle) Read(_ context.Context, destination []byte, offset int64) (fuse.ReadResult, syscall.Errno) {
+func (h *fileHandle) Read(ctx context.Context, destination []byte, offset int64) (fuse.ReadResult, syscall.Errno) {
 	if offset < 0 {
 		return nil, syscall.EINVAL
 	}
-	count, err := h.reader.ReadAt(destination, offset)
+	count, err := h.reader.ReadAt(ctx, destination, offset)
 	if err != nil && !errors.Is(err, io.EOF) {
 		return nil, fs.ToErrno(err)
 	}

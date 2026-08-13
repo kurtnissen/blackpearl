@@ -121,8 +121,9 @@ func (r *Repository) applyMigration(ctx context.Context, name string) error {
 func (r *Repository) Upsert(ctx context.Context, media domain.Media) error {
 	_, err := r.db.ExecContext(ctx, `
 		INSERT INTO media (
-			id, media_type, title, release_year, extension, virtual_path, size_bytes, cache_key
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+			id, media_type, title, release_year, extension, virtual_path, size_bytes,
+			backing_provider, backing_object_id
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			media_type = excluded.media_type,
 			title = excluded.title,
@@ -130,9 +131,20 @@ func (r *Repository) Upsert(ctx context.Context, media domain.Media) error {
 			extension = excluded.extension,
 			virtual_path = excluded.virtual_path,
 			size_bytes = excluded.size_bytes,
-			cache_key = excluded.cache_key,
+			backing_provider = excluded.backing_provider,
+			backing_object_id = excluded.backing_object_id,
 			updated_at = CURRENT_TIMESTAMP
-	`, media.ID, media.Type, media.Title, media.Year, media.Extension, media.VirtualPath, media.Size, media.CacheKey)
+	`,
+		media.ID,
+		media.Type,
+		media.Title,
+		media.Year,
+		media.Extension,
+		media.VirtualPath,
+		media.Size,
+		media.Backing.Provider,
+		media.Backing.ObjectID,
+	)
 	if err != nil {
 		return fmt.Errorf("upsert media %s: %w", media.ID, err)
 	}
@@ -142,7 +154,8 @@ func (r *Repository) Upsert(ctx context.Context, media domain.Media) error {
 // GetByVirtualPath finds one catalog item by its PearlFS path.
 func (r *Repository) GetByVirtualPath(ctx context.Context, virtualPath string) (domain.Media, error) {
 	row := r.db.QueryRowContext(ctx, `
-		SELECT id, media_type, title, release_year, extension, virtual_path, size_bytes, cache_key
+		SELECT id, media_type, title, release_year, extension, virtual_path, size_bytes,
+		       backing_provider, backing_object_id
 		FROM media
 		WHERE virtual_path = ?
 	`, virtualPath)
@@ -159,7 +172,8 @@ func (r *Repository) GetByVirtualPath(ctx context.Context, virtualPath string) (
 // List returns all catalog items in stable virtual-path order.
 func (r *Repository) List(ctx context.Context) ([]domain.Media, error) {
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT id, media_type, title, release_year, extension, virtual_path, size_bytes, cache_key
+		SELECT id, media_type, title, release_year, extension, virtual_path, size_bytes,
+		       backing_provider, backing_object_id
 		FROM media
 		ORDER BY virtual_path
 	`)
@@ -215,7 +229,8 @@ func scanMedia(scanner rowScanner) (domain.Media, error) {
 		&media.Extension,
 		&media.VirtualPath,
 		&media.Size,
-		&media.CacheKey,
+		&media.Backing.Provider,
+		&media.Backing.ObjectID,
 	); err != nil {
 		return domain.Media{}, err
 	}

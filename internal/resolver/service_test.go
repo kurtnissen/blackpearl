@@ -24,12 +24,18 @@ func TestResolveCombinesProviderNeutralCandidates(t *testing.T) {
 	t.Parallel()
 	request := acquisition.Request{MediaID: "id", VirtualPath: "Movies/Movie/Movie.mp4"}
 	first := &fakeProvider{
-		name:       "first",
-		candidates: []acquisition.Candidate{{Provider: "first", ObjectID: "a", Size: 10}},
+		name: "first",
+		candidates: []acquisition.Candidate{{
+			Backing: domain.BackingRef{Provider: "first", ObjectID: "a"},
+			Size:    10,
+		}},
 	}
 	second := &fakeProvider{
-		name:       "second",
-		candidates: []acquisition.Candidate{{Provider: "second", ObjectID: "b", Size: 11}},
+		name: "second",
+		candidates: []acquisition.Candidate{{
+			Backing: domain.BackingRef{Provider: "second", ObjectID: "b"},
+			Size:    11,
+		}},
 	}
 	service := resolver.New(first, second)
 

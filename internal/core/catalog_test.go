@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"io"
 	"testing"
 
 	"github.com/blackpearl-media/blackpearl/internal/core"
@@ -15,8 +14,11 @@ import (
 func TestImportPOCCachesAndPersistsCanonicalMovie(t *testing.T) {
 	t.Parallel()
 	repository := &fakeRepository{}
-	cacheStore := &fakeCache{importKey: "cache-key", importSize: 99}
-	catalog := core.NewCatalog(repository, cacheStore)
+	cacheStore := &fakeCache{
+		importBacking: domain.BackingRef{Provider: "pearlcache", ObjectID: "object"},
+		importSize:    99,
+	}
+	catalog := core.NewCatalog(repository, cacheStore, cacheStore)
 
 	media, err := catalog.ImportPOC(context.Background(), "/fixture/test.mp4")
 
@@ -24,6 +26,7 @@ func TestImportPOCCachesAndPersistsCanonicalMovie(t *testing.T) {
 	require.Equal(t, domain.MediaID("blackpearl-poc-2026"), media.ID)
 	require.Equal(t, "Movies/BlackPearl POC (2026)/BlackPearl POC (2026).mp4", media.VirtualPath)
 	require.Equal(t, int64(99), media.Size)
+	require.Equal(t, cacheStore.importBacking, media.Backing)
 	require.Equal(t, "/fixture/test.mp4", cacheStore.importedSource)
 	require.Equal(t, media, repository.upserted)
 }
@@ -32,7 +35,7 @@ func TestImportPOCWrapsCacheFailureWithoutPersisting(t *testing.T) {
 	t.Parallel()
 	repository := &fakeRepository{}
 	cacheStore := &fakeCache{importErr: errors.New("disk full")}
-	catalog := core.NewCatalog(repository, cacheStore)
+	catalog := core.NewCatalog(repository, cacheStore, cacheStore)
 
 	_, err := catalog.ImportPOC(context.Background(), "/fixture/test.mp4")
 
@@ -42,25 +45,26 @@ func TestImportPOCWrapsCacheFailureWithoutPersisting(t *testing.T) {
 
 func TestOpenResolvesCatalogPathAndCacheObject(t *testing.T) {
 	t.Parallel()
-	media := mustMovie(t, 5, "cache-key")
+	media := mustMovie(t, 5, "object")
 	repository := &fakeRepository{media: media}
 	reader := newMemoryReader([]byte("12345"))
 	cacheStore := &fakeCache{reader: reader}
-	catalog := core.NewCatalog(repository, cacheStore)
+	catalog := core.NewCatalog(repository, cacheStore, cacheStore)
 
 	actual, err := catalog.Open(context.Background(), media.VirtualPath)
 
 	require.NoError(t, err)
 	require.Same(t, reader, actual)
 	require.Equal(t, media.VirtualPath, repository.lookupPath)
-	require.Equal(t, "cache-key", cacheStore.openedKey)
+	require.Equal(t, media, cacheStore.openedMedia)
 }
 
 func TestOpenRejectsCacheSizeMismatch(t *testing.T) {
 	t.Parallel()
-	media := mustMovie(t, 5, "cache-key")
+	media := mustMovie(t, 5, "object")
 	reader := newMemoryReader([]byte("1234"))
-	catalog := core.NewCatalog(&fakeRepository{media: media}, &fakeCache{reader: reader})
+	cacheStore := &fakeCache{reader: reader}
+	catalog := core.NewCatalog(&fakeRepository{media: media}, cacheStore, cacheStore)
 
 	_, err := catalog.Open(context.Background(), media.VirtualPath)
 
@@ -70,21 +74,22 @@ func TestOpenRejectsCacheSizeMismatch(t *testing.T) {
 
 func TestReadyChecksRepositoryAndCachedObjects(t *testing.T) {
 	t.Parallel()
-	media := mustMovie(t, 5, "cache-key")
-	reader := newMemoryReader([]byte("12345"))
+	media := mustMovie(t, 5, "object")
 	repository := &fakeRepository{listed: []domain.Media{media}}
-	catalog := core.NewCatalog(repository, &fakeCache{reader: reader})
+	cacheStore := &fakeCache{}
+	catalog := core.NewCatalog(repository, cacheStore, cacheStore)
 
 	err := catalog.Ready(context.Background())
 
 	require.NoError(t, err)
 	require.True(t, repository.pinged)
-	require.True(t, reader.closed)
+	require.True(t, cacheStore.readyCalled)
 }
 
 func TestReadyRequiresAtLeastOneCatalogItem(t *testing.T) {
 	t.Parallel()
-	catalog := core.NewCatalog(&fakeRepository{}, &fakeCache{})
+	cacheStore := &fakeCache{}
+	catalog := core.NewCatalog(&fakeRepository{}, cacheStore, cacheStore)
 
 	err := catalog.Ready(context.Background())
 
@@ -120,22 +125,28 @@ func (f *fakeRepository) Ping(context.Context) error {
 }
 
 type fakeCache struct {
-	importKey      string
+	importBacking  domain.BackingRef
 	importSize     int64
 	importErr      error
 	importedSource string
-	openedKey      string
-	reader         domain.Reader
+	openedMedia    domain.Media
+	reader         domain.ReadHandle
+	readyCalled    bool
 }
 
-func (f *fakeCache) Import(_ context.Context, source string) (string, int64, error) {
+func (f *fakeCache) Import(_ context.Context, source string) (domain.BackingRef, int64, error) {
 	f.importedSource = source
-	return f.importKey, f.importSize, f.importErr
+	return f.importBacking, f.importSize, f.importErr
 }
 
-func (f *fakeCache) Open(_ context.Context, key string) (domain.Reader, error) {
-	f.openedKey = key
+func (f *fakeCache) Open(_ context.Context, media domain.Media) (domain.ReadHandle, error) {
+	f.openedMedia = media
 	return f.reader, nil
+}
+
+func (f *fakeCache) Ready(context.Context) error {
+	f.readyCalled = true
+	return nil
 }
 
 type memoryReader struct {
@@ -156,11 +167,20 @@ func (r *memoryReader) Size() int64 {
 	return r.Reader.Size()
 }
 
-var _ io.ReaderAt = (*memoryReader)(nil)
+func (r *memoryReader) ReadAt(_ context.Context, destination []byte, offset int64) (int, error) {
+	return r.Reader.ReadAt(destination, offset)
+}
 
 func mustMovie(t *testing.T, size int64, key string) domain.Media {
 	t.Helper()
-	media, err := domain.NewMovie("id", "Movie", 2026, ".mp4", size, key)
+	media, err := domain.NewMovie(
+		"id",
+		"Movie",
+		2026,
+		".mp4",
+		size,
+		domain.BackingRef{Provider: "pearlcache", ObjectID: key},
+	)
 	require.NoError(t, err)
 	return media
 }

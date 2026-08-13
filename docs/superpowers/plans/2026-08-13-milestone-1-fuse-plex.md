@@ -13,6 +13,10 @@
 - Target Ubuntu Server; macOS Docker Desktop may verify the image and in-container FUSE but not sibling-container mount propagation.
 - Keep all runtime paths under repository-owned `runtime/`; never reference production Plex, *arr, download, or media paths.
 - One BlackPearl Go service initially; the opt-in Plex container exists only for acceptance testing.
+- One binary supports explicit persistent and rolling storage modes. Milestone 1 implements persistent fixture reads and rejects rolling mode as not yet implemented.
+- PearlFS, core, PearlCache, and acquisition contracts are context-aware and offset-based; no interface may require a complete local file.
+- Media metadata stores a logical size plus a provider-neutral backing reference, not a local cache path.
+- Plex Direct Play is a primary low-compute VPS target; BlackPearl does not transcode.
 - Go 1.24+ with explicit error handling, contextual wrapping, `context.Context` first for I/O, no `init`, and no mutable globals.
 - Enforce adapter -> service -> repository/gateway dependency direction.
 - Write tests first and observe the expected failure before implementation.
@@ -59,12 +63,12 @@ docs/ubuntu-plex-poc.md                      manual Plex acceptance runbook
 - Create: `.gitignore`
 
 **Interfaces:**
-- Produces: `domain.MediaID`, `domain.Media`, `domain.ErrNotFound`, `domain.ErrNotConfigured`.
+- Produces: `domain.MediaID`, `domain.Media`, `domain.BackingRef`, `domain.ReadHandle`, `domain.StorageMode`, `domain.ErrNotFound`, `domain.ErrNotConfigured`.
 - Produces: `config.Load() (config.Config, error)` and `config.Parse(environment map[string]string) (config.Config, error)`.
 
 - [ ] **Step 1: Write failing domain and configuration tests**
 
-Test that the canonical POC media produces `Movies/BlackPearl POC (2026)/BlackPearl POC (2026).mp4`; reject traversal and relative configured storage paths; accept defaults; require the three Plex settings all-or-none.
+Test that the canonical POC media produces `Movies/BlackPearl POC (2026)/BlackPearl POC (2026).mp4`; reject traversal and relative configured storage paths; accept persistent storage defaults; accept rolling only with a positive cache quota; require the three Plex settings all-or-none.
 
 - [ ] **Step 2: Verify RED**
 
@@ -74,10 +78,10 @@ Expected: compilation fails because the packages and exported types do not exist
 
 - [ ] **Step 3: Add minimal typed implementations**
 
-Use a validated constructor:
+Use a validated constructor with a logical size and provider-neutral backing reference:
 
 ```go
-func NewMovie(id MediaID, title string, year int, extension string, size int64, cacheKey string) (Media, error)
+func NewMovie(id MediaID, title string, year int, extension string, size int64, backing BackingRef) (Media, error)
 ```
 
 Use `caarlos0/env/v11` for process environment loading and its map-backed environment option for tests. Reject any non-absolute data, database, cache, mount, or configured POC source path.
@@ -107,12 +111,12 @@ git commit -m "feat: add domain and typed configuration"
 **Interfaces:**
 - Produces: `cache.New(root string) (*cache.Store, error)`.
 - Produces: `(*cache.Store).Import(ctx context.Context, source string) (key string, size int64, err error)`.
-- Produces: `(*cache.Store).Open(ctx context.Context, key string) (cache.Reader, error)` where `Reader` combines `io.ReaderAt`, `io.Closer`, and `Size() int64`.
+- Produces: `(*cache.Store).Open(ctx context.Context, media domain.Media) (domain.ReadHandle, error)`. The handle provides `ReadAt(ctx, destination, offset)`, `Close`, and logical `Size` without exposing a local path.
 - Produces: `state.Open(ctx context.Context, path string) (*state.Repository, error)`, `Upsert`, `GetByVirtualPath`, `List`, `Ping`, and `Close`.
 
 - [ ] **Step 1: Write failing cache tests**
 
-Cover SHA-256 keys, duplicate imports, source mutation after import, range reads, rejected malformed keys, and absence of temporary files after success.
+Cover SHA-256 object IDs, duplicate imports, source mutation after import, context-aware arbitrary range reads, rejected malformed backing references, and absence of temporary files after success.
 
 - [ ] **Step 2: Verify cache RED**
 
@@ -164,7 +168,7 @@ git commit -m "feat: add cache and sqlite catalog state"
 - Create: `internal/resolver/service_test.go`
 
 **Interfaces:**
-- Consumes: repository `Upsert`, `GetByVirtualPath`, `List`, `Ping`; cache `Import`, `Open`.
+- Consumes: repository `Upsert`, `GetByVirtualPath`, `List`, `Ping`; POC importer `Import`; media source `Open(ctx, media)` and `Ready`.
 - Produces: `core.NewCatalog(repository Repository, cache Cache) *Catalog`.
 - Produces: `(*Catalog).ImportPOC(ctx context.Context, source string) (domain.Media, error)`, `List`, `Lookup`, `Open`, and `Ready`.
 - Produces: `resolver.Provider.Resolve(ctx context.Context, acquisition.Request) ([]acquisition.Candidate, error)` and `resolver.Service.Resolve`.
@@ -181,7 +185,7 @@ Expected: compilation fails because `Catalog` does not exist.
 
 - [ ] **Step 3: Implement the minimum catalog service**
 
-Import the source through `Cache`, construct the canonical POC movie through the domain constructor, and persist it through `Repository`. Wrap every boundary error with its operation.
+Import the source through `POCImporter`, construct the canonical POC movie with a PearlCache backing reference, and persist it through `Repository`. Open operations pass the entire media record to `MediaSource`; they never derive a local path. Wrap every boundary error with its operation.
 
 - [ ] **Step 4: Verify core GREEN**
 
@@ -191,7 +195,7 @@ Expected: all core tests pass.
 
 - [ ] **Step 5: Write and implement acquisition/resolver contract tests**
 
-Prove invalid byte ranges are rejected and a resolver with no providers returns `domain.ErrNotConfigured`; prove configured providers receive the request and candidates are returned without provider-specific types leaking.
+Prove invalid byte ranges are rejected and a resolver with no providers returns `domain.ErrNotConfigured`; prove configured providers receive discovery requests without provider-specific types leaking. Add a fake arbitrary-range source proving nonsequential reads, cancellation, and a logical size larger than locally held test bytes.
 
 - [ ] **Step 6: Verify and commit**
 
@@ -250,13 +254,13 @@ git commit -m "feat: add plex refresh and diagnostics adapters"
 - Create: `internal/pearlfs/mount_linux_test.go`
 
 **Interfaces:**
-- Consumes: `Catalog.List(ctx)`, `Catalog.Open(ctx, virtualPath)` returning a sized `io.ReaderAt`/`io.Closer`.
+- Consumes: `Catalog.List(ctx)`, `Catalog.Open(ctx, virtualPath)` returning a context-aware `domain.ReadHandle`.
 - Produces: `pearlfs.New(catalog Catalog) (*Root, error)`.
 - Produces: `pearlfs.Mount(ctx context.Context, mountPath string, root *Root) (*fs.Server, error)`.
 
 - [ ] **Step 1: Write failing filesystem tests**
 
-Test deterministic hierarchy construction, read-only modes, exact full reads, nonsequential reads, EOF behavior, missing files, and rejection of create/write operations through the exposed node capabilities.
+Test deterministic hierarchy construction, read-only modes, exact full reads, nonsequential reads, cancellation propagation, EOF behavior, missing files, and rejection of create/write operations. The fake handle must not expose a local path or contain a complete logical object.
 
 - [ ] **Step 2: Verify PearlFS RED**
 
@@ -364,7 +368,7 @@ Expected: failure because the Compose files do not exist.
 
 - [ ] **Step 3: Add images and Compose definitions**
 
-Build a static Go binary in `golang:1.24-bookworm`; use a small Debian runtime with `fuse3` and CA certificates. The `poc` target copies an MP4 generated from FFmpeg `testsrc2` plus a sine tone in an isolated builder stage. Pin the official Plex image to the version recorded in Plex's maintained deployment metadata.
+Build a static Go binary in `golang:1.24-bookworm`; use a small Debian runtime with `fuse3` and CA certificates. The `poc` target copies a Direct Play-oriented H.264/AAC MP4 generated from FFmpeg `testsrc2` plus a sine tone in an isolated builder stage. Pin the official Plex image to the version recorded in Plex's maintained deployment metadata.
 
 - [ ] **Step 4: Add guarded Ubuntu scripts**
 

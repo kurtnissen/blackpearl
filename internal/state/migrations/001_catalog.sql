@@ -6,7 +6,8 @@ CREATE TABLE media (
     extension TEXT NOT NULL,
     virtual_path TEXT NOT NULL UNIQUE,
     size_bytes INTEGER NOT NULL CHECK (size_bytes >= 0),
-    cache_key TEXT NOT NULL,
+    backing_provider TEXT NOT NULL,
+    backing_object_id TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );

@@ -20,7 +20,7 @@ func TestRepositoryPersistsUpsertedMediaAcrossReopen(t *testing.T) {
 	media := mustMovie(t, "second", "Zulu", "key-2")
 	require.NoError(t, repository.Upsert(ctx, media))
 	updated := media
-	updated.CacheKey = "updated-key"
+	updated.Backing = domain.BackingRef{Provider: "pearlcache", ObjectID: "updated-key"}
 	require.NoError(t, repository.Upsert(ctx, updated))
 	require.NoError(t, repository.Close())
 
@@ -78,7 +78,14 @@ func TestRepositoryPingHonorsClosedDatabase(t *testing.T) {
 
 func mustMovie(t *testing.T, id domain.MediaID, title string, key string) domain.Media {
 	t.Helper()
-	media, err := domain.NewMovie(id, title, 2026, ".mp4", 10, key)
+	media, err := domain.NewMovie(
+		id,
+		title,
+		2026,
+		".mp4",
+		10,
+		domain.BackingRef{Provider: "pearlcache", ObjectID: key},
+	)
 	require.NoError(t, err)
 	return media
 }
