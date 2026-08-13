@@ -100,3 +100,30 @@ func TestParseAcceptsCompletePlexConfiguration(t *testing.T) {
 	require.True(t, cfg.Plex.Enabled())
 	require.Equal(t, "7", cfg.Plex.SectionID)
 }
+
+func TestLoadReadsProcessEnvironment(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("BLACKPEARL_DATA_DIR", root)
+	t.Setenv("BLACKPEARL_DB_PATH", root+"/blackpearl.db")
+	t.Setenv("BLACKPEARL_CACHE_DIR", root+"/cache")
+	t.Setenv("BLACKPEARL_MOUNT_PATH", root+"/mount")
+	t.Setenv("BLACKPEARL_STORAGE_MODE", "persistent")
+	t.Setenv("BLACKPEARL_CACHE_MAX_BYTES", "0")
+	t.Setenv("BLACKPEARL_POC_SOURCE", "")
+	t.Setenv("BLACKPEARL_PLEX_URL", "")
+	t.Setenv("BLACKPEARL_PLEX_TOKEN", "")
+	t.Setenv("BLACKPEARL_PLEX_SECTION_ID", "")
+
+	cfg, err := config.Load()
+
+	require.NoError(t, err)
+	require.Equal(t, root, cfg.DataDir)
+}
+
+func TestLoadReportsInvalidProcessEnvironment(t *testing.T) {
+	t.Setenv("BLACKPEARL_STORAGE_MODE", "invalid")
+
+	_, err := config.Load()
+
+	require.ErrorContains(t, err, "STORAGE_MODE")
+}

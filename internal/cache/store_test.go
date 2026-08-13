@@ -13,6 +13,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestNewRequiresAbsoluteRoot(t *testing.T) {
+	t.Parallel()
+
+	_, err := cache.New("relative/cache")
+
+	require.ErrorContains(t, err, "must be absolute")
+}
+
 func TestImportStoresImmutableContentBySHA256(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -62,6 +70,21 @@ func TestImportIsIdempotentAndLeavesNoTemporaryFiles(t *testing.T) {
 	require.Equal(t, firstBacking.ObjectID+".blob", entries[0].Name())
 }
 
+func TestImportReportsMissingSourceAndCancellation(t *testing.T) {
+	t.Parallel()
+	store, err := cache.New(t.TempDir())
+	require.NoError(t, err)
+
+	_, _, err = store.Import(context.Background(), filepath.Join(t.TempDir(), "missing.mp4"))
+	require.ErrorContains(t, err, "open cache import source")
+	source := filepath.Join(t.TempDir(), "source.mp4")
+	require.NoError(t, os.WriteFile(source, []byte("content"), 0o600))
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, _, err = store.Import(cancelled, source)
+	require.ErrorIs(t, err, context.Canceled)
+}
+
 func TestOpenSupportsNonsequentialReads(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -102,6 +125,23 @@ func TestOpenRejectsMalformedBackingReferences(t *testing.T) {
 	}
 }
 
+func TestOpenReportsCancellationAndMissingObjects(t *testing.T) {
+	t.Parallel()
+	store, err := cache.New(t.TempDir())
+	require.NoError(t, err)
+	backing := domain.BackingRef{
+		Provider: "pearlcache",
+		ObjectID: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+	}
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err = store.Open(cancelled, domain.Media{Backing: backing, Size: 1})
+	require.ErrorIs(t, err, context.Canceled)
+	_, err = store.Open(context.Background(), domain.Media{Backing: backing, Size: 1})
+	require.ErrorContains(t, err, "open cache object")
+}
+
 func TestReadAtHonorsCancelledContext(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -120,6 +160,20 @@ func TestReadAtHonorsCancelledContext(t *testing.T) {
 	_, err = reader.ReadAt(cancelled, make([]byte, 1), 0)
 
 	require.ErrorIs(t, err, context.Canceled)
+}
+
+func TestReadyChecksRootAndContext(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	store, err := cache.New(root)
+	require.NoError(t, err)
+	require.NoError(t, store.Ready(context.Background()))
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	require.ErrorIs(t, store.Ready(cancelled), context.Canceled)
+
+	require.NoError(t, os.Remove(root))
+	require.ErrorContains(t, store.Ready(context.Background()), "stat cache root")
 }
 
 func mediaFor(t *testing.T, size int64, backing domain.BackingRef) domain.Media {

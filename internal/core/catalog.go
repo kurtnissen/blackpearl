@@ -12,9 +12,9 @@ import (
 
 const (
 	pocID        domain.MediaID = "blackpearl-poc-2026"
-	pocTitle                    = "BlackPearl POC"
-	pocYear                     = 2026
-	pocExtension                = ".mp4"
+	pocTitle     string         = "BlackPearl POC"
+	pocYear      int            = 2026
+	pocExtension string         = ".mp4"
 )
 
 // Repository is the catalog persistence required by Catalog.

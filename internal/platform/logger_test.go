@@ -32,3 +32,17 @@ func TestNewLoggerRejectsUnknownLevel(t *testing.T) {
 
 	require.ErrorContains(t, err, "log level")
 }
+
+func TestNewLoggerAcceptsEverySupportedLevel(t *testing.T) {
+	t.Parallel()
+	for _, level := range []string{"trace", "debug", "info", "warn", "error", "WARN"} {
+		t.Run(level, func(t *testing.T) {
+			t.Parallel()
+
+			logger, err := platform.NewLogger(level, &bytes.Buffer{})
+
+			require.NoError(t, err)
+			require.NotNil(t, logger)
+		})
+	}
+}

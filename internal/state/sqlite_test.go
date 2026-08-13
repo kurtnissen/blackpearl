@@ -76,6 +76,40 @@ func TestRepositoryPingHonorsClosedDatabase(t *testing.T) {
 	require.False(t, errors.Is(err, domain.ErrNotFound))
 }
 
+func TestOpenRequiresAbsoluteDatabasePath(t *testing.T) {
+	t.Parallel()
+
+	_, err := state.Open(context.Background(), "relative/blackpearl.db")
+
+	require.ErrorContains(t, err, "must be absolute")
+}
+
+func TestRepositoryOperationsReportClosedDatabase(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	repository, err := state.Open(ctx, filepath.Join(t.TempDir(), "blackpearl.db"))
+	require.NoError(t, err)
+	require.NoError(t, repository.Close())
+	media := mustMovie(t, "id", "Movie", "key")
+
+	require.ErrorContains(t, repository.Upsert(ctx, media), "upsert media")
+	_, err = repository.GetByVirtualPath(ctx, media.VirtualPath)
+	require.ErrorContains(t, err, "get media by virtual path")
+	_, err = repository.List(ctx)
+	require.ErrorContains(t, err, "list media")
+	require.NoError(t, repository.Close())
+}
+
+func TestRepositoryHonorsCancelledOpenAndQueries(t *testing.T) {
+	t.Parallel()
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := state.Open(cancelled, filepath.Join(t.TempDir(), "blackpearl.db"))
+
+	require.Error(t, err)
+}
+
 func mustMovie(t *testing.T, id domain.MediaID, title string, key string) domain.Media {
 	t.Helper()
 	media, err := domain.NewMovie(

@@ -158,7 +158,11 @@ func (h *fileHandle) Read(ctx context.Context, destination []byte, offset int64)
 	}
 	count, err := h.reader.ReadAt(ctx, destination, offset)
 	if err != nil && !errors.Is(err, io.EOF) {
-		return nil, fs.ToErrno(err)
+		var errno syscall.Errno
+		if errors.As(err, &errno) {
+			return nil, errno
+		}
+		return nil, syscall.EIO
 	}
 	return fuse.ReadResultData(destination[:count]), 0
 }

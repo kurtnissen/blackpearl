@@ -106,6 +106,141 @@ func TestRunRejectsRollingModeBeforeCreatingRuntimePaths(t *testing.T) {
 	require.ErrorIs(t, statErr, os.ErrNotExist)
 }
 
+func TestRunValidatesModeAndDependenciesBeforeCreatingPaths(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	tests := []struct {
+		name    string
+		mutate  func(*config.Config, *dependencies)
+		message string
+	}{
+		{
+			name: "unknown storage mode",
+			mutate: func(cfg *config.Config, _ *dependencies) {
+				cfg.StorageMode = "archive"
+			},
+			message: "unsupported storage mode",
+		},
+		{
+			name: "missing mount",
+			mutate: func(_ *config.Config, deps *dependencies) {
+				deps.mount = nil
+			},
+			message: "mount dependency is required",
+		},
+		{
+			name: "missing listener",
+			mutate: func(_ *config.Config, deps *dependencies) {
+				deps.listen = nil
+			},
+			message: "listener dependency is required",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			caseRoot := filepath.Join(root, test.name)
+			cfg := testConfig(caseRoot, "")
+			deps := defaultDependencies()
+			test.mutate(&cfg, &deps)
+
+			err := run(context.Background(), cfg, testLogger(), deps)
+
+			require.ErrorContains(t, err, test.message)
+			_, statErr := os.Stat(cfg.DataDir)
+			require.ErrorIs(t, statErr, os.ErrNotExist)
+		})
+	}
+}
+
+func TestRunUnmountsWhenDiagnosticsListenerFails(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	cfg := testConfig(root, "")
+	server := &fakeMountServer{}
+	deps := dependencies{
+		mount: func(context.Context, string, *pearlfs.Root) (mountServer, error) {
+			return server, nil
+		},
+		listen: func(string, string) (net.Listener, error) {
+			return nil, errors.New("address unavailable")
+		},
+	}
+
+	err := run(context.Background(), cfg, testLogger(), deps)
+
+	require.ErrorContains(t, err, "listen on diagnostics address")
+	require.True(t, server.unmounted)
+}
+
+func TestRunReportsDirectoryCreationFailure(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	blocked := filepath.Join(root, "blocked")
+	require.NoError(t, os.WriteFile(blocked, []byte("file"), 0o600))
+	cfg := testConfig(root, "")
+	cfg.DataDir = filepath.Join(blocked, "data")
+
+	err := run(context.Background(), cfg, testLogger(), defaultDependencies())
+
+	require.ErrorContains(t, err, "create service directory")
+}
+
+func TestReadinessGateRequiresMountAndDelegates(t *testing.T) {
+	t.Parallel()
+	delegate := &fakeReadyCatalog{err: errors.New("cache unavailable")}
+	gate := &readinessGate{delegate: delegate}
+
+	err := gate.Ready(context.Background())
+	require.ErrorContains(t, err, "not mounted")
+	gate.ready.Store(true)
+	err = gate.Ready(context.Background())
+	require.ErrorContains(t, err, "cache unavailable")
+	require.True(t, delegate.called)
+}
+
+func TestDefaultDependenciesAreComplete(t *testing.T) {
+	t.Parallel()
+
+	deps := defaultDependencies()
+
+	require.NotNil(t, deps.mount)
+	require.NotNil(t, deps.listen)
+	require.NotNil(t, deps.httpClient)
+}
+
+func TestExecuteLoadsConfigurationAndShutsDownTelemetry(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("BLACKPEARL_DATA_DIR", filepath.Join(root, "data"))
+	t.Setenv("BLACKPEARL_DB_PATH", filepath.Join(root, "data", "blackpearl.db"))
+	t.Setenv("BLACKPEARL_CACHE_DIR", filepath.Join(root, "cache"))
+	t.Setenv("BLACKPEARL_MOUNT_PATH", filepath.Join(root, "mount"))
+	t.Setenv("BLACKPEARL_HTTP_ADDR", "127.0.0.1:0")
+	t.Setenv("BLACKPEARL_LOG_LEVEL", "error")
+	t.Setenv("BLACKPEARL_STORAGE_MODE", "rolling")
+	t.Setenv("BLACKPEARL_CACHE_MAX_BYTES", "42949672960")
+	t.Setenv("BLACKPEARL_POC_SOURCE", "")
+	t.Setenv("BLACKPEARL_PLEX_URL", "")
+	t.Setenv("BLACKPEARL_PLEX_TOKEN", "")
+	t.Setenv("BLACKPEARL_PLEX_SECTION_ID", "")
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "")
+
+	err := execute(context.Background())
+
+	require.ErrorIs(t, err, domain.ErrNotConfigured)
+	_, statErr := os.Stat(filepath.Join(root, "data"))
+	require.ErrorIs(t, statErr, os.ErrNotExist)
+}
+
+func TestExecuteReportsConfigurationFailure(t *testing.T) {
+	t.Setenv("BLACKPEARL_STORAGE_MODE", "unknown")
+
+	err := execute(context.Background())
+
+	require.ErrorContains(t, err, "STORAGE_MODE")
+}
+
 func testLogger() *slog.Logger {
 	return slog.New(slog.NewJSONHandler(&bytes.Buffer{}, nil))
 }
@@ -120,3 +255,13 @@ func (f *fakeMountServer) Unmount() error {
 }
 
 func (f *fakeMountServer) Wait() {}
+
+type fakeReadyCatalog struct {
+	err    error
+	called bool
+}
+
+func (f *fakeReadyCatalog) Ready(context.Context) error {
+	f.called = true
+	return f.err
+}

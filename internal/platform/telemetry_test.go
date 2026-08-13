@@ -17,3 +17,11 @@ func TestInitTelemetryCreatesShutdownWithoutExporter(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, shutdown(context.Background()))
 }
+
+func TestInitTelemetryRequiresServiceName(t *testing.T) {
+	t.Parallel()
+
+	_, err := platform.InitTelemetry(context.Background(), "")
+
+	require.ErrorContains(t, err, "service name is required")
+}

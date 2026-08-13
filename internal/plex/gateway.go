@@ -28,16 +28,16 @@ type Gateway struct {
 func New(baseURL string, token string, sectionID string, client *http.Client) (*Gateway, error) {
 	parsed, err := url.Parse(baseURL)
 	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
-		return nil, fmt.Errorf("Plex base URL must be an absolute HTTP URL: %q", baseURL)
+		return nil, fmt.Errorf("plex base URL must be an absolute HTTP URL: %q", baseURL)
 	}
 	if token == "" {
-		return nil, errors.New("Plex token is required")
+		return nil, errors.New("plex token is required")
 	}
 	if sectionID == "" {
-		return nil, errors.New("Plex section ID is required")
+		return nil, errors.New("plex section ID is required")
 	}
 	if client == nil {
-		return nil, errors.New("Plex HTTP client is required")
+		return nil, errors.New("plex HTTP client is required")
 	}
 	return &Gateway{baseURL: parsed, token: token, sectionID: sectionID, client: client}, nil
 }
@@ -78,7 +78,7 @@ func (g *Gateway) Refresh(ctx context.Context) error {
 			}
 			return '?'
 		}, string(body))
-		return fmt.Errorf("Plex refresh returned status %d: %s", response.StatusCode, sanitizedBody)
+		return fmt.Errorf("plex refresh returned status %d: %s", response.StatusCode, sanitizedBody)
 	}
 	return nil
 }
