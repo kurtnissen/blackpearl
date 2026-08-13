@@ -33,3 +33,7 @@ ENTRYPOINT ["/usr/local/bin/blackpearl"]
 FROM runtime AS poc
 COPY --from=fixture /fixture/blackpearl-poc.mp4 /opt/blackpearl/fixtures/blackpearl-poc.mp4
 ENV BLACKPEARL_POC_SOURCE=/opt/blackpearl/fixtures/blackpearl-poc.mp4
+
+FROM nginx:1.29.5-alpine AS range-origin
+COPY deploy/range-origin.conf /etc/nginx/nginx.conf
+COPY --from=fixture /fixture/blackpearl-poc.mp4 /srv/media/blackpearl-poc.mp4

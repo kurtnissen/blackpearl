@@ -1,0 +1,85 @@
+name: blackpearl-rolling
+
+services:
+  range-origin:
+    image: blackpearl:range-origin
+    build:
+      context: .
+      target: range-origin
+    restart: unless-stopped
+    healthcheck:
+      test: [CMD, wget, --spider, --quiet, http://127.0.0.1:8080/healthz]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+      start_period: 3s
+
+  blackpearl:
+    image: blackpearl:rolling-poc
+    build:
+      context: .
+      target: runtime
+    restart: unless-stopped
+    depends_on:
+      range-origin:
+        condition: service_healthy
+    environment:
+      BLACKPEARL_DATA_DIR: /var/lib/blackpearl
+      BLACKPEARL_DB_PATH: /var/lib/blackpearl/blackpearl.db
+      BLACKPEARL_CACHE_DIR: /var/lib/blackpearl/cache
+      BLACKPEARL_MOUNT_PATH: /mnt/blackpearl
+      BLACKPEARL_HTTP_ADDR: :8080
+      BLACKPEARL_LOG_LEVEL: ${BLACKPEARL_LOG_LEVEL:-info}
+      BLACKPEARL_STORAGE_MODE: rolling
+      BLACKPEARL_CACHE_MAX_BYTES: "1048576"
+      BLACKPEARL_CACHE_CHUNK_BYTES: "262144"
+      BLACKPEARL_RANGE_ORIGIN_URL: http://range-origin:8080/media/
+      BLACKPEARL_RANGE_OBJECT_ID: blackpearl-poc.mp4
+      BLACKPEARL_RANGE_TIMEOUT: 30s
+      BLACKPEARL_FILESYSTEM_MODE: nfs
+      BLACKPEARL_NFS_ADDR: 0.0.0.0:2049
+    ports:
+      - 127.0.0.1:${BLACKPEARL_ROLLING_HTTP_PORT:-8081}:8080/tcp
+      - 127.0.0.1:${BLACKPEARL_ROLLING_NFS_PORT:-20491}:2049/tcp
+    volumes:
+      - blackpearl-data:/var/lib/blackpearl
+    healthcheck:
+      test: [CMD, curl, --fail, --silent, http://localhost:8080/readyz]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+      start_period: 3s
+
+  plex:
+    image: plexinc/pms-docker:1.43.0.10492-121068a07
+    restart: unless-stopped
+    depends_on:
+      blackpearl:
+        condition: service_healthy
+    environment:
+      TZ: ${TZ:-America/New_York}
+      PLEX_CLAIM: ${PLEX_ROLLING_CLAIM:-}
+      ADVERTISE_IP: ${PLEX_ROLLING_ADVERTISE_IP:-http://localhost:32401/}
+    ports:
+      - 127.0.0.1:${PLEX_ROLLING_PORT:-32401}:32400/tcp
+    volumes:
+      - plex-config:/config
+      - plex-transcode:/transcode
+      - blackpearl-library:/blackpearl:ro
+    healthcheck:
+      test: [CMD, curl, --fail, --silent, http://localhost:32400/identity]
+      interval: 2s
+      timeout: 2s
+      retries: 60
+      start_period: 5s
+
+volumes:
+  blackpearl-data:
+  plex-config:
+  plex-transcode:
+  blackpearl-library:
+    driver: local
+    driver_opts:
+      type: nfs
+      device: :/
+      o: addr=127.0.0.1,vers=3,tcp,nolock,port=${BLACKPEARL_ROLLING_NFS_PORT:-20491},mountport=${BLACKPEARL_ROLLING_NFS_PORT:-20491},ro
