@@ -10,10 +10,10 @@ FUSE adapter ----+
 NFS adapter -----+           |
                              +----> MediaSource interface ----> PearlCache policy
                              |                               |          |
-                             +-- ReadAt(ctx, buffer, offset) |          +-- rolling chunks (later)
-                                                             +-- persistent object (M1)
+                             +-- ReadAt(ctx, buffer, offset) |          +-- rolling chunks
+                                                             +-- persistent object
                                                                         |
-                                                              RangeSource provider (later)
+                                                                RangeSource gateway
 
 HTTP diagnostics -> Readiness service
 Catalog service  -> Resolver interface -> acquisition provider contracts
@@ -48,22 +48,20 @@ The current implementation imports the POC fixture into a SHA-256-addressed obje
 
 Persistent mode is suitable for a home server where the cache can retain entire objects. Later integrity and quota policy can extend this implementation behind the existing media-source boundary.
 
-## Rolling mode seam
+## Rolling mode
 
-Rolling mode is intentionally not implemented in Milestone 1. Configuration recognizes it, requires a positive byte quota, and the process returns `ErrNotConfigured` before creating runtime paths.
-
-A later rolling cache should divide a logical object into independently addressable chunks and:
+Rolling mode divides a logical object into independently addressable chunks and:
 
 - serve present ranges locally;
 - fetch missing ranges from an authorized `RangeSource`;
 - coalesce concurrent requests for the same range;
-- read ahead based on observed sequential access while preserving seeks;
+- preserve arbitrary seeks without requiring read-ahead;
 - pin chunks held by active readers;
 - evict unpinned chunks to stay within the configured 40-80 GB or other quota;
 - verify range length and integrity before publication; and
-- apply backpressure when provider throughput cannot keep ahead of playback.
+- apply backpressure when all cache capacity is pinned or reserved.
 
-None of those policies should change PearlFS, PearlNFS, or Plex integration. The same binary will select the policy from configuration.
+The implementation enforces `published chunk bytes + reserved fetch bytes <= quota`, coalesces concurrent misses, atomically publishes verified chunks, restores valid chunks after restart, and evicts least-recently-used unpinned chunks. Read-ahead and adaptive scheduling remain later work. None of these policies change PearlFS, PearlNFS, or Plex integration; the same binary selects the policy from configuration.
 
 ## Direct Play target
 
@@ -76,10 +74,9 @@ SQLite owns catalog metadata only. Cache bytes and the optional FUSE mount live 
 ## Extension roadmap
 
 1. Implement provider-neutral resolver behavior and selection tests.
-2. Add one explicitly authorized ranged acquisition provider.
-3. Implement rolling chunk storage and byte-quota eviction.
-4. Add seek-aware progressive retrieval and read-ahead.
-5. Add bounded next-episode prefetch.
-6. Add optional Prowlarr discovery and additional authorized providers.
+2. Add production authentication to an explicitly authorized ranged acquisition provider.
+3. Add seek-aware read-ahead and adaptive scheduling.
+4. Add bounded next-episode prefetch.
+5. Add optional Prowlarr discovery and additional authorized providers.
 
 Each stage needs its own acceptance evidence. A generic interface alone is not evidence that a provider, rolling cache, or progressive stream works.

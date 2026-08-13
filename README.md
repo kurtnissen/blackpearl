@@ -2,21 +2,21 @@
 
 BlackPearl is an experimental, open-source Go service that exposes a virtual media library through read-only FUSE or NFS filesystem frontends. Milestone 1 is intentionally narrow: prove that Plex can scan and Direct Play a synthetic MP4 without touching an existing Plex, media, download, or `*arr` path.
 
-> Status: FUSE remains available for native Linux. The portable NFS profile is designed for Docker Desktop and mounts into an unmodified Plex container through Docker's built-in local-volume driver. Automated scan and exact-range evidence is separate from the final manual Plex client Direct Play check.
+> Status: FUSE remains available for native Linux. The portable NFS profile is designed for Docker Desktop and mounts into an unmodified Plex container through Docker's built-in local-volume driver. Persistent and quota-bounded rolling storage both work in the same binary. macOS Plex Web playback has been verified in both modes.
 
 ## What exists today
 
 - One Go 1.24+ binary with modular packages for core, state, PearlFS, PearlCache, Plex, resolver, and acquisition contracts.
 - SQLite catalog state and a persistent, content-addressed POC cache.
 - Context-aware arbitrary-offset media reads; callers never receive a cache path.
-- `persistent` and `rolling` configuration modes. Rolling mode validates its quota and then fails explicitly as not configured; it is an architectural seam, not a partial implementation.
+- `persistent` and `rolling` configuration modes. Rolling mode fetches strict HTTP ranges into fixed-size chunks, coalesces misses, and enforces a hard local byte quota with LRU eviction.
 - A generated 8-second H.264/AAC test-pattern MP4 with no third-party media.
-- Docker/Compose files for BlackPearl and an isolated opt-in Plex acceptance container.
+- Docker/Compose files for BlackPearl, a legal range-origin fixture, and isolated opt-in Plex acceptance containers.
 - Unit, integration, safety, and Linux FUSE smoke tests.
 - A portable NFS frontend and macOS Docker Desktop Compose profile that need no
   FUSE mount propagation.
 
-BlackPearl does not yet implement acquisition, progressive retrieval, rolling eviction, Prowlarr, Usenet, TorBox, or any other network provider.
+BlackPearl now proves provider-neutral progressive range retrieval and rolling eviction through a strict HTTP range gateway. It does not yet implement discovery, read-ahead, Prowlarr, Usenet, TorBox, or production provider credentials.
 
 ## Architecture at a glance
 
@@ -25,11 +25,11 @@ Plex -> PearlFS (native Linux) ----+
                                    +-> Core catalog -> MediaSource.ReadAt(ctx, bytes, offset)
 Plex -> PearlNFS (portable Docker) +          |                    |
                                               v                    v
-                                            SQLite       persistent cache (M1)
+                                            SQLite       persistent cache
                                                                 or
-                                                         rolling cache (later)
+                                                      rolling chunk cache
                                                                 |
-                                                         authorized provider
+                                                        RangeSource gateway
 ```
 
 `Media.Size` is the logical size shown to Plex. It does not mean the whole object exists locally. A media record holds a provider/object reference, and the common read handle supports arbitrary offsets. See [docs/architecture.md](docs/architecture.md).
@@ -68,6 +68,21 @@ The scripts launch an isolated official Plex container, create the
 unchanged. Follow [the macOS runbook](docs/macos-plex-poc.md) for the final play,
 seek, and Direct Play dashboard check.
 
+## macOS rolling Plex POC
+
+The rolling profile keeps the complete test MP4 outside BlackPearl and exposes
+the 3.4 MB logical file through a 1 MiB cache:
+
+```bash
+./scripts/setup-rolling-poc.sh
+./scripts/verify-rolling-poc.sh
+open http://localhost:32401/web
+```
+
+The verifier checks source isolation, Plex indexing, exact non-sequential
+ranges, live cache occupancy including temporary fetches, eviction/refetch, and
+Plex's `Direct play OK` decision. See [the rolling runbook](docs/macos-rolling-poc.md).
+
 ## Ubuntu Plex POC
 
 Use a fresh Ubuntu Server and the isolated acceptance stack. Do not point these files at production media or Plex configuration.
@@ -94,7 +109,7 @@ Then open Plex at `http://YOUR_UBUNTU_SERVER_IP:32400/web`, add one Movies libra
 | Mode | Intended deployment | Milestone 1 behavior |
 |---|---|---|
 | `persistent` | Home server with multi-TB storage | Implemented for the local synthetic fixture |
-| `rolling` | Low-compute VPS with roughly 40-80 GB cache | Interfaces/config only; startup returns a clear not-configured error |
+| `rolling` | Low-compute VPS with roughly 40-80 GB cache | Implemented POC with strict range fetching, hard quota, coalescing, restart recovery, and LRU eviction |
 
 Both modes use the same FUSE and range-oriented media-source contract. Plex Direct Play is a primary target for the later rolling deployment.
 
@@ -103,6 +118,7 @@ Both modes use the same FUSE and range-oriented media-source contract. Plex Dire
 - [Architecture](docs/architecture.md)
 - [Ubuntu Plex POC runbook](docs/ubuntu-plex-poc.md)
 - [macOS Docker Desktop Plex POC](docs/macos-plex-poc.md)
+- [macOS rolling-cache Plex POC](docs/macos-rolling-poc.md)
 - [Portable filesystem evaluation](docs/portability-filesystem-evaluation.md)
 - [Acceptance criteria and evidence](docs/acceptance-evidence.md)
 - [Detailed Milestone 1 design](docs/superpowers/specs/2026-08-13-milestone-1-fuse-plex-design.md)
