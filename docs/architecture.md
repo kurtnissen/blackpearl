@@ -37,7 +37,7 @@ The dependency direction is adapter to service to repository/gateway. Core does 
 
 3. PearlFS and PearlNFS forward Plex's offset reads to that handle. Neither inspects cache occupancy or requires a completed object.
 4. The media-source boundary receives the complete catalog record, allowing a future policy to combine logical metadata, cached chunks, and a provider reference.
-5. Acquisition separates discovery from reading. A future opened `RangeSource` can satisfy arbitrary logical offsets without a full download.
+5. Acquisition separates discovery from reading. An opened `RangeSource` can satisfy arbitrary logical offsets without a full download and exposes an immutable version validator used to scope cached chunks.
 6. The filesystem is immutable and reports the logical size to Plex, which allows metadata probes and seeking.
 
 The test suite includes a one-terabyte logical source that generates only requested bytes and successfully serves a read at the end of the object. This is the regression test that prevents a hidden complete-file assumption from returning.

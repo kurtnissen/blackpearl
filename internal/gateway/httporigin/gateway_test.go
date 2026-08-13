@@ -43,6 +43,68 @@ func TestOpenRejectsUnsupportedBacking(t *testing.T) {
 	}
 }
 
+func TestOpenRejectsRedirects(t *testing.T) {
+	t.Parallel()
+	destination := newRangeOrigin(t, []byte("0123456789abcdef"), nil)
+	redirect := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		http.Redirect(writer, request, destination.URL+"/media/movie.mp4", http.StatusFound)
+	}))
+	t.Cleanup(redirect.Close)
+	gateway, err := New(redirect.URL+"/media/", redirect.Client())
+	require.NoError(t, err)
+
+	_, err = gateway.Open(context.Background(), domain.BackingRef{Provider: "http-range", ObjectID: "movie.mp4"})
+
+	require.ErrorContains(t, err, "status 200")
+}
+
+func TestOpenUsesLastModifiedWhenETagIsWeak(t *testing.T) {
+	t.Parallel()
+	var observedIfRange string
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("ETag", `W/"weak"`)
+		writer.Header().Set("Last-Modified", "Thu, 13 Aug 2026 12:00:00 GMT")
+		if request.Method == http.MethodHead {
+			writer.Header().Set("Content-Length", "4")
+			writer.WriteHeader(http.StatusOK)
+			return
+		}
+		observedIfRange = request.Header.Get("If-Range")
+		writer.Header().Set("Content-Range", "bytes 0-3/4")
+		writer.Header().Set("Last-Modified", "Thu, 13 Aug 2026 12:00:00 GMT")
+		writer.WriteHeader(http.StatusPartialContent)
+		_, err := writer.Write([]byte("data"))
+		require.NoError(t, err)
+	}))
+	t.Cleanup(server.Close)
+	gateway, err := New(server.URL+"/media/", server.Client())
+	require.NoError(t, err)
+	opened, err := gateway.Open(context.Background(), domain.BackingRef{Provider: "http-range", ObjectID: "movie.mp4"})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, opened.Close()) })
+
+	_, err = opened.ReadAt(context.Background(), make([]byte, 4), 0)
+
+	require.NoError(t, err)
+	require.Equal(t, "Thu, 13 Aug 2026 12:00:00 GMT", observedIfRange)
+	require.Equal(t, "last-modified:Thu, 13 Aug 2026 12:00:00 GMT", opened.Validator())
+}
+
+func TestOpenRejectsObjectWithoutImmutableValidator(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Length", "4")
+		writer.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+	gateway, err := New(server.URL+"/media/", server.Client())
+	require.NoError(t, err)
+
+	_, err = gateway.Open(context.Background(), domain.BackingRef{Provider: "http-range", ObjectID: "movie.mp4"})
+
+	require.ErrorContains(t, err, "validator")
+}
+
 func TestSourceReadAtReturnsExactRangesAndEOF(t *testing.T) {
 	t.Parallel()
 	origin := newRangeOrigin(t, []byte("0123456789abcdef"), nil)

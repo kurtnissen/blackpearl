@@ -37,7 +37,11 @@ func New(baseURL string, client *http.Client) (*Gateway, error) {
 	if client == nil {
 		return nil, errors.New("range origin HTTP client is required")
 	}
-	return &Gateway{baseURL: parsed, client: client}, nil
+	isolatedClient := *client
+	isolatedClient.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	return &Gateway{baseURL: parsed, client: &isolatedClient}, nil
 }
 
 // Ready verifies that the gateway configuration remains usable by the caller.
@@ -82,12 +86,20 @@ func (g *Gateway) Open(ctx context.Context, backing domain.BackingRef) (_ acquis
 	if response.ContentLength <= 0 {
 		return nil, fmt.Errorf("range metadata requires positive Content-Length: %d", response.ContentLength)
 	}
+	etag := strings.TrimSpace(response.Header.Get("ETag"))
+	if strings.HasPrefix(etag, "W/") {
+		etag = ""
+	}
+	lastModified := strings.TrimSpace(response.Header.Get("Last-Modified"))
+	if etag == "" && lastModified == "" {
+		return nil, errors.New("range metadata requires a strong ETag or Last-Modified validator")
+	}
 	return &Source{
 		client:       g.client,
 		objectURL:    objectURL,
 		size:         response.ContentLength,
-		etag:         response.Header.Get("ETag"),
-		lastModified: response.Header.Get("Last-Modified"),
+		etag:         etag,
+		lastModified: lastModified,
 	}, nil
 }
 
@@ -104,6 +116,17 @@ type Source struct {
 // Size returns the remote object's immutable logical size.
 func (s *Source) Size() int64 {
 	return s.size
+}
+
+// Validator identifies the immutable version opened by this source.
+func (s *Source) Validator() string {
+	if s.etag != "" {
+		return "etag:" + s.etag
+	}
+	if s.lastModified != "" {
+		return "last-modified:" + s.lastModified
+	}
+	return ""
 }
 
 // ReadAt retrieves exactly the requested available HTTP byte range.

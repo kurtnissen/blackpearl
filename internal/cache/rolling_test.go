@@ -106,6 +106,35 @@ func TestRollingSourceReadAtEvictsWithinHardQuotaAndRefetches(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestRollingSourceRejectsChangedObjectValidator(t *testing.T) {
+	t.Parallel()
+	opener := newFakeRangeOpener([]byte("abcdefgh"))
+	source, _ := newRollingSourceForTest(t, opener, 8, 4)
+	handle := openRollingHandle(t, source, 8)
+	opener.setValidator("fake-v2")
+
+	_, err := handle.ReadAt(context.Background(), make([]byte, 4), 0)
+
+	require.ErrorContains(t, err, "validator changed")
+	require.Zero(t, source.Stats().CurrentBytes)
+}
+
+func TestRollingSourceAccountsPublishedChunkWhenRemoteCloseFails(t *testing.T) {
+	t.Parallel()
+	opener := newFakeRangeOpener([]byte("abcdefgh"))
+	source, _ := newRollingSourceForTest(t, opener, 8, 4)
+	handle := openRollingHandle(t, source, 8)
+	opener.setCloseError(errors.New("close failed"))
+
+	_, err := handle.ReadAt(context.Background(), make([]byte, 4), 0)
+
+	require.ErrorContains(t, err, "close remote range source")
+	stats := source.Stats()
+	require.Equal(t, int64(4), stats.CurrentBytes)
+	require.Zero(t, stats.ReservedBytes)
+	require.Equal(t, int64(1), stats.ChunkCount)
+}
+
 func TestRollingHandleRejectsInvalidReadsAndClose(t *testing.T) {
 	t.Parallel()
 	opener := newFakeRangeOpener([]byte("abcdefgh"))
@@ -162,7 +191,7 @@ func TestRollingSourceCancelledWaiterDoesNotAbortSharedFetch(t *testing.T) {
 func TestNewRollingRecoversChunksRemovesTemporaryFilesAndTrimsQuota(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	object := rollingObjectKey("http-range", "movie.mp4")
+	object := rollingObjectKey("http-range", "movie.mp4", "fake-v1")
 	objectDirectory := filepath.Join(root, "rolling", object)
 	require.NoError(t, os.MkdirAll(objectDirectory, 0o750))
 	baseTime := time.Now().Add(-time.Hour)
@@ -234,9 +263,11 @@ func readRollingExact(t *testing.T, handle domain.ReadHandle, offset int64, leng
 }
 
 type fakeRangeOpener struct {
-	content []byte
-	mu      sync.Mutex
-	reads   map[int64]int
+	content   []byte
+	mu        sync.Mutex
+	reads     map[int64]int
+	validator string
+	closeErr  error
 }
 
 type blockingRangeOpener struct {
@@ -262,14 +293,18 @@ func (b *blockingRangeOpener) Open(ctx context.Context, _ domain.BackingRef) (ac
 }
 
 func newFakeRangeOpener(content []byte) *fakeRangeOpener {
-	return &fakeRangeOpener{content: append([]byte(nil), content...), reads: make(map[int64]int)}
+	return &fakeRangeOpener{content: append([]byte(nil), content...), reads: make(map[int64]int), validator: "fake-v1"}
 }
 
 func (f *fakeRangeOpener) Open(ctx context.Context, _ domain.BackingRef) (acquisition.RangeSource, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	return &fakeRangeSource{opener: f, reader: bytes.NewReader(f.content)}, nil
+	f.mu.Lock()
+	validator := f.validator
+	closeErr := f.closeErr
+	f.mu.Unlock()
+	return &fakeRangeSource{opener: f, reader: bytes.NewReader(f.content), validator: validator, closeErr: closeErr}, nil
 }
 
 func (f *fakeRangeOpener) Ready(ctx context.Context) error {
@@ -282,11 +317,25 @@ func (f *fakeRangeOpener) readCount(offset int64) int {
 	return f.reads[offset]
 }
 
+func (f *fakeRangeOpener) setValidator(validator string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.validator = validator
+}
+
+func (f *fakeRangeOpener) setCloseError(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.closeErr = err
+}
+
 type fakeRangeSource struct {
-	opener *fakeRangeOpener
-	reader *bytes.Reader
-	closed bool
-	mu     sync.Mutex
+	opener    *fakeRangeOpener
+	reader    *bytes.Reader
+	validator string
+	closeErr  error
+	closed    bool
+	mu        sync.Mutex
 }
 
 type blockingRangeSource struct {
@@ -310,6 +359,10 @@ func (b *blockingRangeSource) ReadAt(ctx context.Context, destination []byte, of
 
 func (b *blockingRangeSource) Size() int64 {
 	return b.reader.Size()
+}
+
+func (b *blockingRangeSource) Validator() string {
+	return "fake-v1"
 }
 
 func (b *blockingRangeSource) Close() error {
@@ -336,8 +389,8 @@ func (c *observedContext) Err() error {
 	return c.Context.Err()
 }
 
-func rollingObjectKey(provider string, objectID string) string {
-	hash := sha256.Sum256([]byte(provider + "\x00" + objectID))
+func rollingObjectKey(provider string, objectID string, validator string) string {
+	hash := sha256.Sum256([]byte(provider + "\x00" + objectID + "\x00" + validator))
 	return hex.EncodeToString(hash[:])
 }
 
@@ -364,9 +417,13 @@ func (f *fakeRangeSource) Size() int64 {
 	return f.reader.Size()
 }
 
+func (f *fakeRangeSource) Validator() string {
+	return f.validator
+}
+
 func (f *fakeRangeSource) Close() error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.closed = true
-	return nil
+	return f.closeErr
 }

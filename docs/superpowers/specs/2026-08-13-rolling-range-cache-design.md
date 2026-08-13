@@ -100,6 +100,7 @@ The acquisition package keeps the existing random-access source contract:
 type RangeSource interface {
     ReadAt(ctx context.Context, destination []byte, offset int64) (int, error)
     Size() int64
+    Validator() string
     Close() error
 }
 ```
@@ -113,9 +114,11 @@ type RangeOpener interface {
 }
 ```
 
-An opener receives only a validated provider-neutral `BackingRef`. It does not
-receive a local path and does not promise a complete download. Future TorBox or
-other authorized providers can satisfy this boundary without changing either
+An opener receives only a validated provider-neutral `BackingRef`. The
+validator identifies the immutable object version and scopes cached chunks so
+bytes from different versions cannot be combined. It does not receive a local
+path and does not promise a complete download. Future TorBox or other
+authorized providers can satisfy this boundary without changing either
 filesystem frontend.
 
 ## Explicit HTTP Range gateway
@@ -130,6 +133,10 @@ Opening an object performs a bounded metadata request and records:
 - logical `Content-Length`;
 - a strong `ETag` when supplied; and
 - `Last-Modified` only as a weaker fallback validator.
+
+Objects without either a strong ETag or Last-Modified value are rejected.
+Redirects are not followed, so a configured origin cannot silently move reads
+to another host.
 
 Each `ReadAt` sends `Range: bytes=start-end`. A valid response must be HTTP 206,
 must contain an exact `Content-Range`, and must return exactly the expected

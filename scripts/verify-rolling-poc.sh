@@ -54,6 +54,16 @@ for video in root.findall("Video"):
         break
 ' <<<"${catalog}")"
 test -n "${part_key}"
+rating_key="$(python3 -c '
+import sys
+import xml.etree.ElementTree as ET
+root = ET.fromstring(sys.stdin.read())
+for video in root.findall("Video"):
+    if video.get("title") == "BlackPearl POC":
+        print(video.get("ratingKey", ""))
+        break
+' <<<"${catalog}")"
+test -n "${rating_key}"
 
 temporary_directory="$(mktemp -d)"
 cleanup() { rm -rf -- "${temporary_directory}"; }
@@ -90,10 +100,29 @@ cache_bytes="$(cache_usage)"
 if (( cache_bytes > max_cache_bytes )); then max_cache_bytes=${cache_bytes}; fi
 test "${max_cache_bytes}" -le "${quota}"
 
+plex_log='/config/Library/Application Support/Plex Media Server/Logs/Plex Media Server.log'
+direct_play_log_offset="$("${compose[@]}" exec -T plex sh -eu -c 'wc -c < "$1"' verify "${plex_log}")"
+curl --fail --silent --show-error "${headers[@]}" --get \
+	-H 'X-Plex-Client-Identifier: blackpearl-rolling-acceptance' \
+	-H 'X-Plex-Product: Plex Web' \
+	-H 'X-Plex-Version: 4.156.0' \
+	-H 'X-Plex-Platform: Chrome' \
+	--data-urlencode 'hasMDE=1' \
+	--data-urlencode "path=/library/metadata/${rating_key}" \
+	--data-urlencode 'mediaIndex=0' \
+	--data-urlencode 'partIndex=0' \
+	--data-urlencode 'protocol=hls' \
+	--data-urlencode 'fastSeek=1' \
+	--data-urlencode 'directPlay=1' \
+	--data-urlencode 'directStream=1' \
+	--data-urlencode 'directStreamAudio=1' \
+	--data-urlencode 'location=lan' \
+	--data-urlencode 'session=blackpearl-rolling-acceptance' \
+	--data-urlencode 'subtitles=burn' \
+	"${plex_url}/video/:/transcode/universal/decision" >/dev/null
 "${compose[@]}" exec -T plex sh -eu -c '
-  log="/config/Library/Application Support/Plex Media Server/Logs/Plex Media Server.log"
-  grep -Eq "MDE=1000,Direct play OK.*decision=direct play" "${log}"
-'
+  tail -c "+$(( $1 + 1 ))" "$2" | grep -Eq "MDE=1000,Direct play OK.*decision=direct play"
+' verify "${direct_play_log_offset}" "${plex_log}"
 evicted_index="$("${compose[@]}" exec -T blackpearl sh -eu -c '
   cached="$(find /var/lib/blackpearl/cache/rolling -type f -name "*.chunk" -exec basename {} .chunk \; | sed "s/^0*//" | sed "s/^$/0/" | sort -n)"
   index=0

@@ -46,5 +46,6 @@ type Candidate struct {
 type RangeSource interface {
 	ReadAt(ctx context.Context, destination []byte, offset int64) (int, error)
 	Size() int64
+	Validator() string
 	Close() error
 }

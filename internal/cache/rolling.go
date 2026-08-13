@@ -148,7 +148,7 @@ func (s *RollingSource) Open(ctx context.Context, media domain.Media) (_ domain.
 			closeErr,
 		)
 	}
-	return &rollingHandle{owner: s, media: media, remote: remote}, nil
+	return &rollingHandle{owner: s, media: media, remote: remote, validator: remote.Validator()}, nil
 }
 
 // Ready verifies the rolling directory and configured range opener.
@@ -189,6 +189,7 @@ type rollingHandle struct {
 	owner     *RollingSource
 	media     domain.Media
 	remote    acquisition.RangeSource
+	validator string
 	closed    atomic.Bool
 	closeOnce sync.Once
 	closeErr  error
@@ -230,7 +231,7 @@ func (h *rollingHandle) ReadAt(ctx context.Context, destination []byte, offset i
 		if remaining := wanted - int64(written); copyLength > remaining {
 			copyLength = remaining
 		}
-		entry, err := h.owner.acquireChunk(ctx, h.media.Backing, h.media.Size, chunkIndex, chunkLength)
+		entry, err := h.owner.acquireChunk(ctx, h.media.Backing, h.validator, h.media.Size, chunkIndex, chunkLength)
 		if err != nil {
 			return written, err
 		}
@@ -258,11 +259,12 @@ func (h *rollingHandle) Close() error {
 func (s *RollingSource) acquireChunk(
 	ctx context.Context,
 	backing domain.BackingRef,
+	validator string,
 	logicalSize int64,
 	index int64,
 	expected int64,
 ) (*chunkEntry, error) {
-	key := chunkKey{object: objectCacheKey(backing), index: index}
+	key := chunkKey{object: objectCacheKey(backing, validator), index: index}
 	for {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -308,7 +310,7 @@ func (s *RollingSource) acquireChunk(
 		s.inflight[key] = call
 		s.misses++
 		s.mu.Unlock()
-		go s.runFetch(call, key, backing, logicalSize, index*s.options.ChunkBytes, expected)
+		go s.runFetch(call, key, backing, validator, logicalSize, index*s.options.ChunkBytes, expected)
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
@@ -359,6 +361,7 @@ func (s *RollingSource) runFetch(
 	call *fetchCall,
 	key chunkKey,
 	backing domain.BackingRef,
+	validator string,
 	logicalSize int64,
 	offset int64,
 	expected int64,
@@ -369,17 +372,22 @@ func (s *RollingSource) runFetch(
 	if err == nil && remote.Size() != logicalSize {
 		err = fmt.Errorf("rolling source size changed: catalog=%d provider=%d", logicalSize, remote.Size())
 	}
+	if err == nil && remote.Validator() != validator {
+		err = fmt.Errorf("rolling source validator changed: opened=%q provider=%q", validator, remote.Validator())
+	}
 	var entry *chunkEntry
 	if err == nil {
 		entry, err = s.fetchChunk(fetchContext, remote, key, offset, expected)
 	}
 	if remote != nil {
-		err = errors.Join(err, remote.Close())
+		if closeErr := remote.Close(); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("close remote range source: %w", closeErr))
+		}
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.reserved -= expected
-	if err == nil {
+	if entry != nil {
 		s.current += expected
 		s.fetches++
 		s.tick++
@@ -571,8 +579,8 @@ func readChunk(path string, destination []byte, offset int64) (count int, readEr
 	return count, err
 }
 
-func objectCacheKey(backing domain.BackingRef) string {
-	hash := sha256.Sum256([]byte(backing.Provider + "\x00" + backing.ObjectID))
+func objectCacheKey(backing domain.BackingRef, validator string) string {
+	hash := sha256.Sum256([]byte(backing.Provider + "\x00" + backing.ObjectID + "\x00" + validator))
 	return hex.EncodeToString(hash[:])
 }
 

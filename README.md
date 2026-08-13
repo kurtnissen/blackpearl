@@ -8,7 +8,7 @@ BlackPearl is an experimental, open-source Go service that exposes a virtual med
 
 - One Go 1.24+ binary with modular packages for core, state, PearlFS, PearlCache, Plex, resolver, and acquisition contracts.
 - SQLite catalog state and a persistent, content-addressed POC cache.
-- Context-aware arbitrary-offset media reads; callers never receive a cache path.
+- Context-aware arbitrary-offset media reads with immutable version validators; callers never receive a cache path.
 - `persistent` and `rolling` configuration modes. Rolling mode fetches strict HTTP ranges into fixed-size chunks, coalesces misses, and enforces a hard local byte quota with LRU eviction.
 - A generated 8-second H.264/AAC test-pattern MP4 with no third-party media.
 - Docker/Compose files for BlackPearl, a legal range-origin fixture, and isolated opt-in Plex acceptance containers.
