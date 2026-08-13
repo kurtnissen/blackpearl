@@ -56,6 +56,25 @@ func (c *Catalog) ImportPOC(ctx context.Context, source string) (domain.Media, e
 	if err != nil {
 		return domain.Media{}, fmt.Errorf("import POC fixture: %w", err)
 	}
+	return c.persistPOC(ctx, backing, size)
+}
+
+// RegisterPOC persists the legal synthetic fixture as remote logical media
+// without importing any source bytes into the local cache.
+func (c *Catalog) RegisterPOC(ctx context.Context, backing domain.BackingRef, size int64) (domain.Media, error) {
+	ctx, span := otel.Tracer("blackpearl/core").Start(ctx, "catalog.register_poc")
+	defer span.End()
+	if size <= 0 {
+		return domain.Media{}, fmt.Errorf("POC logical size must be positive: %d", size)
+	}
+	validated, err := domain.NewBackingRef(backing.Provider, backing.ObjectID)
+	if err != nil {
+		return domain.Media{}, fmt.Errorf("validate POC backing: %w", err)
+	}
+	return c.persistPOC(ctx, validated, size)
+}
+
+func (c *Catalog) persistPOC(ctx context.Context, backing domain.BackingRef, size int64) (domain.Media, error) {
 	media, err := domain.NewMovie(pocID, pocTitle, pocYear, pocExtension, size, backing)
 	if err != nil {
 		return domain.Media{}, fmt.Errorf("construct POC media: %w", err)

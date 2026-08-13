@@ -57,6 +57,62 @@ func TestImportPOCWrapsPersistenceFailure(t *testing.T) {
 	require.ErrorContains(t, err, "persist POC media")
 }
 
+func TestRegisterPOCPersistsRemoteLogicalMediaWithoutImporting(t *testing.T) {
+	t.Parallel()
+	repository := &fakeRepository{}
+	cacheStore := &fakeCache{}
+	catalog := core.NewCatalog(repository, cacheStore, cacheStore)
+	backing, err := domain.NewBackingRef("http-range", "blackpearl-poc.mp4")
+	require.NoError(t, err)
+
+	media, err := catalog.RegisterPOC(context.Background(), backing, 3_417_699)
+
+	require.NoError(t, err)
+	require.Equal(t, domain.MediaID("blackpearl-poc-2026"), media.ID)
+	require.Equal(t, "Movies/BlackPearl POC (2026)/BlackPearl POC (2026).mp4", media.VirtualPath)
+	require.Equal(t, int64(3_417_699), media.Size)
+	require.Equal(t, backing, media.Backing)
+	require.Equal(t, media, repository.upserted)
+	require.Zero(t, cacheStore.importCalls)
+}
+
+func TestRegisterPOCRejectsInvalidRemoteMetadataWithoutPersisting(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		backing domain.BackingRef
+		size    int64
+		message string
+	}{
+		{
+			name:    "non-positive size",
+			backing: domain.BackingRef{Provider: "http-range", ObjectID: "blackpearl-poc.mp4"},
+			size:    0,
+			message: "logical size",
+		},
+		{
+			name:    "invalid backing",
+			backing: domain.BackingRef{Provider: "HTTP Range", ObjectID: "blackpearl-poc.mp4"},
+			size:    3_417_699,
+			message: "backing",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			repository := &fakeRepository{}
+			cacheStore := &fakeCache{}
+			catalog := core.NewCatalog(repository, cacheStore, cacheStore)
+
+			_, err := catalog.RegisterPOC(context.Background(), test.backing, test.size)
+
+			require.ErrorContains(t, err, test.message)
+			require.Empty(t, repository.upserted.ID)
+			require.Zero(t, cacheStore.importCalls)
+		})
+	}
+}
+
 func TestListWrapsRepositoryFailure(t *testing.T) {
 	t.Parallel()
 	catalog := core.NewCatalog(&fakeRepository{listErr: errors.New("database unavailable")}, &fakeCache{}, &fakeCache{})
@@ -220,9 +276,11 @@ type fakeCache struct {
 	openErr        error
 	readyCalled    bool
 	readyErr       error
+	importCalls    int
 }
 
 func (f *fakeCache) Import(_ context.Context, source string) (domain.BackingRef, int64, error) {
+	f.importCalls++
 	f.importedSource = source
 	return f.importBacking, f.importSize, f.importErr
 }
