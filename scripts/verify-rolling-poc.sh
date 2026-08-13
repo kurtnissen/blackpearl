@@ -58,6 +58,13 @@ test -n "${part_key}"
 temporary_directory="$(mktemp -d)"
 cleanup() { rm -rf -- "${temporary_directory}"; }
 trap cleanup EXIT
+
+cache_usage() {
+  "${compose[@]}" exec -T blackpearl sh -eu -c '
+    find /var/lib/blackpearl/cache/rolling -type f \( -name "*.chunk" -o -name ".fetch-*" \) -exec stat -c %s {} + 2>/dev/null | awk "{total += \$1} END {print total + 0}"
+  '
+}
+
 for start in 0 1310720 3145728; do
   end=$((start + 65535))
   if (( end >= logical_size )); then end=$((logical_size - 1)); fi
@@ -69,11 +76,24 @@ for start in 0 1310720 3145728; do
   cmp "${temporary_directory}/origin-${start}.bin" "${temporary_directory}/plex-${start}.bin"
 done
 
-curl --fail --silent --show-error "${headers[@]}" "${plex_url}${part_key}" -o /dev/null
-cache_bytes="$("${compose[@]}" exec -T blackpearl sh -eu -c '
-  find /var/lib/blackpearl/cache/rolling -type f \( -name "*.chunk" -o -name ".fetch-*" \) -exec stat -c %s {} + 2>/dev/null | awk "{total += \$1} END {print total + 0}"
-')"
-test "${cache_bytes}" -le "${quota}"
+curl --fail --silent --show-error "${headers[@]}" "${plex_url}${part_key}" -o /dev/null &
+stream_pid=$!
+max_cache_bytes=0
+while kill -0 "${stream_pid}" 2>/dev/null; do
+  cache_bytes="$(cache_usage)"
+  if (( cache_bytes > max_cache_bytes )); then max_cache_bytes=${cache_bytes}; fi
+  test "${cache_bytes}" -le "${quota}"
+  sleep 0.05
+done
+wait "${stream_pid}"
+cache_bytes="$(cache_usage)"
+if (( cache_bytes > max_cache_bytes )); then max_cache_bytes=${cache_bytes}; fi
+test "${max_cache_bytes}" -le "${quota}"
+
+"${compose[@]}" exec -T plex sh -eu -c '
+  log="/config/Library/Application Support/Plex Media Server/Logs/Plex Media Server.log"
+  grep -Eq "MDE=1000,Direct play OK.*decision=direct play" "${log}"
+'
 evicted_index="$("${compose[@]}" exec -T blackpearl sh -eu -c '
   cached="$(find /var/lib/blackpearl/cache/rolling -type f -name "*.chunk" -exec basename {} .chunk \; | sed "s/^0*//" | sed "s/^$/0/" | sort -n)"
   index=0
@@ -109,3 +129,4 @@ printf 'rolling_plex_catalog_scan=PASS\n'
 printf 'rolling_nonsequential_ranges=PASS\n'
 printf 'rolling_cache_quota=PASS\n'
 printf 'rolling_evicted_range_refetch=PASS\n'
+printf 'rolling_plex_direct_play_decision=PASS\n'

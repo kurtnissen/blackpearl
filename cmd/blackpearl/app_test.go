@@ -38,6 +38,7 @@ func TestRunImportsPOCAndUnmountsOnCancellation(t *testing.T) {
 		listen: net.Listen,
 	}
 	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
 	result := make(chan error, 1)
 
 	go func() {
@@ -122,6 +123,7 @@ func TestRunStartsNFSWithoutInvokingFUSEAndStopsOnCancellation(t *testing.T) {
 		listen: net.Listen,
 	}
 	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
 	result := make(chan error, 1)
 	go func() {
 		result <- run(ctx, cfg, testLogger(), deps)
