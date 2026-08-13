@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -81,15 +82,79 @@ func TestRunCleansDatabaseWhenMountFails(t *testing.T) {
 
 func testConfig(root string, source string) config.Config {
 	return config.Config{
-		DataDir:     filepath.Join(root, "data"),
-		DBPath:      filepath.Join(root, "data", "blackpearl.db"),
-		CacheDir:    filepath.Join(root, "data", "cache"),
-		MountPath:   filepath.Join(root, "mount"),
-		POCSource:   source,
-		HTTPAddr:    "127.0.0.1:0",
-		LogLevel:    "debug",
-		StorageMode: domain.StorageModePersistent,
+		DataDir:        filepath.Join(root, "data"),
+		DBPath:         filepath.Join(root, "data", "blackpearl.db"),
+		CacheDir:       filepath.Join(root, "data", "cache"),
+		MountPath:      filepath.Join(root, "mount"),
+		POCSource:      source,
+		HTTPAddr:       "127.0.0.1:0",
+		LogLevel:       "debug",
+		StorageMode:    domain.StorageModePersistent,
+		FilesystemMode: "fuse",
+		NFSAddr:        "127.0.0.1:0",
 	}
+}
+
+func TestRunStartsNFSWithoutInvokingFUSEAndStopsOnCancellation(t *testing.T) {
+	root := t.TempDir()
+	source := filepath.Join(root, "fixture.mp4")
+	require.NoError(t, os.WriteFile(source, []byte("synthetic-video"), 0o600))
+	cfg := testConfig(root, source)
+	cfg.FilesystemMode = "nfs"
+	started := make(chan struct{})
+	nfs := &fakeNFSServer{address: fakeAddress("127.0.0.1:2049")}
+	var fuseCalled atomic.Bool
+	deps := dependencies{
+		mount: func(context.Context, string, *pearlfs.Root) (mountServer, error) {
+			fuseCalled.Store(true)
+			return nil, errors.New("FUSE must not start in NFS mode")
+		},
+		serveNFS: func(_ context.Context, address string, catalog nfsCatalog) (nfsServer, error) {
+			require.Equal(t, cfg.NFSAddr, address)
+			require.NotNil(t, catalog)
+			close(started)
+			return nfs, nil
+		},
+		listen: net.Listen,
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		result <- run(ctx, cfg, testLogger(), deps)
+	}()
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("service did not start NFS")
+	}
+	cancel()
+
+	require.NoError(t, <-result)
+	require.False(t, fuseCalled.Load())
+	require.True(t, nfs.closed)
+	require.True(t, nfs.waited)
+	_, err := os.Stat(cfg.MountPath)
+	require.ErrorIs(t, err, os.ErrNotExist)
+}
+
+func TestRunCleansDatabaseWhenNFSStartFails(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	source := filepath.Join(root, "fixture.mp4")
+	require.NoError(t, os.WriteFile(source, []byte("synthetic-video"), 0o600))
+	cfg := testConfig(root, source)
+	cfg.FilesystemMode = "nfs"
+	deps := defaultDependencies()
+	deps.serveNFS = func(context.Context, string, nfsCatalog) (nfsServer, error) {
+		return nil, errors.New("NFS unavailable")
+	}
+
+	err := run(context.Background(), cfg, testLogger(), deps)
+
+	require.ErrorContains(t, err, "start PearlNFS")
+	repository, reopenErr := state.Open(context.Background(), cfg.DBPath)
+	require.NoError(t, reopenErr)
+	require.NoError(t, repository.Close())
 }
 
 func TestRunRejectsRollingModeBeforeCreatingRuntimePaths(t *testing.T) {
@@ -205,6 +270,7 @@ func TestDefaultDependenciesAreComplete(t *testing.T) {
 	deps := defaultDependencies()
 
 	require.NotNil(t, deps.mount)
+	require.NotNil(t, deps.serveNFS)
 	require.NotNil(t, deps.listen)
 	require.NotNil(t, deps.httpClient)
 }
@@ -259,6 +325,36 @@ func (f *fakeMountServer) Wait() {}
 type fakeReadyCatalog struct {
 	err    error
 	called bool
+}
+
+type fakeNFSServer struct {
+	address net.Addr
+	closed  bool
+	waited  bool
+}
+
+func (f *fakeNFSServer) Addr() net.Addr {
+	return f.address
+}
+
+func (f *fakeNFSServer) Close() error {
+	f.closed = true
+	return nil
+}
+
+func (f *fakeNFSServer) Wait() error {
+	f.waited = true
+	return nil
+}
+
+type fakeAddress string
+
+func (a fakeAddress) Network() string {
+	return "tcp"
+}
+
+func (a fakeAddress) String() string {
+	return string(a)
 }
 
 func (f *fakeReadyCatalog) Ready(context.Context) error {

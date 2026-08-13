@@ -17,6 +17,7 @@ import (
 	"github.com/blackpearl-media/blackpearl/internal/domain"
 	"github.com/blackpearl-media/blackpearl/internal/httpserver"
 	"github.com/blackpearl-media/blackpearl/internal/pearlfs"
+	"github.com/blackpearl-media/blackpearl/internal/pearlnfs"
 	"github.com/blackpearl-media/blackpearl/internal/plex"
 	"github.com/blackpearl-media/blackpearl/internal/state"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
@@ -27,8 +28,17 @@ type mountServer interface {
 	Wait()
 }
 
+type nfsCatalog = pearlnfs.Catalog
+
+type nfsServer interface {
+	Addr() net.Addr
+	Close() error
+	Wait() error
+}
+
 type dependencies struct {
 	mount      func(context.Context, string, *pearlfs.Root) (mountServer, error)
+	serveNFS   func(context.Context, string, nfsCatalog) (nfsServer, error)
 	listen     func(network string, address string) (net.Listener, error)
 	httpClient *http.Client
 }
@@ -37,6 +47,13 @@ func defaultDependencies() dependencies {
 	return dependencies{
 		mount: func(ctx context.Context, mountPath string, root *pearlfs.Root) (mountServer, error) {
 			return pearlfs.Mount(ctx, mountPath, root)
+		},
+		serveNFS: func(ctx context.Context, address string, catalog nfsCatalog) (nfsServer, error) {
+			filesystem, err := pearlnfs.New(ctx, catalog)
+			if err != nil {
+				return nil, err
+			}
+			return pearlnfs.Start(ctx, address, filesystem)
 		},
 		listen: net.Listen,
 		httpClient: &http.Client{
@@ -54,8 +71,17 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger, deps depen
 	default:
 		return fmt.Errorf("unsupported storage mode: %q", cfg.StorageMode)
 	}
-	if deps.mount == nil {
-		return errors.New("mount dependency is required")
+	switch cfg.FilesystemMode {
+	case "fuse":
+		if deps.mount == nil {
+			return errors.New("mount dependency is required")
+		}
+	case "nfs":
+		if deps.serveNFS == nil {
+			return errors.New("NFS server dependency is required")
+		}
+	default:
+		return fmt.Errorf("unsupported filesystem mode: %q", cfg.FilesystemMode)
 	}
 	if deps.listen == nil {
 		return errors.New("listener dependency is required")
@@ -63,7 +89,11 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger, deps depen
 	if deps.httpClient == nil {
 		deps.httpClient = defaultDependencies().httpClient
 	}
-	for _, directory := range []string{cfg.DataDir, cfg.CacheDir, cfg.MountPath} {
+	directories := []string{cfg.DataDir, cfg.CacheDir}
+	if cfg.FilesystemMode == "fuse" {
+		directories = append(directories, cfg.MountPath)
+	}
+	for _, directory := range directories {
 		if err := os.MkdirAll(directory, 0o750); err != nil {
 			return fmt.Errorf("create service directory %s: %w", directory, err)
 		}
@@ -88,20 +118,40 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger, deps depen
 		}
 		logger.InfoContext(ctx, "imported POC fixture", "mediaId", media.ID, "virtualPath", media.VirtualPath, "sizeBytes", media.Size)
 	}
-	root, err := pearlfs.New(ctx, catalog)
-	if err != nil {
-		return err
-	}
-	fuseServer, err := deps.mount(ctx, cfg.MountPath, root)
-	if err != nil {
-		return fmt.Errorf("mount PearlFS: %w", err)
+	var stopFilesystem func() error
+	var waitFilesystem func() error
+	var filesystemEndpoint string
+	switch cfg.FilesystemMode {
+	case "fuse":
+		root, rootErr := pearlfs.New(ctx, catalog)
+		if rootErr != nil {
+			return rootErr
+		}
+		fuseServer, mountErr := deps.mount(ctx, cfg.MountPath, root)
+		if mountErr != nil {
+			return fmt.Errorf("mount PearlFS: %w", mountErr)
+		}
+		stopFilesystem = fuseServer.Unmount
+		waitFilesystem = func() error {
+			fuseServer.Wait()
+			return nil
+		}
+		filesystemEndpoint = cfg.MountPath
+	case "nfs":
+		server, startErr := deps.serveNFS(ctx, cfg.NFSAddr, catalog)
+		if startErr != nil {
+			return fmt.Errorf("start PearlNFS: %w", startErr)
+		}
+		stopFilesystem = server.Close
+		waitFilesystem = server.Wait
+		filesystemEndpoint = server.Addr().String()
 	}
 	defer func() {
-		unmountErr := fuseServer.Unmount()
-		if unmountErr == nil {
-			fuseServer.Wait()
+		stopErr := stopFilesystem()
+		if stopErr == nil {
+			runErr = errors.Join(runErr, waitFilesystem())
 		} else {
-			runErr = errors.Join(runErr, fmt.Errorf("unmount PearlFS: %w", unmountErr))
+			runErr = errors.Join(runErr, fmt.Errorf("stop %s filesystem: %w", cfg.FilesystemMode, stopErr))
 		}
 	}()
 
@@ -128,7 +178,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger, deps depen
 			runErr = errors.Join(runErr, fmt.Errorf("shut down diagnostics HTTP: %w", err))
 		}
 	}()
-	logger.InfoContext(ctx, "BlackPearl ready", "httpAddress", listener.Addr().String(), "mountPath", cfg.MountPath)
+	logger.InfoContext(ctx, "BlackPearl ready", "httpAddress", listener.Addr().String(), "filesystemMode", cfg.FilesystemMode, "filesystemEndpoint", filesystemEndpoint)
 
 	if cfg.Plex.Enabled() {
 		gateway, gatewayErr := plex.New(cfg.Plex.URL, cfg.Plex.Token, cfg.Plex.SectionID, deps.httpClient)
