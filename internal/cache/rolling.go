@@ -9,6 +9,10 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -18,6 +22,11 @@ import (
 )
 
 const rollingDirectory = "rolling"
+
+var (
+	rollingObjectPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
+	rollingChunkPattern  = regexp.MustCompile(`^([0-9]{16})\.chunk$`)
+)
 
 // RangeOpener opens provider-neutral remote objects for exact reads.
 type RangeOpener interface {
@@ -55,6 +64,8 @@ type RollingSource struct {
 
 	mu        sync.Mutex
 	chunks    map[chunkKey]*chunkEntry
+	inflight  map[chunkKey]*fetchCall
+	notify    chan struct{}
 	current   int64
 	reserved  int64
 	highWater int64
@@ -75,6 +86,11 @@ type chunkEntry struct {
 	size       int64
 	pins       int64
 	lastAccess uint64
+}
+
+type fetchCall struct {
+	done chan struct{}
+	err  error
 }
 
 // NewRolling creates a rolling cache rooted at an explicit absolute path.
@@ -101,13 +117,19 @@ func NewRolling(ctx context.Context, options RollingOptions, opener RangeOpener)
 	if err := os.MkdirAll(root, 0o750); err != nil {
 		return nil, fmt.Errorf("create rolling cache root: %w", err)
 	}
-	return &RollingSource{
+	result := &RollingSource{
 		lifecycle: ctx,
 		options:   options,
 		opener:    opener,
 		root:      root,
 		chunks:    make(map[chunkKey]*chunkEntry),
-	}, nil
+		inflight:  make(map[chunkKey]*fetchCall),
+		notify:    make(chan struct{}),
+	}
+	if err := result.recoverChunks(); err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 // Open creates a logical read handle without downloading the complete object.
@@ -208,7 +230,7 @@ func (h *rollingHandle) ReadAt(ctx context.Context, destination []byte, offset i
 		if remaining := wanted - int64(written); copyLength > remaining {
 			copyLength = remaining
 		}
-		entry, err := h.owner.acquireChunk(ctx, h.remote, h.media.Backing, chunkIndex, chunkLength)
+		entry, err := h.owner.acquireChunk(ctx, h.media.Backing, h.media.Size, chunkIndex, chunkLength)
 		if err != nil {
 			return written, err
 		}
@@ -235,51 +257,77 @@ func (h *rollingHandle) Close() error {
 
 func (s *RollingSource) acquireChunk(
 	ctx context.Context,
-	remote acquisition.RangeSource,
 	backing domain.BackingRef,
+	logicalSize int64,
 	index int64,
 	expected int64,
 ) (*chunkEntry, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
 	key := chunkKey{object: objectCacheKey(backing), index: index}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if entry, ok := s.chunks[key]; ok {
-		s.tick++
-		entry.lastAccess = s.tick
-		entry.pins++
-		s.hits++
-		return entry, nil
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		s.mu.Lock()
+		if entry, ok := s.chunks[key]; ok {
+			s.tick++
+			entry.lastAccess = s.tick
+			entry.pins++
+			s.hits++
+			s.mu.Unlock()
+			return entry, nil
+		}
+		if call, ok := s.inflight[key]; ok {
+			done := call.done
+			s.mu.Unlock()
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-done:
+				if call.err != nil {
+					return nil, call.err
+				}
+				continue
+			}
+		}
+		reserved, err := s.tryReserveLocked(expected)
+		if err != nil {
+			s.mu.Unlock()
+			return nil, err
+		}
+		if !reserved {
+			notify := s.notify
+			s.mu.Unlock()
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-notify:
+				continue
+			}
+		}
+		call := &fetchCall{done: make(chan struct{})}
+		s.inflight[key] = call
+		s.misses++
+		s.mu.Unlock()
+		go s.runFetch(call, key, backing, logicalSize, index*s.options.ChunkBytes, expected)
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-call.done:
+			if call.err != nil {
+				return nil, call.err
+			}
+		}
 	}
-	s.misses++
-	if err := s.reserveLocked(expected); err != nil {
-		return nil, err
-	}
-	entry, err := s.fetchChunkLocked(ctx, remote, key, index*s.options.ChunkBytes, expected)
-	if err != nil {
-		s.reserved -= expected
-		return nil, err
-	}
-	s.reserved -= expected
-	s.current += expected
-	s.fetches++
-	s.tick++
-	entry.lastAccess = s.tick
-	entry.pins = 1
-	s.chunks[key] = entry
-	return entry, nil
 }
 
-func (s *RollingSource) reserveLocked(expected int64) error {
+func (s *RollingSource) tryReserveLocked(expected int64) (bool, error) {
 	for s.current+s.reserved+expected > s.options.MaxBytes {
 		key, entry, found := s.oldestUnpinnedLocked()
 		if !found {
-			return errors.New("rolling cache capacity is pinned")
+			return false, nil
 		}
 		if err := os.Remove(entry.path); err != nil {
-			return fmt.Errorf("evict rolling chunk: %w", err)
+			return false, fmt.Errorf("evict rolling chunk: %w", err)
 		}
 		delete(s.chunks, key)
 		s.current -= entry.size
@@ -289,7 +337,7 @@ func (s *RollingSource) reserveLocked(expected int64) error {
 	if usage := s.current + s.reserved; usage > s.highWater {
 		s.highWater = usage
 	}
-	return nil
+	return true, nil
 }
 
 func (s *RollingSource) oldestUnpinnedLocked() (chunkKey, *chunkEntry, bool) {
@@ -307,7 +355,44 @@ func (s *RollingSource) oldestUnpinnedLocked() (chunkKey, *chunkEntry, bool) {
 	return selectedKey, selected, selected != nil
 }
 
-func (s *RollingSource) fetchChunkLocked(
+func (s *RollingSource) runFetch(
+	call *fetchCall,
+	key chunkKey,
+	backing domain.BackingRef,
+	logicalSize int64,
+	offset int64,
+	expected int64,
+) {
+	fetchContext, cancel := context.WithTimeout(s.lifecycle, s.options.FetchTimeout)
+	defer cancel()
+	remote, err := s.opener.Open(fetchContext, backing)
+	if err == nil && remote.Size() != logicalSize {
+		err = fmt.Errorf("rolling source size changed: catalog=%d provider=%d", logicalSize, remote.Size())
+	}
+	var entry *chunkEntry
+	if err == nil {
+		entry, err = s.fetchChunk(fetchContext, remote, key, offset, expected)
+	}
+	if remote != nil {
+		err = errors.Join(err, remote.Close())
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.reserved -= expected
+	if err == nil {
+		s.current += expected
+		s.fetches++
+		s.tick++
+		entry.lastAccess = s.tick
+		s.chunks[key] = entry
+	}
+	call.err = err
+	delete(s.inflight, key)
+	close(call.done)
+	s.signalLocked()
+}
+
+func (s *RollingSource) fetchChunk(
 	ctx context.Context,
 	remote acquisition.RangeSource,
 	key chunkKey,
@@ -330,9 +415,7 @@ func (s *RollingSource) fetchChunkLocked(
 		}
 	}()
 	buffer := make([]byte, expected)
-	fetchContext, cancel := context.WithTimeout(ctx, s.options.FetchTimeout)
-	count, readErr := remote.ReadAt(fetchContext, buffer, offset)
-	cancel()
+	count, readErr := remote.ReadAt(ctx, buffer, offset)
 	if readErr != nil && !(errors.Is(readErr, io.EOF) && int64(count) == expected) {
 		closeErr := temporary.Close()
 		return nil, errors.Join(fmt.Errorf("fetch rolling range at %d: %w", offset, readErr), closeErr)
@@ -357,12 +440,19 @@ func (s *RollingSource) fetchChunkLocked(
 		return nil, fmt.Errorf("publish rolling chunk: %w", err)
 	}
 	keepTemporary = false
+	keepDestination := false
+	defer func() {
+		if !keepDestination {
+			fetchErr = errors.Join(fetchErr, os.Remove(destination))
+		}
+	}()
 	if err := os.Chmod(destination, 0o640); err != nil {
 		return nil, fmt.Errorf("set rolling chunk permissions: %w", err)
 	}
 	if err := syncDirectory(objectDirectory); err != nil {
 		return nil, err
 	}
+	keepDestination = true
 	return &chunkEntry{path: destination, size: expected}, nil
 }
 
@@ -370,6 +460,91 @@ func (s *RollingSource) releaseChunk(entry *chunkEntry) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	entry.pins--
+	s.signalLocked()
+}
+
+func (s *RollingSource) signalLocked() {
+	close(s.notify)
+	s.notify = make(chan struct{})
+}
+
+type recoveredChunk struct {
+	key      chunkKey
+	entry    *chunkEntry
+	modified time.Time
+}
+
+func (s *RollingSource) recoverChunks() error {
+	objectDirectories, err := os.ReadDir(s.root)
+	if err != nil {
+		return fmt.Errorf("read rolling cache root: %w", err)
+	}
+	var recovered []recoveredChunk
+	for _, objectDirectory := range objectDirectories {
+		if !objectDirectory.IsDir() || !rollingObjectPattern.MatchString(objectDirectory.Name()) {
+			return fmt.Errorf("unexpected entry in rolling cache root: %q", objectDirectory.Name())
+		}
+		objectPath := filepath.Join(s.root, objectDirectory.Name())
+		entries, readErr := os.ReadDir(objectPath)
+		if readErr != nil {
+			return fmt.Errorf("read rolling object directory: %w", readErr)
+		}
+		for _, entry := range entries {
+			entryPath := filepath.Join(objectPath, entry.Name())
+			if strings.HasPrefix(entry.Name(), ".fetch-") {
+				if removeErr := os.Remove(entryPath); removeErr != nil {
+					return fmt.Errorf("remove abandoned rolling fetch: %w", removeErr)
+				}
+				continue
+			}
+			matches := rollingChunkPattern.FindStringSubmatch(entry.Name())
+			if len(matches) != 2 || entry.Type()&os.ModeSymlink != 0 || entry.IsDir() {
+				return fmt.Errorf("unexpected entry in rolling object directory: %q", entry.Name())
+			}
+			index, parseErr := strconv.ParseInt(matches[1], 10, 64)
+			if parseErr != nil {
+				return fmt.Errorf("parse rolling chunk index %q: %w", entry.Name(), parseErr)
+			}
+			info, infoErr := entry.Info()
+			if infoErr != nil {
+				return fmt.Errorf("stat rolling chunk: %w", infoErr)
+			}
+			if !info.Mode().IsRegular() || info.Size() <= 0 || info.Size() > s.options.ChunkBytes {
+				return fmt.Errorf("invalid rolling chunk %q with size %d", entry.Name(), info.Size())
+			}
+			recovered = append(recovered, recoveredChunk{
+				key:      chunkKey{object: objectDirectory.Name(), index: index},
+				entry:    &chunkEntry{path: entryPath, size: info.Size()},
+				modified: info.ModTime(),
+			})
+		}
+	}
+	sort.Slice(recovered, func(left int, right int) bool {
+		if recovered[left].modified.Equal(recovered[right].modified) {
+			return recovered[left].entry.path < recovered[right].entry.path
+		}
+		return recovered[left].modified.Before(recovered[right].modified)
+	})
+	for _, item := range recovered {
+		s.tick++
+		item.entry.lastAccess = s.tick
+		s.chunks[item.key] = item.entry
+		s.current += item.entry.size
+	}
+	for s.current > s.options.MaxBytes {
+		key, entry, found := s.oldestUnpinnedLocked()
+		if !found {
+			return errors.New("rolling cache recovery could not trim quota")
+		}
+		if err := os.Remove(entry.path); err != nil {
+			return fmt.Errorf("trim recovered rolling chunk: %w", err)
+		}
+		delete(s.chunks, key)
+		s.current -= entry.size
+		s.evictions++
+	}
+	s.highWater = s.current
+	return nil
 }
 
 func (s *RollingSource) chunkLength(logicalSize int64, index int64) int64 {

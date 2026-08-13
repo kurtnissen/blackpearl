@@ -3,11 +3,15 @@ package cache_test
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -118,7 +122,81 @@ func TestRollingHandleRejectsInvalidReadsAndClose(t *testing.T) {
 	require.ErrorContains(t, err, "closed")
 }
 
-func newRollingSourceForTest(t *testing.T, opener *fakeRangeOpener, maxBytes int64, chunkBytes int64) (*cache.RollingSource, string) {
+func TestRollingSourceCancelledWaiterDoesNotAbortSharedFetch(t *testing.T) {
+	t.Parallel()
+	opener := newBlockingRangeOpener([]byte("abcdefgh"))
+	source, _ := newRollingSourceForTest(t, opener, 8, 4)
+	firstHandle := openRollingHandle(t, source, 8)
+	secondHandle := openRollingHandle(t, source, 8)
+	firstResult := make(chan error, 1)
+	go func() {
+		_, err := firstHandle.ReadAt(context.Background(), make([]byte, 4), 0)
+		firstResult <- err
+	}()
+	<-opener.started
+
+	base, cancel := context.WithCancel(context.Background())
+	observed := newObservedContext(base, 2)
+	secondResult := make(chan error, 1)
+	go func() {
+		_, err := secondHandle.ReadAt(observed, make([]byte, 4), 0)
+		secondResult <- err
+	}()
+	<-observed.reached
+	cancel()
+
+	select {
+	case err := <-secondResult:
+		require.ErrorIs(t, err, context.Canceled)
+	case <-time.After(250 * time.Millisecond):
+		close(opener.release)
+		<-firstResult
+		<-secondResult
+		require.FailNow(t, "cancelled waiter remained blocked behind shared fetch")
+	}
+	close(opener.release)
+	require.NoError(t, <-firstResult)
+	require.Equal(t, 1, opener.readCount(0))
+}
+
+func TestNewRollingRecoversChunksRemovesTemporaryFilesAndTrimsQuota(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	object := rollingObjectKey("http-range", "movie.mp4")
+	objectDirectory := filepath.Join(root, "rolling", object)
+	require.NoError(t, os.MkdirAll(objectDirectory, 0o750))
+	baseTime := time.Now().Add(-time.Hour)
+	for index, content := range []string{"abcd", "efgh", "ijkl"} {
+		path := filepath.Join(objectDirectory, formatChunkIndex(int64(index)))
+		require.NoError(t, os.WriteFile(path, []byte(content), 0o640))
+		stamp := baseTime.Add(time.Duration(index) * time.Minute)
+		require.NoError(t, os.Chtimes(path, stamp, stamp))
+	}
+	temporary := filepath.Join(objectDirectory, ".fetch-abandoned")
+	require.NoError(t, os.WriteFile(temporary, []byte("xx"), 0o600))
+	opener := newFakeRangeOpener([]byte("abcdefghijkl"))
+
+	source, err := cache.NewRolling(context.Background(), cache.RollingOptions{
+		Root:         root,
+		MaxBytes:     8,
+		ChunkBytes:   4,
+		FetchTimeout: time.Second,
+	}, opener)
+
+	require.NoError(t, err)
+	require.NoFileExists(t, temporary)
+	stats := source.Stats()
+	require.Equal(t, int64(8), stats.CurrentBytes)
+	require.Equal(t, int64(2), stats.ChunkCount)
+	require.Equal(t, uint64(1), stats.Evictions)
+	require.LessOrEqual(t, stats.HighWaterBytes, int64(8))
+	require.NoFileExists(t, filepath.Join(objectDirectory, formatChunkIndex(0)))
+	handle := openRollingHandle(t, source, 12)
+	require.Equal(t, "efgh", readRollingExact(t, handle, 4, 4))
+	require.Zero(t, opener.readCount(4))
+}
+
+func newRollingSourceForTest(t *testing.T, opener cache.RangeOpener, maxBytes int64, chunkBytes int64) (*cache.RollingSource, string) {
 	t.Helper()
 	root := t.TempDir()
 	source, err := cache.NewRolling(context.Background(), cache.RollingOptions{
@@ -161,6 +239,28 @@ type fakeRangeOpener struct {
 	reads   map[int64]int
 }
 
+type blockingRangeOpener struct {
+	*fakeRangeOpener
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func newBlockingRangeOpener(content []byte) *blockingRangeOpener {
+	return &blockingRangeOpener{
+		fakeRangeOpener: newFakeRangeOpener(content),
+		started:         make(chan struct{}),
+		release:         make(chan struct{}),
+	}
+}
+
+func (b *blockingRangeOpener) Open(ctx context.Context, _ domain.BackingRef) (acquisition.RangeSource, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return &blockingRangeSource{blockingRangeOpener: b, reader: bytes.NewReader(b.content)}, nil
+}
+
 func newFakeRangeOpener(content []byte) *fakeRangeOpener {
 	return &fakeRangeOpener{content: append([]byte(nil), content...), reads: make(map[int64]int)}
 }
@@ -187,6 +287,62 @@ type fakeRangeSource struct {
 	reader *bytes.Reader
 	closed bool
 	mu     sync.Mutex
+}
+
+type blockingRangeSource struct {
+	*blockingRangeOpener
+	reader *bytes.Reader
+	closed atomic.Bool
+}
+
+func (b *blockingRangeSource) ReadAt(ctx context.Context, destination []byte, offset int64) (int, error) {
+	b.once.Do(func() { close(b.started) })
+	select {
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	case <-b.release:
+	}
+	b.mu.Lock()
+	b.reads[offset]++
+	b.mu.Unlock()
+	return b.reader.ReadAt(destination, offset)
+}
+
+func (b *blockingRangeSource) Size() int64 {
+	return b.reader.Size()
+}
+
+func (b *blockingRangeSource) Close() error {
+	b.closed.Store(true)
+	return nil
+}
+
+type observedContext struct {
+	context.Context
+	target  int64
+	checks  atomic.Int64
+	reached chan struct{}
+	once    sync.Once
+}
+
+func newObservedContext(ctx context.Context, target int64) *observedContext {
+	return &observedContext{Context: ctx, target: target, reached: make(chan struct{})}
+}
+
+func (c *observedContext) Err() error {
+	if c.checks.Add(1) >= c.target {
+		c.once.Do(func() { close(c.reached) })
+	}
+	return c.Context.Err()
+}
+
+func rollingObjectKey(provider string, objectID string) string {
+	hash := sha256.Sum256([]byte(provider + "\x00" + objectID))
+	return hex.EncodeToString(hash[:])
+}
+
+func formatChunkIndex(index int64) string {
+	return fmt.Sprintf("%016d.chunk", index)
 }
 
 func (f *fakeRangeSource) ReadAt(ctx context.Context, destination []byte, offset int64) (int, error) {
