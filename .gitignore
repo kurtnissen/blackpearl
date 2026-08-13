@@ -1,5 +1,6 @@
 /coverage.out
 /runtime/
+/.worktrees/
 /blackpearl
 *.db
 *.db-shm
