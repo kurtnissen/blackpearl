@@ -1,0 +1,37 @@
+services:
+  blackpearl:
+    build:
+      target: poc
+    environment:
+      BLACKPEARL_POC_SOURCE: /opt/blackpearl/fixtures/blackpearl-poc.mp4
+
+  plex:
+    image: plexinc/pms-docker:1.43.0.10492-121068a07
+    restart: unless-stopped
+    depends_on:
+      blackpearl:
+        condition: service_healthy
+    environment:
+      TZ: ${TZ:-Etc/UTC}
+      PLEX_CLAIM: ${PLEX_CLAIM:-}
+      ADVERTISE_IP: ${PLEX_ADVERTISE_IP:-http://localhost:32400/}
+    ports:
+      - 32400:32400/tcp
+    volumes:
+      - type: bind
+        source: ./runtime/plex-config
+        target: /config
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./runtime/transcode
+        target: /transcode
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./runtime/mount
+        target: /blackpearl
+        read_only: true
+        bind:
+          create_host_path: false
+          propagation: rslave
