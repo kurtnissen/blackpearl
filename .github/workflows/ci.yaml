@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test and coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go vet ./...
+      - run: go test -race -coverprofile=coverage.out ./...
+      - run: ./scripts/check-coverage.sh coverage.out
+
+  lint:
+    name: Static lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.12.2
+
+  compose-safety:
+    name: Compose safety
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - run: mkdir -p runtime/data runtime/mount runtime/plex-config runtime/transcode
+      - run: ./scripts/test-compose-paths.sh
+
+  image:
+    name: Image (${{ matrix.platform }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [linux/amd64, linux/arm64]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: docker/setup-qemu-action@v4
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          target: poc
+          platforms: ${{ matrix.platform }}
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  fuse:
+    name: Kernel FUSE smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - run: |
+          docker run --rm --privileged \
+            -e BLACKPEARL_FUSE_TEST=1 \
+            -v "$PWD:/src" \
+            -w /src \
+            golang:1.24-bookworm \
+            bash -euc 'apt-get update; apt-get install -y --no-install-recommends fuse3; go test -race ./internal/pearlfs -run TestMountedFilesystemServesExactBytesAndOffsetReads'

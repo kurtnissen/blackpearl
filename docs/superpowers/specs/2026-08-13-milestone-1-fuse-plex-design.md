@@ -205,7 +205,7 @@ The three Plex values are all-or-none. Secrets are supplied through the environm
 
 ## Container and host model
 
-The normal Compose file runs BlackPearl only. The POC override adds a one-shot fixture generator and an isolated official Plex container. BlackPearl alone receives `/dev/fuse`, `SYS_ADMIN`, and the minimum AppArmor exception required for FUSE on Ubuntu.
+The normal Compose file runs BlackPearl only. The POC override selects an image target that bakes in a generated fixture and adds an isolated official Plex container. BlackPearl alone receives `/dev/fuse`, `SYS_ADMIN`, and the minimum AppArmor exception required for FUSE on Ubuntu.
 
 Linux mount namespaces do not propagate a FUSE mount to a sibling container by default. The Ubuntu setup script therefore creates a repository-owned bind mount and marks it shared. BlackPearl receives it as `rshared`; Plex receives the same path as read-only `rslave`. Docker documents bind propagation as a Linux-host feature, so Plex cross-container acceptance is not claimed on Docker Desktop for macOS.
 
@@ -249,7 +249,7 @@ An opt-in test mounts PearlFS in a temporary directory, compares the exposed MP4
 
 ### Plex acceptance
 
-The Ubuntu guide records a manual evidence checklist: Plex container healthy, virtual movie visible from the Plex container, library scan finds exactly the POC title, Direct Play starts without BlackPearl transcoding, seeking succeeds, and BlackPearl logs show offset reads. The fixture uses a broadly Direct Play-compatible MP4/H.264/AAC profile. This is not replaced by unit tests or a successful container build.
+The Ubuntu guide records a manual evidence checklist: Plex container healthy, virtual movie visible from the Plex container, library scan finds exactly the POC title, Direct Play starts, and seeking succeeds. The fixture uses a broadly Direct Play-compatible MP4/H.264/AAC profile. This is not replaced by unit tests or a successful container build.
 
 ## Acceptance criteria
 
@@ -267,7 +267,7 @@ Milestone 1 is accepted only when all of the following are true:
 10. Stopping the stack cleanly unmounts PearlFS.
 11. Cleanup affects only the BlackPearl repository's `runtime/` directory.
 
-Criteria 6-8 require an actual Ubuntu/Plex run. Until that evidence is recorded, the repository may be described as code-complete or locally verified but not as having proven Plex acceptance.
+Criteria 7-9 require an actual Ubuntu/Plex run. Until that evidence is recorded, the repository may be described as code-complete or locally verified but not as having proven Plex acceptance.
 
 ## Roadmap after Milestone 1
 
