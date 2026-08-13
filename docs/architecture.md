@@ -2,24 +2,25 @@
 
 ## Decision summary
 
-BlackPearl begins as one modular Go service. It keeps infrastructure adapters at the edge and uses narrow service-owned interfaces so future providers and cache policies do not leak into PearlFS.
+BlackPearl begins as one modular Go service. It keeps infrastructure adapters at the edge and uses narrow service-owned interfaces so future providers and cache policies do not leak into PearlFS or PearlNFS.
 
 ```text
-FUSE adapter ----> Catalog service ----> Repository interface ----> SQLite
-      |                   |
-      |                   +----> MediaSource interface ----> PearlCache policy
-      |                                                     |          |
-      +-- ReadAt(ctx, buffer, offset)                        |          +-- rolling chunks (later)
-                                                            +-- persistent object (M1)
-                                                                       |
-                                                             RangeSource provider (later)
+FUSE adapter ----+
+                 +--> Catalog service ----> Repository interface ----> SQLite
+NFS adapter -----+           |
+                             +----> MediaSource interface ----> PearlCache policy
+                             |                               |          |
+                             +-- ReadAt(ctx, buffer, offset) |          +-- rolling chunks (later)
+                                                             +-- persistent object (M1)
+                                                                        |
+                                                              RangeSource provider (later)
 
 HTTP diagnostics -> Readiness service
 Catalog service  -> Resolver interface -> acquisition provider contracts
 Catalog service  -> Plex gateway (optional refresh only)
 ```
 
-The dependency direction is adapter to service to repository/gateway. Core does not import FUSE, SQLite, HTTP framework details, or a named acquisition provider.
+The dependency direction is adapter to service to repository/gateway. Core does not import FUSE, NFS, SQLite, HTTP framework details, or a named acquisition provider.
 
 ## Invariants established in Milestone 1
 
@@ -34,7 +35,7 @@ The dependency direction is adapter to service to repository/gateway. Core does 
    }
    ```
 
-3. PearlFS forwards Plex's offset reads to that handle. It does not inspect cache occupancy or require a completed object.
+3. PearlFS and PearlNFS forward Plex's offset reads to that handle. Neither inspects cache occupancy or requires a completed object.
 4. The media-source boundary receives the complete catalog record, allowing a future policy to combine logical metadata, cached chunks, and a provider reference.
 5. Acquisition separates discovery from reading. A future opened `RangeSource` can satisfy arbitrary logical offsets without a full download.
 6. The filesystem is immutable and reports the logical size to Plex, which allows metadata probes and seeking.
@@ -62,7 +63,7 @@ A later rolling cache should divide a logical object into independently addressa
 - verify range length and integrity before publication; and
 - apply backpressure when provider throughput cannot keep ahead of playback.
 
-None of those policies should change PearlFS or Plex integration. The same binary will select the policy from configuration.
+None of those policies should change PearlFS, PearlNFS, or Plex integration. The same binary will select the policy from configuration.
 
 ## Direct Play target
 
@@ -70,7 +71,7 @@ The low-storage VPS path treats Plex Direct Play as a primary constraint. BlackP
 
 ## State and path safety
 
-SQLite owns catalog metadata only. Cache bytes and the FUSE mount live in separate configured directories. All configured paths must be absolute, and supplied Compose files bind only `runtime/` paths beneath the repository. Existing Plex and media paths are never searched or modified.
+SQLite owns catalog metadata only. Cache bytes and the optional FUSE mount live in separate configured directories. The portable profile uses project-scoped Docker volumes and no host media bind. Existing Plex and media paths are never searched or modified.
 
 ## Extension roadmap
 

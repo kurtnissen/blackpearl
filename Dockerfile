@@ -26,7 +26,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /out/blackpearl /usr/local/bin/blackpearl
 RUN mkdir -p /var/lib/blackpearl/cache /mnt/blackpearl
-EXPOSE 8080
+EXPOSE 8080 2049
 STOPSIGNAL SIGTERM
 ENTRYPOINT ["/usr/local/bin/blackpearl"]
 

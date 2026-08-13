@@ -1,8 +1,8 @@
 # BlackPearl
 
-BlackPearl is an experimental, open-source Go service that exposes a virtual media library through a read-only FUSE filesystem. Milestone 1 is intentionally narrow: prove that Plex can scan and Direct Play a synthetic MP4 through PearlFS without touching an existing Plex, media, download, or `*arr` path.
+BlackPearl is an experimental, open-source Go service that exposes a virtual media library through read-only FUSE or NFS filesystem frontends. Milestone 1 is intentionally narrow: prove that Plex can scan and Direct Play a synthetic MP4 without touching an existing Plex, media, download, or `*arr` path.
 
-> Status: the Go service, Docker image, range-read contract, and kernel-mounted FUSE byte checks are locally verified. The final Plex scan/play acceptance must still be run on an Ubuntu Server because Docker Desktop does not support the required cross-container mount propagation.
+> Status: FUSE remains available for native Linux. The portable NFS profile is designed for Docker Desktop and mounts into an unmodified Plex container through Docker's built-in local-volume driver. Automated scan and exact-range evidence is separate from the final manual Plex client Direct Play check.
 
 ## What exists today
 
@@ -13,20 +13,23 @@ BlackPearl is an experimental, open-source Go service that exposes a virtual med
 - A generated 8-second H.264/AAC test-pattern MP4 with no third-party media.
 - Docker/Compose files for BlackPearl and an isolated opt-in Plex acceptance container.
 - Unit, integration, safety, and Linux FUSE smoke tests.
+- A portable NFS frontend and macOS Docker Desktop Compose profile that need no
+  FUSE mount propagation.
 
 BlackPearl does not yet implement acquisition, progressive retrieval, rolling eviction, Prowlarr, Usenet, TorBox, or any other network provider.
 
 ## Architecture at a glance
 
 ```text
-Plex -> PearlFS -> Core catalog -> MediaSource.ReadAt(ctx, bytes, offset)
-                         |                    |
-                         v                    v
-                       SQLite       persistent cache (M1)
-                                           or
-                                    rolling cache (later)
-                                           |
-                                    authorized provider
+Plex -> PearlFS (native Linux) ----+
+                                   +-> Core catalog -> MediaSource.ReadAt(ctx, bytes, offset)
+Plex -> PearlNFS (portable Docker) +          |                    |
+                                              v                    v
+                                            SQLite       persistent cache (M1)
+                                                                or
+                                                         rolling cache (later)
+                                                                |
+                                                         authorized provider
 ```
 
 `Media.Size` is the logical size shown to Plex. It does not mean the whole object exists locally. A media record holds a provider/object reference, and the common read handle supports arbitrary offsets. See [docs/architecture.md](docs/architecture.md).
@@ -49,6 +52,21 @@ docker compose up --build
 ```
 
 A real kernel FUSE mount requires Linux, `/dev/fuse`, and the container privileges declared in `compose.yaml`.
+
+## macOS portable Plex POC
+
+Docker Desktop on macOS can use the NFS profile without host mount propagation:
+
+```bash
+./scripts/setup-portable-poc.sh
+./scripts/verify-portable-poc.sh
+open http://localhost:32400/web
+```
+
+The scripts launch an isolated official Plex container, create the
+`BlackPearl POC` library, and verify that Plex serves an arbitrary source range
+unchanged. Follow [the macOS runbook](docs/macos-plex-poc.md) for the final play,
+seek, and Direct Play dashboard check.
 
 ## Ubuntu Plex POC
 
@@ -84,6 +102,8 @@ Both modes use the same FUSE and range-oriented media-source contract. Plex Dire
 
 - [Architecture](docs/architecture.md)
 - [Ubuntu Plex POC runbook](docs/ubuntu-plex-poc.md)
+- [macOS Docker Desktop Plex POC](docs/macos-plex-poc.md)
+- [Portable filesystem evaluation](docs/portability-filesystem-evaluation.md)
 - [Acceptance criteria and evidence](docs/acceptance-evidence.md)
 - [Detailed Milestone 1 design](docs/superpowers/specs/2026-08-13-milestone-1-fuse-plex-design.md)
 - [Implementation plan](docs/superpowers/plans/2026-08-13-milestone-1-fuse-plex.md)

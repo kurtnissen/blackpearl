@@ -1,26 +1,30 @@
 # Milestone 1 Acceptance Evidence
 
-Evidence states are deliberately separate. Unit tests, a container build, a kernel FUSE test, and Plex playback prove different things.
+Evidence states are deliberately separate. Unit tests, a container build, a kernel FUSE test, Plex scan/range evidence, and client playback prove different things.
 
 ## Current verified evidence — 2026-08-13
 
-Tested from commit lineage ending at `f51ecce` plus the current documentation/test hardening changes on an Apple Silicon Mac with Docker Desktop's Linux ARM64 VM.
+Tested from the `research/portable-filesystem` branch on an Apple Silicon Mac with Docker Desktop's Linux ARM64 VM.
 
 | Gate | Result | Evidence |
 |---|---|---|
 | Go race tests | Pass | `go test -race ./...` |
-| Go coverage | Pass | 81.0% statements from `go test -coverprofile=coverage.out ./...` |
+| Go coverage | Pass | 83.2% statements from `go test -race -coverprofile=coverage.out ./...` |
 | Static analysis | Pass | `go vet ./...` |
 | Compose isolation | Pass | Rendered configuration checked by `scripts/test-compose-paths.sh`; every bind is under `runtime/`, Plex media is read-only `rslave`, and only BlackPearl receives FUSE privileges |
 | POC image build | Pass | `blackpearl:poc` built for local Linux ARM64 |
 | Fixture media profile | Pass | 1280x720 H.264 `yuv420p` video, AAC 48 kHz mono audio, MP4 fast-start fixture |
 | Packaged FUSE bytes | Pass | The exact POC image mounted FUSE in a privileged Linux container; fixture and virtual SHA-256 matched and non-sequential range hashes matched |
 | Large logical object regression | Pass | PearlFS test read the final four bytes of a generated 1 TiB logical object without storing the object |
+| Portable Compose isolation | Pass | No bind mounts, capabilities, or devices; all published ports use loopback and the Plex NFS volume is read-only |
+| PearlNFS range seam | Pass | PearlNFS tests read the final four bytes of a generated 1 TiB logical object through `ReadAt` |
+| macOS Plex NFS mount | Pass | Unmodified official Plex container reads the exact 3,417,699-byte virtual MP4 through Docker's local NFS volume |
+| Plex library scan | Pass on macOS | Plex indexed `BlackPearl POC (2026)` as 1280x720 H.264/AAC MP4 from `/blackpearl/Movies` |
+| Plex original-media range | Pass on macOS | Plex returned HTTP 206 for bytes 1,048,576-1,114,111 and the 64 KiB SHA-256 matched the source |
+| Plex client Direct Play and seek | Pending manual check | Requires playback evidence from Plex Dashboard at `http://localhost:32400/web` |
 | Cross-container Plex mount | Pending Ubuntu | Docker Desktop bind propagation cannot prove this Linux-host behavior |
-| Plex library scan | Pending Ubuntu | Requires the isolated Plex acceptance run |
-| Plex Direct Play and seek | Pending Ubuntu | Requires playback evidence from Plex Dashboard |
 
-The current result is a locally verified FUSE/container POC and code-complete Milestone 1 candidate. It is not yet an Ubuntu/Plex-accepted milestone.
+The current result includes locally verified FUSE and portable NFS adapters plus macOS Plex scan and range evidence. It is not yet client-observed Direct Play evidence or Windows/native-Linux portability evidence.
 
 ## Acceptance checklist
 
@@ -33,6 +37,9 @@ The current result is a locally verified FUSE/container POC and code-complete Mi
 - [x] Compose safety checks pass.
 - [x] Kernel-mounted FUSE reads exact complete bytes and arbitrary offsets.
 - [x] Containerized fixture has the intended H.264/AAC profile.
+- [x] Portable Docker profile mounts PearlNFS into an unmodified Plex image.
+- [x] Plex scans the fixture through PearlNFS and serves arbitrary source ranges unchanged.
+- [ ] Plex client dashboard reports Direct Play and a manual seek succeeds.
 - [ ] CI passes after publishing the repository.
 - [ ] Both Linux AMD64 and ARM64 image builds pass in CI.
 - [ ] Ubuntu host propagation makes the file readable in the Plex container.

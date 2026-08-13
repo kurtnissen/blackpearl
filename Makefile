@@ -1,4 +1,4 @@
-.PHONY: test coverage vet lint verify compose-check docker docker-poc fuse-smoke
+.PHONY: test coverage vet lint verify compose-check portable-compose-check docker docker-poc fuse-smoke
 
 test:
 	go test -race ./...
@@ -17,6 +17,9 @@ verify: vet test coverage
 
 compose-check:
 	./scripts/test-compose-paths.sh
+
+portable-compose-check:
+	./scripts/test-portable-compose.sh
 
 docker:
 	docker build --target runtime -t blackpearl:local .
