@@ -64,6 +64,28 @@ func TestGatewaySnapshotIsolatesMalformedSessions(t *testing.T) {
 	require.Equal(t, "TV Shows/MariposaHD (2006)/Season 01/valid.mp4", actual[0].VirtualPath())
 }
 
+func TestGatewaySnapshotRejectsRawMillisecondValuesBeforeDurationConversion(t *testing.T) {
+	t.Parallel()
+	wrappedOffset := int64(1<<58) + 300_000
+	wrappedDuration := int64(1<<58) + 1_200_000
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		body := strings.ReplaceAll(
+			playbackEpisodeJSON("playing", "/blackpearl/TV Shows/MariposaHD (2006)/Season 01/episode.mp4", true),
+			`"viewOffset":254000,"duration":2186773`,
+			fmt.Sprintf(`"viewOffset":%d,"duration":%d`, wrappedOffset, wrappedDuration),
+		)
+		_, err := fmt.Fprintf(response, `{"MediaContainer":{"size":1,"Metadata":[%s]}}`, body)
+		require.NoError(t, err)
+	}))
+	t.Cleanup(server.Close)
+	gateway := newPlaybackGateway(t, server.URL, &fakeTokenSource{token: playbackToken})
+
+	actual, err := gateway.Snapshot(context.Background())
+
+	require.NoError(t, err)
+	require.Empty(t, actual)
+}
+
 func TestGatewaySnapshotFailsClosedAtHTTPBoundary(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -96,6 +97,43 @@ func TestGatewayNextRequiresCurrentEpisodeInMetadataBeforeAdvancing(t *testing.T
 	_, err := gateway.Next(context.Background(), "plex://show/"+showID, mustCoordinate(t, 1, 1))
 
 	require.ErrorIs(t, err, domain.ErrNotFound)
+}
+
+func TestGatewayNextReadsBoundedPagesUntilSuccessorIsFound(t *testing.T) {
+	t.Parallel()
+	showID := "5d9c086ce98e47001eb0f520"
+	seasonID := "5d9c09de2192ba001f32230f"
+	var starts []string
+	var startsMu sync.Mutex
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/library/metadata/" + showID + "/children":
+			_, err := fmt.Fprintf(response, `{"MediaContainer":{"size":1,"Metadata":[{"type":"season","index":1,"ratingKey":%q}]}}`, seasonID)
+			require.NoError(t, err)
+		case "/library/metadata/" + seasonID + "/children":
+			start := request.Header.Get("X-Plex-Container-Start")
+			startsMu.Lock()
+			starts = append(starts, start)
+			startsMu.Unlock()
+			if start == "2" {
+				_, err := fmt.Fprint(response, `{"MediaContainer":{"size":1,"totalSize":3,"offset":2,"Metadata":[{"type":"episode","parentIndex":1,"index":3}]}}`)
+				require.NoError(t, err)
+				return
+			}
+			_, err := fmt.Fprint(response, `{"MediaContainer":{"size":2,"totalSize":3,"offset":0,"Metadata":[{"type":"episode","parentIndex":1,"index":1},{"type":"episode","parentIndex":1,"index":2}]}}`)
+			require.NoError(t, err)
+		}
+	}))
+	t.Cleanup(server.Close)
+	gateway := newMetadataGateway(t, server.URL, &metadataTokenSource{token: metadataToken})
+
+	next, err := gateway.Next(context.Background(), "plex://show/"+showID, mustCoordinate(t, 1, 2))
+
+	require.NoError(t, err)
+	require.Equal(t, mustCoordinate(t, 1, 3), next)
+	startsMu.Lock()
+	require.Equal(t, []string{"0", "2"}, starts)
+	startsMu.Unlock()
 }
 
 func TestGatewayNextRejectsMalformedIdentityAndFailsClosedAtHTTPBoundary(t *testing.T) {

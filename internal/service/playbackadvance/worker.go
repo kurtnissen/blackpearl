@@ -70,6 +70,7 @@ type WorkerOptions struct {
 	OperationTimeout      time.Duration
 	WatchlistPollInterval time.Duration
 	Now                   func() time.Time
+	OnError               func(error)
 }
 
 // Worker serially advances a succeeded show frontier by at most one exact
@@ -81,6 +82,7 @@ type Worker struct {
 	resolver    NextEpisodeResolver
 	options     WorkerOptions
 	now         func() time.Time
+	onError     func(error)
 
 	processMu sync.Mutex
 }
@@ -114,7 +116,7 @@ func NewWorker(
 	}
 	return &Worker{
 		snapshotter: snapshotter, index: index, frontier: frontier, resolver: resolver,
-		options: options, now: now,
+		options: options, now: now, onError: options.OnError,
 	}, nil
 }
 
@@ -196,8 +198,13 @@ func (w *Worker) process(ctx context.Context) (int, error) {
 // failures are retried on the next interval and never stop the service.
 func (w *Worker) Run(ctx context.Context) {
 	for {
-		if _, err := w.Process(ctx); err != nil && ctx.Err() != nil {
-			return
+		if _, err := w.Process(ctx); err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			if w.onError != nil {
+				w.onError(err)
+			}
 		}
 		timer := time.NewTimer(w.options.PollInterval)
 		select {

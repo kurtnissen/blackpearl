@@ -176,6 +176,42 @@ func TestWorkerPreservesCancellationAndSerializesConcurrentProcessing(t *testing
 	require.Equal(t, int32(1), snapshotter.maximumConcurrent.Load())
 }
 
+func TestWorkerRunReportsSanitizedFailuresAndContinuesUntilCancellation(t *testing.T) {
+	t.Parallel()
+	reported := make(chan error, 1)
+	worker, err := playbackadvance.NewWorker(
+		&fakePlaybackSnapshotter{err: errors.New("private Plex endpoint detail")},
+		&fakePublishedEpisodeIndex{},
+		&fakeEpisodeFrontier{},
+		&fakeNextEpisodeResolver{},
+		playbackadvance.WorkerOptions{
+			PollInterval: time.Hour, OperationTimeout: time.Second, WatchlistPollInterval: time.Minute,
+			OnError: func(runErr error) { reported <- runErr },
+		},
+	)
+	require.NoError(t, err)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		worker.Run(ctx)
+		close(done)
+	}()
+
+	select {
+	case runErr := <-reported:
+		require.ErrorIs(t, runErr, playbackadvance.ErrUnavailable)
+		require.NotContains(t, runErr.Error(), "private")
+	case <-time.After(time.Second):
+		t.Fatal("playback failure was not reported")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("playback worker did not stop")
+	}
+}
+
 func TestWorkerValidatesDependenciesAndOptions(t *testing.T) {
 	t.Parallel()
 	options := playbackadvance.WorkerOptions{

@@ -630,6 +630,9 @@ func runBrowserSetup(ctx context.Context, cfg config.Config, logger *slog.Logger
 				playbackadvanceservice.WorkerOptions{
 					PollInterval: cfg.PlaybackPollInterval, OperationTimeout: cfg.PlaybackOperationTimeout,
 					WatchlistPollInterval: cfg.WatchlistPollInterval,
+					OnError: func(workerErr error) {
+						logger.WarnContext(ctx, "playback advancement failed; retrying", "error", workerErr)
+					},
 				},
 			)
 			if err != nil {

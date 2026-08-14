@@ -19,9 +19,10 @@ import (
 )
 
 const (
-	maximumResponseBytes = 2 << 20
-	maximumSessions      = 64
-	maximumTokenBytes    = 4 << 10
+	maximumResponseBytes  = 2 << 20
+	maximumSessions       = 64
+	maximumTokenBytes     = 4 << 10
+	maximumPlaybackMillis = int64((7 * 24 * time.Hour) / time.Millisecond)
 )
 
 // ErrUnavailable indicates that Plex playback evidence could not be read safely.
@@ -145,6 +146,9 @@ func (g *Gateway) Snapshot(ctx context.Context) ([]domain.EpisodePlayback, error
 
 func (g *Gateway) normalize(item wireItem) (domain.EpisodePlayback, bool) {
 	if item.Type != "episode" {
+		return domain.EpisodePlayback{}, false
+	}
+	if item.ViewOffset <= 0 || item.Duration <= 0 || item.Duration > maximumPlaybackMillis || item.ViewOffset > item.Duration {
 		return domain.EpisodePlayback{}, false
 	}
 	selected := ""
