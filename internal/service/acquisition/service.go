@@ -95,11 +95,21 @@ func (s *Service) Acquire(ctx context.Context, request acquisitiondomain.SearchR
 	if err != nil {
 		return acquisitiondomain.AcquiredMedia{}, publicBoundaryError("search acquisition releases", err)
 	}
-	cached, err := s.gateway.CachedTorrents(ctx, releases)
+	var preferred acquisitiondomain.Release
+	for _, release := range releases {
+		if release.Protocol() == acquisitiondomain.ReleaseProtocolTorrent && release.InfoHash() != "" {
+			preferred = release
+			break
+		}
+	}
+	if preferred.InfoHash() == "" {
+		return acquisitiondomain.AcquiredMedia{}, ErrNotCached
+	}
+	cached, err := s.gateway.CachedTorrents(ctx, []acquisitiondomain.Release{preferred})
 	if err != nil {
 		return acquisitiondomain.AcquiredMedia{}, publicBoundaryError("check acquisition cache", err)
 	}
-	if len(cached) == 0 {
+	if len(cached) == 0 || cached[0].Protocol() != preferred.Protocol() || cached[0].InfoHash() != preferred.InfoHash() {
 		return acquisitiondomain.AcquiredMedia{}, ErrNotCached
 	}
 	selectedRelease := cached[0]

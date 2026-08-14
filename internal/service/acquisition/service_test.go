@@ -21,7 +21,7 @@ func TestServiceAcquirePublishesExactEpisodeAfterBoundedReadinessPoll(t *testing
 	second := mustRelease(t, "second", "abcdef0123456789abcdef0123456789abcdef01")
 	created, err := acquisitiondomain.NewCreatedObject("torbox-torrent", "17")
 	require.NoError(t, err)
-	searcher := &fakeSearcher{releases: []acquisitiondomain.Release{first, second}}
+	searcher := &fakeSearcher{releases: []acquisitiondomain.Release{second, first}}
 	gateway := &fakeCachedGateway{
 		cached: []acquisitiondomain.Release{second}, created: created,
 		inspections: []inspectionResult{
@@ -59,6 +59,25 @@ func TestServiceAcquireDoesNotMutateWhenNoRankedReleaseIsCached(t *testing.T) {
 	require.ErrorIs(t, err, acquisitionservice.ErrNotCached)
 	require.Zero(t, gateway.createCalls)
 	require.Zero(t, gateway.inspectCalls)
+	require.Empty(t, publisher.published)
+}
+
+func TestServiceAcquireDoesNotFallThroughToLowerRankedCachedRelease(t *testing.T) {
+	t.Parallel()
+	request, err := acquisitiondomain.NewMovieSearch("Sintel", 2010)
+	require.NoError(t, err)
+	preferred := mustRelease(t, "full-film", "0123456789abcdef0123456789abcdef01234567")
+	preview := mustRelease(t, "preview", "abcdef0123456789abcdef0123456789abcdef01")
+	searcher := &fakeSearcher{releases: []acquisitiondomain.Release{preferred, preview}}
+	gateway := &fakeCachedGateway{cached: []acquisitiondomain.Release{preview}}
+	publisher := &fakePublisher{}
+	service := newService(t, searcher, gateway, publisher, 1)
+
+	_, err = service.Acquire(context.Background(), request)
+
+	require.ErrorIs(t, err, acquisitionservice.ErrNotCached)
+	require.Equal(t, []acquisitiondomain.Release{preferred}, gateway.cacheQuery)
+	require.Zero(t, gateway.createCalls)
 	require.Empty(t, publisher.published)
 }
 
@@ -259,6 +278,7 @@ type inspectionResult struct {
 
 type fakeCachedGateway struct {
 	cached         []acquisitiondomain.Release
+	cacheQuery     []acquisitiondomain.Release
 	cachedErr      error
 	created        acquisitiondomain.CreatedObject
 	createErr      error
@@ -271,7 +291,8 @@ type fakeCachedGateway struct {
 	inspectOnce    sync.Once
 }
 
-func (f *fakeCachedGateway) CachedTorrents(context.Context, []acquisitiondomain.Release) ([]acquisitiondomain.Release, error) {
+func (f *fakeCachedGateway) CachedTorrents(_ context.Context, releases []acquisitiondomain.Release) ([]acquisitiondomain.Release, error) {
+	f.cacheQuery = append([]acquisitiondomain.Release(nil), releases...)
 	return append([]acquisitiondomain.Release(nil), f.cached...), f.cachedErr
 }
 
