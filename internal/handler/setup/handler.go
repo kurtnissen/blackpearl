@@ -37,6 +37,7 @@ type Service interface {
 type handler struct {
 	service     Service
 	acquisition AcquisitionService
+	jobs        AcquisitionJobService
 	watchlist   WatchlistService
 	csrf        string
 	logger      *slog.Logger
@@ -145,9 +146,15 @@ func (h *handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		h.serveAcquisitionSettings(writer, request)
 	case "/api/acquisition/acquire":
 		h.serveAcquisition(writer, request)
+	case "/api/acquisition/jobs":
+		h.serveAcquisitionJobs(writer, request)
 	case "/api/watchlist/status":
 		h.serveWatchlistStatus(writer, request)
 	default:
+		if strings.HasPrefix(request.URL.Path, "/api/acquisition/jobs/") {
+			h.serveAcquisitionJob(writer, request)
+			return
+		}
 		http.NotFound(writer, request)
 	}
 }

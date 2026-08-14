@@ -29,9 +29,12 @@ import (
 	"github.com/blackpearl-media/blackpearl/internal/pearlnfs"
 	"github.com/blackpearl-media/blackpearl/internal/plex"
 	acquisitionrepo "github.com/blackpearl-media/blackpearl/internal/repository/acquisition"
+	acquisitionjobrepo "github.com/blackpearl-media/blackpearl/internal/repository/acquisitionjob"
 	setuprepo "github.com/blackpearl-media/blackpearl/internal/repository/setup"
 	watchlistrepo "github.com/blackpearl-media/blackpearl/internal/repository/watchlist"
+	"github.com/blackpearl-media/blackpearl/internal/resolver"
 	acquisitionservice "github.com/blackpearl-media/blackpearl/internal/service/acquisition"
+	acquisitionjobservice "github.com/blackpearl-media/blackpearl/internal/service/acquisitionjob"
 	plexrefreshservice "github.com/blackpearl-media/blackpearl/internal/service/plexrefresh"
 	setupservice "github.com/blackpearl-media/blackpearl/internal/service/setup"
 	watchlistservice "github.com/blackpearl-media/blackpearl/internal/service/watchlist"
@@ -475,6 +478,52 @@ func runBrowserSetup(ctx context.Context, cfg config.Config, logger *slog.Logger
 	if err != nil {
 		return fmt.Errorf("configure browser acquisition coordinator: %w", err)
 	}
+	acquisitionJobRepository, err := acquisitionjobrepo.Open(ctx, filepath.Join(cfg.DataDir, "acquisition-jobs.db"))
+	if err != nil {
+		return fmt.Errorf("open background acquisition queue: %w", err)
+	}
+	defer func() { runErr = errors.Join(runErr, acquisitionJobRepository.Close()) }()
+	acquisitionJobManager, err := acquisitionjobservice.NewManager(acquisitionJobRepository, acquisitionjobservice.ManagerOptions{})
+	if err != nil {
+		return fmt.Errorf("configure background acquisition manager: %w", err)
+	}
+	jobProviderFactory := func(factoryContext context.Context) (acquisitionjobservice.Providers, error) {
+		settings, loadErr := acquisitionRepository.Load(factoryContext)
+		if loadErr != nil {
+			return acquisitionjobservice.Providers{}, fmt.Errorf("load background search settings: %w", loadErr)
+		}
+		token, _, loadErr := setupRepository.LoadManifest(factoryContext)
+		if loadErr != nil {
+			return acquisitionjobservice.Providers{}, fmt.Errorf("load background account settings: %w", loadErr)
+		}
+		client := *deps.httpClient
+		client.Timeout = cfg.RangeTimeout
+		searchGateway, gatewayErr := prowlarr.New(prowlarr.Options{BaseURL: settings.Endpoint(), APIKey: settings.Credential()}, &client)
+		if gatewayErr != nil {
+			return acquisitionjobservice.Providers{}, fmt.Errorf("configure background search gateway: %w", gatewayErr)
+		}
+		preparationGateway, gatewayErr := newTorBoxGateway(token)
+		if gatewayErr != nil {
+			return acquisitionjobservice.Providers{}, fmt.Errorf("configure background preparation gateway: %w", gatewayErr)
+		}
+		return acquisitionjobservice.Providers{
+			Searcher: resolver.NewSearcher(searchGateway), Materializer: searchGateway, Preparer: preparationGateway,
+		}, nil
+	}
+	jobOperationTimeout := min(cfg.RangeTimeout, 30*time.Second)
+	acquisitionJobWorker, err := acquisitionjobservice.NewWorker(
+		acquisitionJobRepository, jobProviderFactory, service,
+		acquisitionjobservice.WorkerOptions{
+			LeaseDuration: jobOperationTimeout + 30*time.Second, OperationTimeout: jobOperationTimeout,
+			IdleInterval: time.Second, PreparingPollInterval: 10 * time.Second, RetryInterval: time.Minute,
+			OnError: func(workerErr error) {
+				logger.WarnContext(ctx, "background acquisition worker failed", "error", workerErr)
+			},
+		},
+	)
+	if err != nil {
+		return fmt.Errorf("configure background acquisition worker: %w", err)
+	}
 	var watchlistObserver *watchlistservice.Observer
 	var watchlistWorker *watchlistservice.Worker
 	var watchlistRepository *watchlistrepo.Repository
@@ -511,7 +560,7 @@ func runBrowserSetup(ctx context.Context, cfg config.Config, logger *slog.Logger
 		}
 	}
 	startSetupRestore(ctx, service, logger, 2*time.Second)
-	if watchlistObserver != nil || plexRefreshWorker != nil {
+	if watchlistObserver != nil || plexRefreshWorker != nil || acquisitionJobWorker != nil {
 		backgroundContext, stopBackground := context.WithCancel(ctx)
 		var backgroundGroup errgroup.Group
 		if plexRefreshWorker != nil {
@@ -532,6 +581,10 @@ func runBrowserSetup(ctx context.Context, cfg config.Config, logger *slog.Logger
 				return nil
 			})
 		}
+		backgroundGroup.Go(func() error {
+			acquisitionJobWorker.Run(backgroundContext)
+			return nil
+		})
 		defer func() {
 			stopBackground()
 			backgroundErr := backgroundGroup.Wait()
@@ -543,9 +596,9 @@ func runBrowserSetup(ctx context.Context, cfg config.Config, logger *slog.Logger
 	}
 	var apiHandler http.Handler
 	if watchlistObserver != nil {
-		apiHandler, err = setuphandler.NewWithAcquisitionAndWatchlist(service, acquisitionCoordinator, watchlistObserver, logger)
+		apiHandler, err = setuphandler.NewWithAcquisitionJobsAndWatchlist(service, acquisitionCoordinator, acquisitionJobManager, watchlistObserver, logger)
 	} else {
-		apiHandler, err = setuphandler.NewWithAcquisition(service, acquisitionCoordinator, logger)
+		apiHandler, err = setuphandler.NewWithAcquisitionAndJobs(service, acquisitionCoordinator, acquisitionJobManager, logger)
 	}
 	if err != nil {
 		return err

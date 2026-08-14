@@ -20,6 +20,14 @@ type AcquisitionService interface {
 	Acquire(ctx context.Context, request acquisitiondomain.SearchRequest) (acquisitiondomain.AcquiredMedia, error)
 }
 
+// AcquisitionJobService is the durable background-job boundary consumed by
+// paired HTTP routes.
+type AcquisitionJobService interface {
+	Submit(ctx context.Context, request acquisitiondomain.SearchRequest) (acquisitiondomain.AcquisitionJob, bool, error)
+	Get(ctx context.Context, id string) (acquisitiondomain.AcquisitionJob, error)
+	List(ctx context.Context, limit int) ([]acquisitiondomain.AcquisitionJob, error)
+}
+
 // WatchlistService returns privacy-safe observation state to a paired browser.
 type WatchlistService interface {
 	Status(ctx context.Context) (watchlistservice.ObserverStatus, error)
@@ -32,6 +40,25 @@ func NewWithAcquisition(service Service, acquisition AcquisitionService, configu
 		return nil, errors.New("acquisition service is required")
 	}
 	return newHandler(service, acquisition, configuredLogger...)
+}
+
+// NewWithAcquisitionAndJobs constructs setup, instant acquisition, and durable
+// background acquisition routes behind one pairing boundary.
+func NewWithAcquisitionAndJobs(
+	service Service,
+	acquisition AcquisitionService,
+	jobs AcquisitionJobService,
+	configuredLogger ...*slog.Logger,
+) (http.Handler, error) {
+	if acquisition == nil || jobs == nil {
+		return nil, errors.New("acquisition and job services are required")
+	}
+	configured, err := newHandler(service, acquisition, configuredLogger...)
+	if err != nil {
+		return nil, err
+	}
+	configured.jobs = jobs
+	return configured, nil
 }
 
 // NewWithAcquisitionAndWatchlist constructs the paired setup, acquisition, and
@@ -49,6 +76,27 @@ func NewWithAcquisitionAndWatchlist(
 	if err != nil {
 		return nil, err
 	}
+	configured.watchlist = watchlist
+	return configured, nil
+}
+
+// NewWithAcquisitionJobsAndWatchlist constructs the complete paired control
+// API used by the browser-setup runtime.
+func NewWithAcquisitionJobsAndWatchlist(
+	service Service,
+	acquisition AcquisitionService,
+	jobs AcquisitionJobService,
+	watchlist WatchlistService,
+	configuredLogger ...*slog.Logger,
+) (http.Handler, error) {
+	if acquisition == nil || jobs == nil || watchlist == nil {
+		return nil, errors.New("acquisition, job, and watchlist services are required")
+	}
+	configured, err := newHandler(service, acquisition, configuredLogger...)
+	if err != nil {
+		return nil, err
+	}
+	configured.jobs = jobs
 	configured.watchlist = watchlist
 	return configured, nil
 }

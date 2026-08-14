@@ -7,36 +7,36 @@ that prepares through TorBox and publishes to Plex automatically.
 
 **Files:** `internal/acquisition/job.go`, `internal/repository/acquisitionjob/*`
 
-- [ ] Add immutable job, state, selection, claim, and transition value objects.
-- [ ] Add embedded SQLite migrations, active-intent deduplication, lease claims,
+- [x] Add immutable job, state, selection, claim, and transition value objects.
+- [x] Add embedded SQLite migrations, active-intent deduplication, lease claims,
   version-checked transitions, list/get, and restart recovery.
-- [ ] Prove invalid transitions, stale leases, redaction, and restart behavior
+- [x] Prove invalid transitions, stale leases, redaction, and restart behavior
   with repository tests.
-- [ ] Commit `feat: persist durable acquisition jobs`.
+- [x] Commit `feat: persist durable acquisition jobs`.
 
 ### Task 2: Materialize and prepare provider content safely
 
 **Files:** `internal/acquisition/material.go`, `internal/gateway/prowlarr/*`,
 `internal/gateway/torbox/*`
 
-- [ ] Add a bounded transient torrent-input value object.
-- [ ] Add same-origin Prowlarr magnet/`.torrent` materialization.
-- [ ] Verify raw bencoded torrent info hashes before provider mutation.
-- [ ] Add TorBox reconcile-by-hash and explicit allow-download creation without
+- [x] Add a bounded transient torrent-input value object.
+- [x] Add same-origin Prowlarr magnet/`.torrent` materialization.
+- [x] Verify raw bencoded torrent info hashes before provider mutation.
+- [x] Add TorBox reconcile-by-hash and explicit allow-download creation without
   automatic mutation retries.
-- [ ] Commit `feat: prepare uncached TorBox releases`.
+- [x] Commit `feat: prepare uncached TorBox releases`.
 
 ### Task 3: Add the durable worker and coordinator wiring
 
 **Files:** `internal/service/acquisitionjob/*`,
 `internal/service/acquisition/coordinator.go`, `cmd/blackpearl/app.go`
 
-- [ ] Resolve and persist a ranked release before creation.
-- [ ] Reconcile before create, poll preparing objects, select playable media,
+- [x] Resolve and persist a ranked release before creation.
+- [x] Reconcile before create, poll preparing objects, select playable media,
   and publish through the existing transaction.
-- [ ] Classify retryable, terminal, unauthorized, and ambiguous outcomes.
-- [ ] Run the worker from the process lifecycle and prove restart recovery.
-- [ ] Commit `feat: run background acquisition jobs`.
+- [x] Classify retryable, terminal, unauthorized, and ambiguous outcomes.
+- [x] Run the worker from the process lifecycle and prove restart recovery.
+- [x] Commit `feat: run background acquisition jobs`.
 
 ### Task 4: Add the paired API and setup UI
 
@@ -44,12 +44,12 @@ that prepares through TorBox and publishes to Plex automatically.
 `internal/handler/setup/*`, `web/src/lib/api.*`,
 `web/src/components/setup-console.*`, `web/src/app/globals.css`
 
-- [ ] Specify submit/list/get operations and strict schemas.
-- [ ] Generate strict Go API types and validate requests at runtime.
-- [ ] Add authorized handlers and safe error mapping.
-- [ ] Add the explicit `Prepare through TorBox` action and restart-safe progress
+- [x] Specify submit/list/get operations and strict schemas.
+- [x] Preserve the existing strict JSON decoder and domain validation at runtime.
+- [x] Add authorized handlers and safe error mapping.
+- [x] Add the explicit `Prepare through TorBox` action and restart-safe progress
   card with polling.
-- [ ] Commit `feat: show background acquisition progress`.
+- [x] Commit `feat: show background acquisition progress`.
 
 ### Task 5: Verify the end-to-end product slice
 
@@ -65,4 +65,3 @@ that prepares through TorBox and publishes to Plex automatically.
 - [ ] Request a focused architecture/security review and resolve all critical or
   important findings.
 - [ ] Commit `docs: verify durable background acquisition`.
-

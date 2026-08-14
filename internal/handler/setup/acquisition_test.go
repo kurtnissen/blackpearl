@@ -195,6 +195,66 @@ func TestHandlerAcquireRejectsInvalidIntentBeforeMutation(t *testing.T) {
 	require.Zero(t, acquisition.acquireCalls)
 }
 
+func TestHandlerSubmitsAndReadsPairedBackgroundAcquisitionJobs(t *testing.T) {
+	t.Parallel()
+	setup := &fakeService{}
+	jobs := &fakeAcquisitionJobService{job: acquisitionJobForHandler(t, acquisitiondomain.JobStateQueued)}
+	handler, err := setuphandler.NewWithAcquisitionAndJobs(setup, &fakeAcquisitionService{}, jobs)
+	require.NoError(t, err)
+	csrf := fetchCSRF(t, handler)
+
+	submit := newMutation(t, http.MethodPost, "/api/acquisition/jobs", csrf, `{"mediaType":"movie","title":"Example Movie","year":2026}`)
+	submit.Header.Set("X-BlackPearl-Session", "paired-session")
+	submitResponse := httptest.NewRecorder()
+	handler.ServeHTTP(submitResponse, submit)
+
+	require.Equal(t, http.StatusAccepted, submitResponse.Code)
+	require.Equal(t, "Example Movie", jobs.request.Title())
+	require.Contains(t, submitResponse.Body.String(), `"state":"queued"`)
+	require.NotContains(t, submitResponse.Body.String(), "infoHash")
+	require.NotContains(t, submitResponse.Body.String(), "provider")
+
+	list := newMutation(t, http.MethodGet, "/api/acquisition/jobs", csrf, "")
+	list.Header.Del("Origin")
+	list.Header.Set("X-BlackPearl-Session", "paired-session")
+	listResponse := httptest.NewRecorder()
+	handler.ServeHTTP(listResponse, list)
+	require.Equal(t, http.StatusOK, listResponse.Code)
+	require.Contains(t, listResponse.Body.String(), jobs.job.ID())
+
+	get := newMutation(t, http.MethodGet, "/api/acquisition/jobs/"+jobs.job.ID(), csrf, "")
+	get.Header.Del("Origin")
+	get.Header.Set("X-BlackPearl-Session", "paired-session")
+	getResponse := httptest.NewRecorder()
+	handler.ServeHTTP(getResponse, get)
+	require.Equal(t, http.StatusOK, getResponse.Code)
+	require.Equal(t, jobs.job.ID(), jobs.gotID)
+}
+
+func TestHandlerBackgroundJobsRequirePairingAndMapMissingJob(t *testing.T) {
+	t.Parallel()
+	setup := &fakeService{authorizeErr: setupservice.ErrSetupUnauthorized}
+	jobs := &fakeAcquisitionJobService{getErr: domain.ErrNotFound}
+	handler, err := setuphandler.NewWithAcquisitionAndJobs(setup, &fakeAcquisitionService{}, jobs)
+	require.NoError(t, err)
+	csrf := fetchCSRF(t, handler)
+
+	unpaired := newMutation(t, http.MethodPost, "/api/acquisition/jobs", csrf, `{"mediaType":"movie","title":"Example","year":2026}`)
+	unpairedResponse := httptest.NewRecorder()
+	handler.ServeHTTP(unpairedResponse, unpaired)
+	require.Equal(t, http.StatusUnauthorized, unpairedResponse.Code)
+	require.Zero(t, jobs.submitCalls)
+
+	setup.authorizeErr = nil
+	missing := newMutation(t, http.MethodGet, "/api/acquisition/jobs/0123456789abcdef0123456789abcdef", csrf, "")
+	missing.Header.Del("Origin")
+	missing.Header.Set("X-BlackPearl-Session", "paired-session")
+	missingResponse := httptest.NewRecorder()
+	handler.ServeHTTP(missingResponse, missing)
+	require.Equal(t, http.StatusNotFound, missingResponse.Code)
+	require.Contains(t, missingResponse.Body.String(), "job_not_found")
+}
+
 func TestHandlerMapsAcquisitionErrorsToPublicRecoveryMessages(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -256,6 +316,44 @@ type fakeAcquisitionService struct {
 	acquireCalls   int
 	media          acquisitiondomain.AcquiredMedia
 	acquireErr     error
+}
+
+type fakeAcquisitionJobService struct {
+	job         acquisitiondomain.AcquisitionJob
+	request     acquisitiondomain.SearchRequest
+	submitCalls int
+	submitErr   error
+	getErr      error
+	listErr     error
+	gotID       string
+}
+
+func (f *fakeAcquisitionJobService) Submit(_ context.Context, request acquisitiondomain.SearchRequest) (acquisitiondomain.AcquisitionJob, bool, error) {
+	f.submitCalls++
+	f.request = request
+	return f.job, true, f.submitErr
+}
+
+func (f *fakeAcquisitionJobService) Get(_ context.Context, id string) (acquisitiondomain.AcquisitionJob, error) {
+	f.gotID = id
+	return f.job, f.getErr
+}
+
+func (f *fakeAcquisitionJobService) List(context.Context, int) ([]acquisitiondomain.AcquisitionJob, error) {
+	return []acquisitiondomain.AcquisitionJob{f.job}, f.listErr
+}
+
+func acquisitionJobForHandler(t *testing.T, state acquisitiondomain.JobState) acquisitiondomain.AcquisitionJob {
+	t.Helper()
+	request, err := acquisitiondomain.NewMovieSearch("Example Movie", 2026)
+	require.NoError(t, err)
+	at := time.Date(2026, time.August, 14, 12, 0, 0, 0, time.UTC)
+	job, err := acquisitiondomain.NewAcquisitionJobSnapshot(acquisitiondomain.JobSnapshotInput{
+		ID: "0123456789abcdef0123456789abcdef", Request: request, State: state,
+		CreatedAt: at, UpdatedAt: at,
+	})
+	require.NoError(t, err)
+	return job
 }
 
 type fakeWatchlistService struct {

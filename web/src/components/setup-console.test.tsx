@@ -210,6 +210,7 @@ it("connects Prowlarr and adds an instant cached movie to the Plex manifest", as
     .mockResolvedValueOnce(new Response(JSON.stringify({ setupRequired: false, tokenConfigured: true, csrfToken: "csrf", selected: active, selectedItems: [active] }), { status: 200 }))
     .mockResolvedValueOnce(watchlistResponse())
     .mockResolvedValueOnce(new Response(JSON.stringify({ configured: false }), { status: 200 }))
+		.mockResolvedValueOnce(new Response(JSON.stringify({ jobs: [] }), { status: 200 }))
     .mockResolvedValueOnce(new Response(JSON.stringify({ configured: true }), { status: 200, headers: { "X-BlackPearl-Session": session } }))
     .mockResolvedValueOnce(new Response(JSON.stringify({ selected: added, selectedItems: [active, added] }), { status: 200, headers: { "X-BlackPearl-Session": session } }));
   vi.stubGlobal("fetch", fetchSpy);
@@ -230,12 +231,57 @@ it("connects Prowlarr and adds an instant cached movie to the Plex manifest", as
   expect(screen.getByRole("status")).toHaveTextContent("Added New Movie to Plex");
   expect(window.sessionStorage.getItem("blackpearl.setup.session")).toBe(session);
   expect(Object.values(window.sessionStorage)).not.toContain("private-prowlarr-key");
-  expect(fetchSpy).toHaveBeenNthCalledWith(4, "/api/acquisition/settings", expect.objectContaining({
+  expect(fetchSpy).toHaveBeenNthCalledWith(5, "/api/acquisition/settings", expect.objectContaining({
     body: JSON.stringify({ baseUrl: "http://prowlarr:9696", apiKey: "private-prowlarr-key" }),
   }));
-  expect(fetchSpy).toHaveBeenNthCalledWith(5, "/api/acquisition/acquire", expect.objectContaining({
+  expect(fetchSpy).toHaveBeenNthCalledWith(6, "/api/acquisition/acquire", expect.objectContaining({
     body: JSON.stringify({ mediaType: "movie", title: "New Movie", year: 2026 }),
   }));
+});
+
+it("offers explicit TorBox preparation when no instant copy is cached", async () => {
+	const session = "a".repeat(64);
+	const bootstrap = "b".repeat(64);
+	const active = { objectId: "17:3", name: "Existing.mkv", extension: ".mkv", size: 1024, mediaType: "movie", title: "Existing", year: 2024 };
+	const job = {
+		id: "0123456789abcdef0123456789abcdef",
+		state: "queued",
+		mediaType: "movie",
+		title: "Open Movie",
+		year: 2026,
+		progress: 0,
+		createdAt: "2026-08-14T12:00:00Z",
+		updatedAt: "2026-08-14T12:00:00Z",
+	};
+	window.history.replaceState(null, "", `/#bootstrap=${bootstrap}`);
+	const fetchSpy = vi.fn()
+		.mockResolvedValueOnce(new Response(JSON.stringify({ setupRequired: false, tokenConfigured: true, csrfToken: "csrf", selected: active, selectedItems: [active] }), { status: 200 }))
+		.mockResolvedValueOnce(watchlistResponse())
+		.mockResolvedValueOnce(new Response(JSON.stringify({ configured: true }), { status: 200 }))
+		.mockResolvedValueOnce(new Response(JSON.stringify({ jobs: [] }), { status: 200 }))
+		.mockResolvedValueOnce(new Response(JSON.stringify({ code: "not_cached", message: "No instant result." }), { status: 404 }))
+		.mockResolvedValueOnce(new Response(JSON.stringify({ job, created: true }), {
+			status: 202,
+			headers: { "X-BlackPearl-Session": session },
+		}));
+	vi.stubGlobal("fetch", fetchSpy);
+	const user = userEvent.setup();
+	render(<SetupConsole />);
+
+	await user.click(await screen.findByRole("button", { name: "Find something new" }));
+	await user.type(await screen.findByLabelText("Title"), "Open Movie");
+	await user.clear(screen.getByLabelText("Year"));
+	await user.type(screen.getByLabelText("Year"), "2026");
+	await user.click(screen.getByRole("button", { name: "Find and add to Plex" }));
+	await user.click(await screen.findByRole("button", { name: "Prepare through TorBox" }));
+
+	expect(await screen.findByRole("heading", { name: "Open Movie" })).toBeInTheDocument();
+	expect(screen.getByText(/continues if you close this page/i)).toBeInTheDocument();
+	expect(screen.getByText("Queued")).toBeInTheDocument();
+	expect(fetchSpy).toHaveBeenNthCalledWith(6, "/api/acquisition/jobs", expect.objectContaining({
+		method: "POST",
+		body: JSON.stringify({ mediaType: "movie", title: "Open Movie", year: 2026 }),
+	}));
 });
 
 it("shows aggregate Plex Watchlist activity without exposing titles or identifiers", async () => {

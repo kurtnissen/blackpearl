@@ -41,13 +41,13 @@ queued
   -> publishing
   -> succeeded
 
-Any leased state -> retryable -> resolving/selected/preparing
+Any leased state + transient error -> same stage with a future retry time
 Any state after an ambiguous mutation -> manual_review
 Invalid/no matching release/no playable file -> failed
 ```
 
-`resolving` and `publishing` are lease-owned transient states. Expired leases
-are reclaimable. `selected` includes the stable info hash and can safely resume.
+Resolution and publication are lease-owned operations rather than extra durable
+states. Expired leases are reclaimable. `selected` includes the stable info hash and can safely resume.
 `preparing` includes the provider object ID and is polled without repeating the
 create mutation. Progress is advisory, clamped to 0-100, and never controls the
 correctness transition to ready media.
@@ -120,4 +120,3 @@ publication path. No production media or Plex library path is modified.
   BlackPearl's cache.
 - Full race, coverage, lint, vulnerability, frontend, Compose, and architecture
   gates pass.
-

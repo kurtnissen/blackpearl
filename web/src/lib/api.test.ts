@@ -5,8 +5,11 @@ import {
   configureAcquisition,
   discoverMedia,
   getAcquisitionStatus,
-  getStatus,
-  getWatchlistStatus,
+	getAcquisitionJob,
+	listAcquisitionJobs,
+	getStatus,
+	getWatchlistStatus,
+	submitAcquisitionJob,
 } from "./api";
 
 const session = "a".repeat(64);
@@ -160,4 +163,49 @@ describe("setup API", () => {
       body: JSON.stringify({ mediaType: "movie", title: "Film", year: 2026 }),
     }));
   });
+
+	it("submits and polls a durable background acquisition through the paired boundary", async () => {
+		const job = {
+			id: "0123456789abcdef0123456789abcdef",
+			state: "queued",
+			mediaType: "movie",
+			title: "Film",
+			year: 2026,
+			progress: 0,
+			createdAt: "2026-08-14T12:00:00Z",
+			updatedAt: "2026-08-14T12:00:00Z",
+		};
+		const fetchSpy = vi.fn()
+			.mockResolvedValueOnce(new Response(JSON.stringify({ job, created: true }), {
+				status: 202,
+				headers: { "X-BlackPearl-Session": session },
+			}))
+			.mockResolvedValueOnce(new Response(JSON.stringify({ jobs: [job] }), { status: 200 }))
+			.mockResolvedValueOnce(new Response(JSON.stringify(job), { status: 200 }));
+		vi.stubGlobal("fetch", fetchSpy);
+
+		const submitted = await submitAcquisitionJob({ mediaType: "movie", title: "Film", year: 2026 }, "csrf", { session });
+		const listed = await listAcquisitionJobs("csrf", { session });
+		const loaded = await getAcquisitionJob(job.id, "csrf", { session });
+
+		expect(submitted).toEqual({ job, created: true, session });
+		expect(listed).toEqual([job]);
+		expect(loaded).toEqual(job);
+		expect(fetchSpy).toHaveBeenNthCalledWith(1, "/api/acquisition/jobs", expect.objectContaining({
+			method: "POST",
+			body: JSON.stringify({ mediaType: "movie", title: "Film", year: 2026 }),
+		}));
+		expect(fetchSpy).toHaveBeenNthCalledWith(2, "/api/acquisition/jobs", expect.objectContaining({ method: "GET" }));
+		expect(fetchSpy).toHaveBeenNthCalledWith(3, `/api/acquisition/jobs/${job.id}`, expect.objectContaining({ method: "GET" }));
+	});
+
+	it("rejects malformed durable job state", async () => {
+		vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+			id: "private-url",
+			state: "unknown",
+		}), { status: 200 })));
+
+		await expect(getAcquisitionJob("0123456789abcdef0123456789abcdef", "csrf", { session }))
+			.rejects.toMatchObject({ code: "invalid_acquisition_job" });
+	});
 });

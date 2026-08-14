@@ -7,10 +7,14 @@ import {
   configureAcquisition,
   discoverMedia,
   getAcquisitionStatus,
+	getAcquisitionJob,
+	listAcquisitionJobs,
   getStatus,
   getWatchlistStatus,
+	submitAcquisitionJob,
   SetupAPIError,
   type AcquisitionIntent,
+	type AcquisitionJob,
   type MediaCandidate,
 	type ApplyItemInput,
   type SetupAuthorization,
@@ -55,6 +59,8 @@ export function SetupConsole(): React.JSX.Element {
   const [acquisitionYear, setAcquisitionYear] = useState(new Date().getFullYear());
   const [acquisitionSeason, setAcquisitionSeason] = useState(1);
   const [acquisitionEpisode, setAcquisitionEpisode] = useState(1);
+	const [preparationOffer, setPreparationOffer] = useState<AcquisitionIntent | null>(null);
+	const [activeJob, setActiveJob] = useState<AcquisitionJob | null>(null);
   const [watchlistStatus, setWatchlistStatus] = useState<WatchlistStatus | null>(null);
   const [watchlistLoading, setWatchlistLoading] = useState(false);
   const [watchlistError, setWatchlistError] = useState("");
@@ -120,6 +126,31 @@ export function SetupConsole(): React.JSX.Element {
       });
     return () => { active = false; };
   }, []);
+
+	useEffect(() => {
+		if (!activeJob || terminalAcquisitionJob(activeJob)) return;
+		let active = true;
+		const timer = window.setTimeout(() => {
+			getAcquisitionJob(activeJob.id, csrf, { session, bootstrap })
+				.then(async (job) => {
+					if (!active) return;
+					setActiveJob(job);
+					setMessage(acquisitionJobMessage(job));
+					if (job.state === "succeeded") {
+						const status = await getStatus();
+						if (!active) return;
+						setSelectedItems(status.selectedItems ?? (status.selected ? [status.selected] : []));
+					}
+				})
+				.catch((error: unknown) => {
+					if (active) setMessage(publicMessage(error));
+				});
+		}, 5000);
+		return () => {
+			active = false;
+			window.clearTimeout(timer);
+		};
+	}, [activeJob, bootstrap, csrf, session]);
 
   async function findVideos(useSavedToken = false): Promise<void> {
     setPending(true);
@@ -214,6 +245,12 @@ export function SetupConsole(): React.JSX.Element {
     setMessage("Checking the search connection…");
     try {
       const status = await getAcquisitionStatus();
+			try {
+				const jobs = await listAcquisitionJobs(csrf, authorization);
+				setActiveJob(jobs.find((job) => !terminalAcquisitionJob(job)) ?? jobs[0] ?? null);
+			} catch {
+				// The instant path remains usable when background status is temporarily unavailable.
+			}
       setAcquisitionView(status.configured ? "search" : "settings");
       setMessage(status.configured
         ? "Prowlarr is connected. Enter a movie or episode."
@@ -252,23 +289,67 @@ export function SetupConsole(): React.JSX.Element {
     if (!validAcquisitionRequest(acquisitionTitle, acquisitionYear, acquisitionType, acquisitionSeason, acquisitionEpisode)) return;
     setPending(true);
     setMessage(`Looking for an instant ${acquisitionType === "movie" ? "movie" : "episode"}…`);
+		const intent = acquisitionIntent(acquisitionType, acquisitionTitle, acquisitionYear, acquisitionSeason, acquisitionEpisode);
     try {
       const result = await acquireMedia(
-        acquisitionIntent(acquisitionType, acquisitionTitle, acquisitionYear, acquisitionSeason, acquisitionEpisode),
+				intent,
         csrf,
         authorization,
       );
       storeSession(result.session);
       setSession(result.session);
       setSelectedItems(result.selectedItems);
+			setPreparationOffer(null);
       setAcquisitionTitle("");
       setMessage(`Added ${result.selected.title} to Plex. Scan the library if it does not appear automatically.`);
     } catch (error: unknown) {
+			if (error instanceof SetupAPIError && error.code === "not_cached") {
+				setPreparationOffer(intent);
+				setMessage("No instant copy is cached. You can ask TorBox to prepare this title in the background.");
+				return;
+			}
       setMessage(publicMessage(error));
     } finally {
       setPending(false);
     }
   }
+
+	async function prepareRequestedMedia(): Promise<void> {
+		if (!preparationOffer) return;
+		setPending(true);
+		setMessage("Creating a restart-safe background request…");
+		try {
+			const result = await submitAcquisitionJob(preparationOffer, csrf, authorization);
+			storeSession(result.session);
+			setSession(result.session);
+			setActiveJob(result.job);
+			setPreparationOffer(null);
+			setAcquisitionTitle("");
+			setMessage(acquisitionJobMessage(result.job));
+		} catch (error: unknown) {
+			setMessage(publicMessage(error));
+		} finally {
+			setPending(false);
+		}
+	}
+
+	async function refreshAcquisitionJob(): Promise<void> {
+		if (!activeJob) return;
+		setPending(true);
+		try {
+			const job = await getAcquisitionJob(activeJob.id, csrf, authorization);
+			setActiveJob(job);
+			setMessage(acquisitionJobMessage(job));
+			if (job.state === "succeeded") {
+				const status = await getStatus();
+				setSelectedItems(status.selectedItems ?? (status.selected ? [status.selected] : []));
+			}
+		} catch (error: unknown) {
+			setMessage(publicMessage(error));
+		} finally {
+			setPending(false);
+		}
+	}
 
   return (
     <main className="shell">
@@ -417,6 +498,21 @@ export function SetupConsole(): React.JSX.Element {
               {watchlistError && <p className="watchlist-error">Watchlist status is temporarily unavailable. Your existing Plex library is unaffected.</p>}
               <button type="button" onClick={() => void refreshWatchlist()} disabled={watchlistLoading || (!session && !bootstrap)}>Refresh Watchlist</button>
             </section>
+						{activeJob && (
+							<section className={`background-job background-job--${activeJob.state}`} aria-labelledby="background-job-title">
+								<div className="background-job__heading">
+									<div>
+										<p className="ready-kicker">BACKGROUND PREPARATION</p>
+										<h4 id="background-job-title">{activeJob.title}</h4>
+									</div>
+									<span className="background-job__state">{acquisitionJobStateLabel(activeJob)}</span>
+								</div>
+								<p>{acquisitionJobDetail(activeJob)}</p>
+								<progress max="100" value={acquisitionJobProgress(activeJob)} aria-label={`${activeJob.title} preparation progress`} />
+								<p className="field-note">This continues if you close this page or restart BlackPearl. When it is ready, BlackPearl publishes it to Plex automatically.</p>
+								<button type="button" onClick={() => void refreshAcquisitionJob()} disabled={pending}>Refresh status</button>
+							</section>
+						)}
             {acquisitionView !== "closed" && (
               <section className="acquisition-panel" aria-labelledby="acquisition-title">
                 <div className="acquisition-panel__heading">
@@ -448,6 +544,7 @@ export function SetupConsole(): React.JSX.Element {
                     {acquisitionType === "episode" && <label>Episode<input type="number" min="1" max="999" value={acquisitionEpisode} onChange={(event) => setAcquisitionEpisode(event.target.valueAsNumber)} required disabled={pending} /></label>}
                     <div className="acquisition-form__actions actions">
                       <button className="primary" type="submit" disabled={pending || !validAcquisitionRequest(acquisitionTitle, acquisitionYear, acquisitionType, acquisitionSeason, acquisitionEpisode)}>Find and add to Plex</button>
+										{preparationOffer && <button type="button" onClick={() => void prepareRequestedMedia()} disabled={pending}>Prepare through TorBox</button>}
                       <button type="button" onClick={() => setAcquisitionView("settings")} disabled={pending}>Change Prowlarr</button>
                     </div>
                   </form>
@@ -563,6 +660,48 @@ function validAcquisitionRequest(title: string, year: number, mediaType: "movie"
 function acquisitionIntent(mediaType: "movie" | "episode", title: string, year: number, season: number, episode: number): AcquisitionIntent {
   if (mediaType === "episode") return { mediaType, title: title.trim(), year, season, episode };
   return { mediaType, title: title.trim(), year };
+}
+
+function terminalAcquisitionJob(job: AcquisitionJob): boolean {
+	return job.state === "succeeded" || job.state === "failed" || job.state === "manual_review";
+}
+
+function acquisitionJobStateLabel(job: AcquisitionJob): string {
+	switch (job.state) {
+		case "queued": return "Queued";
+		case "selected": return "Release selected";
+		case "preparing": return job.errorCode ? "Waiting to retry" : "Preparing";
+		case "succeeded": return "Added to Plex";
+		case "failed": return "Could not prepare";
+		case "manual_review": return "Needs review";
+	}
+}
+
+function acquisitionJobProgress(job: AcquisitionJob): number {
+	if (job.state === "queued") return 5;
+	if (job.state === "selected") return 15;
+	if (job.state === "preparing") return Math.max(25, job.progress);
+	return 100;
+}
+
+function acquisitionJobDetail(job: AcquisitionJob): string {
+	if (job.state === "queued") return "BlackPearl saved the request and will choose a verified release next.";
+	if (job.state === "selected") return "The release fingerprint is safely stored. BlackPearl is reconciling it with TorBox before creation.";
+	if (job.state === "preparing" && job.errorCode === "unauthorized") return "A saved provider key needs attention. Reconnect the provider, then BlackPearl will retry.";
+	if (job.state === "preparing" && job.errorCode) return "The provider is temporarily unavailable. BlackPearl will retry without duplicating the request.";
+	if (job.state === "preparing") return "TorBox is preparing the media while BlackPearl checks for a playable file.";
+	if (job.state === "succeeded") return "The media was published through BlackPearl and a Plex library refresh was requested.";
+	if (job.state === "manual_review") return "BlackPearl stopped automatic retries because the provider result was ambiguous.";
+	if (job.errorCode === "no_release") return "No compatible torrent release was available from the configured authorized indexers.";
+	if (job.errorCode === "no_playable_media") return "The prepared item did not contain a matching MP4 or MKV video.";
+	return "The selected release could not be prepared safely.";
+}
+
+function acquisitionJobMessage(job: AcquisitionJob): string {
+	if (job.state === "succeeded") return `Added ${job.title} to Plex.`;
+	if (job.state === "failed") return `${job.title} could not be prepared safely.`;
+	if (job.state === "manual_review") return `${job.title} needs review before BlackPearl will try again.`;
+	return `${job.title} is saved for background preparation.`;
 }
 
 function validDraft(draft: SelectionDraft): boolean {

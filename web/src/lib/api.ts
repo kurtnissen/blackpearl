@@ -92,6 +92,30 @@ export type AcquisitionStatusResult = AcquisitionStatus & {
   session: string;
 };
 
+export type AcquisitionJobState = "queued" | "selected" | "preparing" | "succeeded" | "failed" | "manual_review";
+
+export type AcquisitionJobError = "provider_unavailable" | "unauthorized" | "no_release" | "no_playable_media" | "materialization_failed" | "ambiguous_mutation";
+
+export type AcquisitionJob = {
+	id: string;
+	state: AcquisitionJobState;
+	mediaType: "movie" | "episode";
+	title: string;
+	year: number;
+	season?: number;
+	episode?: number;
+	progress: number;
+	errorCode?: AcquisitionJobError;
+	createdAt: string;
+	updatedAt: string;
+};
+
+export type AcquisitionJobSubmission = {
+	job: AcquisitionJob;
+	created: boolean;
+	session: string;
+};
+
 export class SetupAPIError extends Error {
   readonly code: string;
 
@@ -174,6 +198,47 @@ export async function acquireMedia(
   });
   const envelope = await readJSON(response, isSelectionEnvelope, "invalid_acquisition");
   return { selected: envelope.selected, selectedItems: envelope.selectedItems, session: readSession(response) };
+}
+
+export async function submitAcquisitionJob(
+	input: AcquisitionIntent,
+	csrfToken: string,
+	authorization: SetupAuthorization,
+): Promise<AcquisitionJobSubmission> {
+	const response = await fetch("/api/acquisition/jobs", {
+		method: "POST",
+		cache: "no-store",
+		headers: mutationHeaders(csrfToken, authorization),
+		body: JSON.stringify(input),
+	});
+	const envelope = await readJSON(response, isAcquisitionJobSubmission, "invalid_acquisition_job");
+	return { ...envelope, session: readSession(response) };
+}
+
+export async function listAcquisitionJobs(
+	csrfToken: string,
+	authorization: SetupAuthorization,
+): Promise<AcquisitionJob[]> {
+	const response = await fetch("/api/acquisition/jobs", {
+		method: "GET",
+		cache: "no-store",
+		headers: mutationHeaders(csrfToken, authorization),
+	});
+	const envelope = await readJSON(response, isAcquisitionJobList, "invalid_acquisition_job_list");
+	return envelope.jobs;
+}
+
+export async function getAcquisitionJob(
+	id: string,
+	csrfToken: string,
+	authorization: SetupAuthorization,
+): Promise<AcquisitionJob> {
+	const response = await fetch(`/api/acquisition/jobs/${encodeURIComponent(id)}`, {
+		method: "GET",
+		cache: "no-store",
+		headers: mutationHeaders(csrfToken, authorization),
+	});
+	return readJSON(response, isAcquisitionJob, "invalid_acquisition_job");
 }
 
 function mutationHeaders(csrfToken: string, authorization: SetupAuthorization): Record<string, string> {
@@ -282,6 +347,44 @@ function isWatchlistQueueStatus(value: unknown): value is WatchlistQueueStatus {
     && isCount(value.retryable)
     && isCount(value.manualReview)
     && isCount(value.observedShows);
+}
+
+function isAcquisitionJob(value: unknown): value is AcquisitionJob {
+	if (!isRecord(value)
+		|| typeof value.id !== "string" || !/^[0-9a-f]{32}$/.test(value.id)
+		|| !isAcquisitionJobState(value.state)
+		|| (value.mediaType !== "movie" && value.mediaType !== "episode")
+		|| typeof value.title !== "string" || value.title.length === 0 || value.title.length > 200
+		|| typeof value.year !== "number" || !Number.isInteger(value.year) || value.year < 1888 || value.year > 2100
+		|| !isCount(value.progress) || value.progress > 100
+		|| typeof value.createdAt !== "string" || !Number.isFinite(Date.parse(value.createdAt))
+		|| typeof value.updatedAt !== "string" || !Number.isFinite(Date.parse(value.updatedAt))
+		|| (value.errorCode !== undefined && !isAcquisitionJobError(value.errorCode))) {
+		return false;
+	}
+	if (value.mediaType === "episode") {
+		return typeof value.season === "number" && Number.isInteger(value.season) && value.season >= 0 && value.season <= 99
+			&& typeof value.episode === "number" && Number.isInteger(value.episode) && value.episode >= 1 && value.episode <= 999;
+	}
+	return value.season === undefined && value.episode === undefined;
+}
+
+function isAcquisitionJobState(value: unknown): value is AcquisitionJobState {
+	return value === "queued" || value === "selected" || value === "preparing"
+		|| value === "succeeded" || value === "failed" || value === "manual_review";
+}
+
+function isAcquisitionJobError(value: unknown): value is AcquisitionJobError {
+	return value === "provider_unavailable" || value === "unauthorized" || value === "no_release"
+		|| value === "no_playable_media" || value === "materialization_failed" || value === "ambiguous_mutation";
+}
+
+function isAcquisitionJobSubmission(value: unknown): value is { job: AcquisitionJob; created: boolean } {
+	return isRecord(value) && isAcquisitionJob(value.job) && typeof value.created === "boolean";
+}
+
+function isAcquisitionJobList(value: unknown): value is { jobs: AcquisitionJob[] } {
+	return isRecord(value) && Array.isArray(value.jobs) && value.jobs.length <= 20 && value.jobs.every(isAcquisitionJob);
 }
 
 function isCount(value: unknown): value is number {

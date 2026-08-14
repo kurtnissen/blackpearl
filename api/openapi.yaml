@@ -166,6 +166,78 @@ paths:
         "409": { $ref: "#/components/responses/Error" }
         "422": { $ref: "#/components/responses/Error" }
         "503": { $ref: "#/components/responses/Error" }
+  /api/acquisition/jobs:
+    post:
+      operationId: submitAcquisitionJob
+      description: Explicitly submits an authorized movie or episode for restart-safe background preparation. Ephemeral release locators and provider credentials are never persisted.
+      parameters:
+        - $ref: "#/components/parameters/CSRF"
+        - $ref: "#/components/parameters/Session"
+        - $ref: "#/components/parameters/Bootstrap"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AcquisitionIntent" }
+      responses:
+        "202":
+          description: The durable job was created or an equivalent active job was returned.
+          headers:
+            X-BlackPearl-Session:
+              $ref: "#/components/headers/Session"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AcquisitionJobSubmission" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+    get:
+      operationId: listAcquisitionJobs
+      description: Lists up to 20 recent privacy-safe jobs for the already paired local browser.
+      parameters:
+        - $ref: "#/components/parameters/CSRF"
+        - $ref: "#/components/parameters/Session"
+        - $ref: "#/components/parameters/Bootstrap"
+      responses:
+        "200":
+          description: Recent durable background acquisition jobs.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [jobs]
+                properties:
+                  jobs:
+                    type: array
+                    maxItems: 20
+                    items: { $ref: "#/components/schemas/AcquisitionJob" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /api/acquisition/jobs/{jobId}:
+    get:
+      operationId: getAcquisitionJob
+      description: Returns one privacy-safe durable job for progress polling.
+      parameters:
+        - in: path
+          name: jobId
+          required: true
+          schema: { type: string, pattern: "^[0-9a-f]{32}$" }
+        - $ref: "#/components/parameters/CSRF"
+        - $ref: "#/components/parameters/Session"
+        - $ref: "#/components/parameters/Bootstrap"
+      responses:
+        "200":
+          description: Current durable job state.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AcquisitionJob" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
   /api/watchlist/status:
     get:
       operationId: getWatchlistStatus
@@ -303,6 +375,31 @@ components:
         year: { type: integer, minimum: 1888, maximum: 2100 }
         season: { type: integer, minimum: 0, maximum: 99 }
         episode: { type: integer, minimum: 1, maximum: 999 }
+    AcquisitionJob:
+      type: object
+      additionalProperties: false
+      required: [id, state, mediaType, title, year, progress, createdAt, updatedAt]
+      properties:
+        id: { type: string, pattern: "^[0-9a-f]{32}$" }
+        state: { type: string, enum: [queued, selected, preparing, succeeded, failed, manual_review] }
+        mediaType: { type: string, enum: [movie, episode] }
+        title: { type: string, minLength: 1, maxLength: 200 }
+        year: { type: integer, minimum: 1888, maximum: 2100 }
+        season: { type: integer, minimum: 0, maximum: 99 }
+        episode: { type: integer, minimum: 1, maximum: 999 }
+        progress: { type: integer, minimum: 0, maximum: 100 }
+        errorCode:
+          type: string
+          enum: [provider_unavailable, unauthorized, no_release, no_playable_media, materialization_failed, ambiguous_mutation]
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    AcquisitionJobSubmission:
+      type: object
+      additionalProperties: false
+      required: [job, created]
+      properties:
+        job: { $ref: "#/components/schemas/AcquisitionJob" }
+        created: { type: boolean }
     Error:
       type: object
       additionalProperties: false
