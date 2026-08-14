@@ -46,20 +46,32 @@ fixture_range_file="$(mktemp)"
 create_response_file="$(mktemp)"
 trap 'rm -f "${sections_file}" "${library_file}" "${decision_file}" "${range_file}" "${fixture_range_file}" "${create_response_file}"' EXIT
 
-create_status="$(curl --silent --show-error --request POST --get \
-  --data-urlencode 'name=BlackPearl POC' \
-  --data-urlencode 'type=movie' \
-  --data-urlencode 'agent=tv.plex.agents.movie' \
-  --data-urlencode 'scanner=Plex Movie' \
-  --data-urlencode 'language=en-US' \
-  --data-urlencode 'location=/blackpearl/Movies' \
-  --output "${create_response_file}" \
-  --write-out '%{http_code}' \
-  "${plex_url}/library/sections")"
-if [[ ! "${create_status}" =~ ^2[0-9][0-9]$ ]]; then
+create_status=""
+for _ in $(seq 1 90); do
+  create_status="$(curl --silent --show-error --request POST --get \
+    --data-urlencode 'name=BlackPearl POC' \
+    --data-urlencode 'type=movie' \
+    --data-urlencode 'agent=tv.plex.agents.movie' \
+    --data-urlencode 'scanner=Plex Movie' \
+    --data-urlencode 'language=en-US' \
+    --data-urlencode 'location=/blackpearl/Movies' \
+    --output "${create_response_file}" \
+    --write-out '%{http_code}' \
+    "${plex_url}/library/sections")"
+  if [[ "${create_status}" =~ ^2[0-9][0-9]$ ]]; then
+    break
+  fi
+  if [[ "${create_status}" == 400 ]] && grep -Fq 'the server is still starting up' "${create_response_file}"; then
+    sleep 2
+    continue
+  fi
   printf 'Plex library creation returned HTTP %s: ' "${create_status}" >&2
   head -c 4096 "${create_response_file}" >&2
   printf '\n' >&2
+  exit 1
+done
+if [[ ! "${create_status}" =~ ^2[0-9][0-9]$ ]]; then
+  printf 'Plex did not finish starting before the library-creation deadline.\n' >&2
   exit 1
 fi
 
