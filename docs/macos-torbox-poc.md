@@ -67,7 +67,13 @@ larger than this limit; BlackPearl stores only requested fixed-size chunks and
 evicts old chunks as needed. The TorBox profile reads ahead eight 1 MiB chunks
 from the latest Plex range by default. Set
 `BLACKPEARL_CACHE_READ_AHEAD_CHUNKS=0` to disable it or choose a value from 1
-through 64. Foreground reads keep priority and a seek moves the window.
+through 64. Foreground reads keep priority and a seek moves the window. Opening
+a TV episode also prefetches the first sixteen 1 MiB chunks of the next episode
+in the same show by default. Set `BLACKPEARL_CACHE_NEXT_EPISODE_CHUNKS=0` to
+disable this or choose a prefix from 1 through 256 chunks. This background work
+uses the same hard quota, retains foreground headroom, stops instead of evicting
+current cache data, and never downloads the
+whole next episode unless the configured prefix itself spans the whole file.
 
 ## Inspect and stop
 
@@ -91,10 +97,12 @@ Ports are isolated from the existing POCs:
 `/healthz` passes while setup is incomplete so Plex can mount the empty NFS
 export. `/readyz` reports `setup_required` until a selection is active.
 
-Live discovery, Plex scanning, Direct Play, seeking, and restart recovery are
+Live discovery, Plex scanning, Direct Play, seeking, restart recovery, and
+bounded next-episode prefetch are
 separate acceptance evidence. They were observed on macOS on 2026-08-14 with a
-mixed three-video authorized manifest: Plex indexed two movies and matched one
-episode in a separate TV library, an H.264/AAC MP4 remained Direct Play through
-a non-sequential seek, the episode resumed after a seek, and BlackPearl restored
-both library roots after restart. The logical manifest was about 2.84 GB while
-the rolling cache held about 208 MB.
+mixed four-video authorized manifest: Plex indexed two movies and matched two
+episodes in a separate TV library, an H.264/AAC MP4 remained Direct Play through
+a non-sequential seek, the first episode played with its original video stream,
+and BlackPearl restored both library roots after restart. Opening only episode
+one populated exactly the configured 16 MiB prefix of episode two and did not
+store its tail or complete object.

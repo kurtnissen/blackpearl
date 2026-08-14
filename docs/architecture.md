@@ -61,7 +61,7 @@ Rolling mode divides a logical object into independently addressable chunks and:
 - verify range length and integrity before publication; and
 - apply backpressure when all cache capacity is pinned or reserved.
 
-The implementation enforces `published chunk bytes + reserved fetch bytes <= quota`, coalesces concurrent misses, atomically publishes verified chunks, restores valid chunks after restart, and evicts least-recently-used unpinned chunks. Browser-selected runtimes share one process-lifetime rolling pool, preventing competing recovery scans or independent quota ledgers on the same directory. Configurable seek-aware read-ahead opportunistically fetches the chunks after the most recent foreground range, protects that demanded chunk, and retains one chunk of quota headroom. A seek immediately relocates the window. Adaptive throughput-based scheduling remains later work. None of these policies change PearlFS, PearlNFS, or Plex integration; the same binary selects the policy from configuration.
+The implementation enforces `published chunk bytes + reserved fetch bytes <= quota`, coalesces concurrent misses, atomically publishes verified chunks, restores valid chunks after restart, and evicts least-recently-used unpinned chunks. Browser-selected runtimes share one process-lifetime rolling pool, preventing competing recovery scans or independent quota ledgers on the same directory. Configurable seek-aware read-ahead opportunistically fetches the chunks after the most recent foreground range, protects that demanded chunk, and retains one chunk of quota headroom. A seek immediately relocates the window. When Plex opens an episode, the catalog may also schedule a configurable prefix of the next episode in the same show, including across season boundaries. That work is asynchronous, deduplicated per catalog generation, shares the hard quota, retains foreground headroom, and stops rather than evicting current cache data; it never requires the next complete file. Adaptive throughput-based scheduling remains later work. None of these policies change PearlFS, PearlNFS, or Plex integration; the same binary selects the policy from configuration.
 
 Browser setup persists one credential plus a validated manifest of 1-100 movie
 or TV-episode selections. It prepares every provider object and a fresh in-memory catalog
@@ -88,8 +88,8 @@ SQLite owns catalog metadata only. Cache bytes and the optional FUSE mount live 
 
 1. Implement provider-neutral resolver behavior and selection tests.
 2. Add production authentication to an explicitly authorized ranged acquisition provider.
-3. Add seek-aware read-ahead and adaptive scheduling.
-4. Add bounded next-episode prefetch.
+3. Add adaptive throughput-based read scheduling. Seek-aware read-ahead is implemented.
+4. Extend the implemented bounded next-episode prefix prefetch with playback-aware cancellation and prioritization.
 5. Add automatic movie and episode metadata resolution.
 6. Add optional Prowlarr discovery and additional authorized providers.
 

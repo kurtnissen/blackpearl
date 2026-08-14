@@ -21,6 +21,7 @@ environment = blackpearl["environment"]
 assert blackpearl["build"]["target"] == "runtime"
 assert environment["BLACKPEARL_STORAGE_MODE"] == "rolling"
 assert str(environment["BLACKPEARL_CACHE_READ_AHEAD_CHUNKS"]) == "8"
+assert str(environment["BLACKPEARL_CACHE_NEXT_EPISODE_CHUNKS"]) == "16"
 assert environment["BLACKPEARL_RANGE_PROVIDER"] == "torbox-torrent"
 assert environment["BLACKPEARL_SETUP_ENABLED"] == "true"
 assert environment["BLACKPEARL_SETUP_DIR"] == "/var/lib/blackpearl/setup"

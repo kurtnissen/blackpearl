@@ -143,6 +143,66 @@ func TestRollingSourceReadAheadContinuesAfterCacheSaturates(t *testing.T) {
 	require.LessOrEqual(t, source.Stats().CurrentBytes+source.Stats().ReservedBytes, int64(8))
 }
 
+func TestRollingSourcePrefetchStagesBoundedMediaPrefix(t *testing.T) {
+	t.Parallel()
+	opener := newFakeRangeOpener([]byte("abcdefghijkl"))
+	source, _ := newRollingSourceWithPoliciesForTest(t, opener, 12, 4, 0, 2)
+	media := rollingMovie(t, 12, "next.mp4")
+
+	source.Prefetch(context.Background(), media)
+	require.Eventually(t, func() bool {
+		stats := source.Stats()
+		return opener.readCount(0) == 1 && opener.readCount(4) == 1 && stats.ReservedBytes == 0
+	}, time.Second, 5*time.Millisecond)
+	source.Prefetch(context.Background(), media)
+	time.Sleep(20 * time.Millisecond)
+
+	require.Equal(t, uint64(2), source.Stats().NextEpisodeFetches)
+	require.Zero(t, source.Stats().NextEpisodeErrors)
+	require.Equal(t, 1, opener.readCount(0))
+	require.Equal(t, 1, opener.readCount(4))
+	require.Zero(t, opener.readCount(8))
+}
+
+func TestRollingSourcePrefetchRespectsQuotaHeadroomAndCancellation(t *testing.T) {
+	t.Parallel()
+	opener := newFakeRangeOpener([]byte("abcdefghijklmnop"))
+	source, _ := newRollingSourceWithPoliciesForTest(t, opener, 12, 4, 0, 3)
+	media := rollingMovie(t, 16, "next.mp4")
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	source.Prefetch(cancelled, media)
+	source.Prefetch(context.Background(), media)
+	require.Eventually(t, func() bool { return source.Stats().ReservedBytes == 0 && source.Stats().NextEpisodeFetches == 2 }, time.Second, 5*time.Millisecond)
+
+	require.Equal(t, int64(8), source.Stats().CurrentBytes)
+	require.LessOrEqual(t, source.Stats().HighWaterBytes, int64(8))
+}
+
+func TestRollingSourcePrefetchDoesNotEvictForegroundChunks(t *testing.T) {
+	t.Parallel()
+	opener := newFakeRangeOpener([]byte("abcdefghijklmnop"))
+	source, _ := newRollingSourceWithPoliciesForTest(t, opener, 12, 4, 0, 3)
+	current := rollingMovie(t, 16, "current.mp4")
+	next := rollingMovie(t, 16, "next.mp4")
+	handle, err := source.Open(context.Background(), current)
+	require.NoError(t, err)
+	buffer := make([]byte, 4)
+	_, err = handle.ReadAt(context.Background(), buffer, 0)
+	require.NoError(t, err)
+	require.NoError(t, handle.Close())
+
+	source.Prefetch(context.Background(), next)
+	require.Eventually(t, func() bool {
+		stats := source.Stats()
+		return stats.ReservedBytes == 0 && stats.NextEpisodeFetches == 1
+	}, time.Second, 5*time.Millisecond)
+
+	require.Zero(t, source.Stats().Evictions)
+	require.Equal(t, int64(8), source.Stats().CurrentBytes)
+}
+
 func TestRollingSourceReadAtEvictsWithinHardQuotaAndRefetches(t *testing.T) {
 	t.Parallel()
 	opener := newFakeRangeOpener([]byte("abcdefghijkl"))
@@ -337,17 +397,32 @@ func newRollingSourceForTest(t *testing.T, opener cache.RangeOpener, maxBytes in
 }
 
 func newRollingSourceWithReadAheadForTest(t *testing.T, opener cache.RangeOpener, maxBytes int64, chunkBytes int64, readAheadChunks int) (*cache.RollingSource, string) {
+	return newRollingSourceWithPoliciesForTest(t, opener, maxBytes, chunkBytes, readAheadChunks, 0)
+}
+
+func newRollingSourceWithPoliciesForTest(t *testing.T, opener cache.RangeOpener, maxBytes int64, chunkBytes int64, readAheadChunks int, nextEpisodeChunks int) (*cache.RollingSource, string) {
 	t.Helper()
 	root := t.TempDir()
 	source, err := cache.NewRolling(context.Background(), cache.RollingOptions{
-		Root:            root,
-		MaxBytes:        maxBytes,
-		ChunkBytes:      chunkBytes,
-		ReadAheadChunks: readAheadChunks,
-		FetchTimeout:    time.Second,
+		Root:                      root,
+		MaxBytes:                  maxBytes,
+		ChunkBytes:                chunkBytes,
+		ReadAheadChunks:           readAheadChunks,
+		NextEpisodePrefetchChunks: nextEpisodeChunks,
+		FetchTimeout:              time.Second,
 	}, opener)
 	require.NoError(t, err)
 	return source, root
+}
+
+func rollingMovie(t *testing.T, size int64, objectID string) domain.Media {
+	t.Helper()
+	media, err := domain.NewMovie("rolling", "Rolling", 2026, ".mp4", size, domain.BackingRef{
+		Provider: "http-range",
+		ObjectID: objectID,
+	})
+	require.NoError(t, err)
+	return media
 }
 
 func openRollingHandle(t *testing.T, source *cache.RollingSource, size int64) domain.ReadHandle {

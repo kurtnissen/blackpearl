@@ -24,6 +24,7 @@ func TestParseUsesIsolatedContainerDefaults(t *testing.T) {
 	require.Zero(t, cfg.CacheMaxBytes)
 	require.Equal(t, int64(262_144), cfg.CacheChunkBytes)
 	require.Zero(t, cfg.CacheReadAheadChunks)
+	require.Zero(t, cfg.CacheNextEpisodeChunks)
 	require.Equal(t, "http-range", cfg.RangeProvider)
 	require.Equal(t, "https://api.torbox.app/v1/api/", cfg.TorBoxAPIURL)
 	require.Equal(t, 30*time.Second, cfg.RangeTimeout)
@@ -104,13 +105,14 @@ func TestParseAcceptsCompleteRollingRangeConfiguration(t *testing.T) {
 	t.Parallel()
 
 	cfg, err := config.Parse(map[string]string{
-		"BLACKPEARL_STORAGE_MODE":            "rolling",
-		"BLACKPEARL_CACHE_MAX_BYTES":         "42949672960",
-		"BLACKPEARL_CACHE_CHUNK_BYTES":       "262144",
-		"BLACKPEARL_CACHE_READ_AHEAD_CHUNKS": "4",
-		"BLACKPEARL_RANGE_ORIGIN_URL":        "http://range-origin/media/",
-		"BLACKPEARL_RANGE_OBJECT_ID":         "blackpearl-poc.mp4",
-		"BLACKPEARL_RANGE_TIMEOUT":           "30s",
+		"BLACKPEARL_STORAGE_MODE":              "rolling",
+		"BLACKPEARL_CACHE_MAX_BYTES":           "42949672960",
+		"BLACKPEARL_CACHE_CHUNK_BYTES":         "262144",
+		"BLACKPEARL_CACHE_READ_AHEAD_CHUNKS":   "4",
+		"BLACKPEARL_CACHE_NEXT_EPISODE_CHUNKS": "16",
+		"BLACKPEARL_RANGE_ORIGIN_URL":          "http://range-origin/media/",
+		"BLACKPEARL_RANGE_OBJECT_ID":           "blackpearl-poc.mp4",
+		"BLACKPEARL_RANGE_TIMEOUT":             "30s",
 	})
 
 	require.NoError(t, err)
@@ -118,6 +120,7 @@ func TestParseAcceptsCompleteRollingRangeConfiguration(t *testing.T) {
 	require.Equal(t, int64(42_949_672_960), cfg.CacheMaxBytes)
 	require.Equal(t, int64(262_144), cfg.CacheChunkBytes)
 	require.Equal(t, 4, cfg.CacheReadAheadChunks)
+	require.Equal(t, 16, cfg.CacheNextEpisodeChunks)
 	require.Equal(t, "http://range-origin/media/", cfg.RangeOriginURL)
 	require.Equal(t, "blackpearl-poc.mp4", cfg.RangeObjectID)
 	require.Equal(t, 30*time.Second, cfg.RangeTimeout)
@@ -305,12 +308,15 @@ func TestParseRejectsRollingModeWithoutPositiveQuota(t *testing.T) {
 	require.ErrorContains(t, err, "CACHE_MAX_BYTES")
 }
 
-func TestParseRejectsReadAheadOutsideRollingMode(t *testing.T) {
+func TestParseRejectsPrefetchOutsideRollingMode(t *testing.T) {
 	t.Parallel()
-
-	_, err := config.Parse(map[string]string{"BLACKPEARL_CACHE_READ_AHEAD_CHUNKS": "1"})
-
-	require.ErrorContains(t, err, "CACHE_READ_AHEAD_CHUNKS")
+	for _, variable := range []string{"BLACKPEARL_CACHE_READ_AHEAD_CHUNKS", "BLACKPEARL_CACHE_NEXT_EPISODE_CHUNKS"} {
+		t.Run(variable, func(t *testing.T) {
+			t.Parallel()
+			_, err := config.Parse(map[string]string{variable: "1"})
+			require.ErrorContains(t, err, variable)
+		})
+	}
 }
 
 func TestParseRejectsInvalidRollingRangeConfiguration(t *testing.T) {
@@ -336,6 +342,8 @@ func TestParseRejectsInvalidRollingRangeConfiguration(t *testing.T) {
 		{name: "chunk larger than quota", variable: "BLACKPEARL_CACHE_CHUNK_BYTES", value: "2097152", message: "CACHE_CHUNK_BYTES"},
 		{name: "negative read ahead", variable: "BLACKPEARL_CACHE_READ_AHEAD_CHUNKS", value: "-1", message: "CACHE_READ_AHEAD_CHUNKS"},
 		{name: "excessive read ahead", variable: "BLACKPEARL_CACHE_READ_AHEAD_CHUNKS", value: "65", message: "CACHE_READ_AHEAD_CHUNKS"},
+		{name: "negative next episode", variable: "BLACKPEARL_CACHE_NEXT_EPISODE_CHUNKS", value: "-1", message: "CACHE_NEXT_EPISODE_CHUNKS"},
+		{name: "excessive next episode", variable: "BLACKPEARL_CACHE_NEXT_EPISODE_CHUNKS", value: "257", message: "CACHE_NEXT_EPISODE_CHUNKS"},
 		{name: "zero timeout", variable: "BLACKPEARL_RANGE_TIMEOUT", value: "0s", message: "RANGE_TIMEOUT"},
 		{name: "local source", variable: "BLACKPEARL_POC_SOURCE", value: "/fixture/full.mp4", message: "POC_SOURCE"},
 	}

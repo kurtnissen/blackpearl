@@ -9,7 +9,7 @@ Tested from `main` on an Apple Silicon Mac with Docker Desktop's Linux ARM64 VM.
 | Gate | Result | Evidence |
 |---|---|---|
 | Go race tests | Pass | `go test -race ./...` |
-| Go coverage | Pass | 80.8% of project statements from `go test -coverprofile=coverage.out ./...`; generated Go code inside `web/node_modules` is excluded from the project floor |
+| Go coverage | Pass | 80.7% of project statements from `go test -coverprofile=coverage.out ./...`; generated Go code inside `web/node_modules` is excluded from the project floor |
 | Static analysis | Pass | `go vet ./...` |
 | Compose isolation | Pass | Rendered configuration checked by `scripts/test-compose-paths.sh`; every bind is under `runtime/`, Plex media is read-only `rslave`, and only BlackPearl receives FUSE privileges |
 | POC image build | Pass | `blackpearl:poc` built for local Linux ARM64 |
@@ -36,6 +36,8 @@ Tested from `main` on an Apple Silicon Mac with Docker Desktop's Linux ARM64 VM.
 | Shared rolling quota during replacement | Pass in automated tests | Multiple immutable provider runtimes use one process-lifetime cache owner and one hard-quota ledger |
 | Seek-aware rolling read-ahead | Pass in race tests | Configurable background chunks follow the latest foreground offset, coalesce with demand reads, continue after LRU saturation, protect the most recently demanded chunk, and preserve one-chunk foreground headroom. |
 | TorBox live read-ahead | Pass on macOS | One previously uncached NFS read at byte 700,000,000 of the TV episode produced the demanded 1 MiB chunk plus all eight configured adjacent chunks (9/9 files, 9,437,184 bytes total) without storing the complete object. The known H.264/AAC movie remained `directplay` on the rebuilt stack. |
+| Bounded next-episode prefetch | Pass in race tests | Opening an episode schedules the next canonical episode once per catalog generation, including season transitions; movies, final episodes, cancellation, quota pressure, and concurrent opens are covered. Prefix fetches share the rolling quota, preserve foreground headroom, and stop rather than evict current chunks. |
+| TorBox live next-episode prefetch | Pass on macOS | With episode two's recoverable cache removed, opening only Friends S07E01 through Plex NFS populated exactly chunks 0-15 of S07E02 (16,777,216 bytes). No tail chunk or complete episode existed locally. Plex Web played S07E01, exposed an enabled Next control, and copied the original video stream. |
 | Setup API container isolation | Pass in Compose, API, and live container tests | BlackPearl and Plex use disjoint Docker networks; Docker Desktop host-gateway reachability is treated as untrusted. A forged unpaired mutation from the live Plex container was denied with HTTP 401 and issued no session. First setup requires a host-generated pairing value; later mutations require a setup-origin session header, pairing value, or exact saved-token re-entry. No authorization cookie is sent to Plex. |
 | TorBox live provider | Pass on macOS with an authorized account file | Live TorBox metadata and repeated exact ranges at the beginning, interior, midpoint, and tail passed through both the gateway and the rolling cache; no complete media file was stored locally |
 | TorBox dynamic Plex namespace | Pass on macOS | A setup replacement changed the NFS namespace without restarting Plex; one-second attribute caching plus disabled negative lookup caching exposed the new path, and generation-based modification times caused Plex to rescan it |
@@ -72,6 +74,7 @@ The current result includes locally verified FUSE and portable NFS adapters, per
 - [x] Plex Direct Plays and seeks an authorized TorBox-backed logical file.
 - [x] A multi-item TorBox manifest publishes atomically, scans in Plex, and survives BlackPearl restart.
 - [x] A mixed movie/TV manifest publishes canonical Plex paths, scans in separate libraries, seeks, and survives BlackPearl restart.
+- [x] Opening one TV episode prefetches only a bounded prefix of the next episode under the same hard rolling quota.
 - [ ] A longer rolling fixture demonstrates explicit forward and backward client seeks before playback completes.
 - [ ] CI passes after publishing the repository.
 - [ ] Both Linux AMD64 and ARM64 image builds pass in CI.

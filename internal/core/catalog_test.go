@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"sync"
 	"testing"
 
 	"github.com/blackpearl-media/blackpearl/internal/core"
@@ -239,6 +240,71 @@ func TestOpenWrapsMediaSourceFailure(t *testing.T) {
 	require.ErrorContains(t, err, "open cached media")
 }
 
+func TestOpenSchedulesNextEpisodePrefixOnce(t *testing.T) {
+	t.Parallel()
+	current := mustEpisode(t, "current", "Example Show", 1, 2, 5, "current")
+	next := mustEpisode(t, "next", "Example Show", 2, 1, 7, "next")
+	otherShow := mustEpisode(t, "other", "Another Show", 1, 3, 6, "other")
+	repository := &fakeRepository{media: current, listed: []domain.Media{otherShow, next, current}}
+	source := &fakeCache{reader: newMemoryReader([]byte("12345"))}
+	catalog := core.NewCatalog(repository, nil, source)
+
+	first, err := catalog.Open(context.Background(), current.VirtualPath)
+	require.NoError(t, err)
+	second, err := catalog.Open(context.Background(), current.VirtualPath)
+	require.NoError(t, err)
+
+	require.NotNil(t, first)
+	require.NotNil(t, second)
+	require.Equal(t, []domain.Media{next}, source.prefetched)
+}
+
+func TestOpenDoesNotPrefetchAfterFinalEpisodeOrMovie(t *testing.T) {
+	t.Parallel()
+	finalEpisode := mustEpisode(t, "final", "Example Show", 1, 2, 5, "final")
+	movie := mustMovie(t, 5, "movie")
+	tests := []domain.Media{finalEpisode, movie}
+	for _, current := range tests {
+		current := current
+		t.Run(string(current.Type), func(t *testing.T) {
+			t.Parallel()
+			repository := &fakeRepository{media: current, listed: []domain.Media{current}}
+			source := &fakeCache{reader: newMemoryReader([]byte("12345"))}
+			catalog := core.NewCatalog(repository, nil, source)
+
+			_, err := catalog.Open(context.Background(), current.VirtualPath)
+
+			require.NoError(t, err)
+			require.Empty(t, source.prefetched)
+		})
+	}
+}
+
+func TestConcurrentOpensScheduleNextEpisodeOnce(t *testing.T) {
+	t.Parallel()
+	current := mustEpisode(t, "current", "Example Show", 1, 1, 5, "current")
+	next := mustEpisode(t, "next", "Example Show", 1, 2, 5, "next")
+	repository := &fakeRepository{media: current, listed: []domain.Media{current, next}}
+	source := &fakeCache{reader: newMemoryReader([]byte("12345"))}
+	catalog := core.NewCatalog(repository, nil, source)
+	start := make(chan struct{})
+	results := make(chan error, 20)
+
+	for range 20 {
+		go func() {
+			<-start
+			_, err := catalog.Open(context.Background(), current.VirtualPath)
+			results <- err
+		}()
+	}
+	close(start)
+	for range 20 {
+		require.NoError(t, <-results)
+	}
+
+	require.Equal(t, []domain.Media{next}, source.prefetchedSnapshot())
+}
+
 func TestReadyChecksRepositoryAndCachedObjects(t *testing.T) {
 	t.Parallel()
 	media := mustMovie(t, 5, "object")
@@ -304,6 +370,7 @@ func TestReadyReportsBoundaryFailures(t *testing.T) {
 }
 
 type fakeRepository struct {
+	mu         sync.Mutex
 	upserted   domain.Media
 	media      domain.Media
 	listed     []domain.Media
@@ -316,25 +383,34 @@ type fakeRepository struct {
 }
 
 func (f *fakeRepository) Upsert(_ context.Context, media domain.Media) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.upserted = media
 	return f.upsertErr
 }
 
 func (f *fakeRepository) GetByVirtualPath(_ context.Context, path string) (domain.Media, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.lookupPath = path
 	return f.media, f.lookupErr
 }
 
 func (f *fakeRepository) List(context.Context) ([]domain.Media, error) {
-	return f.listed, f.listErr
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]domain.Media(nil), f.listed...), f.listErr
 }
 
 func (f *fakeRepository) Ping(context.Context) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.pinged = true
 	return f.pingErr
 }
 
 type fakeCache struct {
+	mu             sync.Mutex
 	importBacking  domain.BackingRef
 	importSize     int64
 	importErr      error
@@ -345,6 +421,7 @@ type fakeCache struct {
 	readyCalled    bool
 	readyErr       error
 	importCalls    int
+	prefetched     []domain.Media
 }
 
 func (f *fakeCache) Import(_ context.Context, source string) (domain.BackingRef, int64, error) {
@@ -354,6 +431,8 @@ func (f *fakeCache) Import(_ context.Context, source string) (domain.BackingRef,
 }
 
 func (f *fakeCache) Open(_ context.Context, media domain.Media) (domain.ReadHandle, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.openedMedia = media
 	return f.reader, f.openErr
 }
@@ -361,6 +440,18 @@ func (f *fakeCache) Open(_ context.Context, media domain.Media) (domain.ReadHand
 func (f *fakeCache) Ready(context.Context) error {
 	f.readyCalled = true
 	return f.readyErr
+}
+
+func (f *fakeCache) Prefetch(_ context.Context, media domain.Media) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.prefetched = append(f.prefetched, media)
+}
+
+func (f *fakeCache) prefetchedSnapshot() []domain.Media {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]domain.Media(nil), f.prefetched...)
 }
 
 type memoryReader struct {
@@ -394,6 +485,23 @@ func mustMovie(t *testing.T, size int64, key string) domain.Media {
 		".mp4",
 		size,
 		domain.BackingRef{Provider: "pearlcache", ObjectID: key},
+	)
+	require.NoError(t, err)
+	return media
+}
+
+func mustEpisode(t *testing.T, id domain.MediaID, show string, season int, episode int, size int64, key string) domain.Media {
+	t.Helper()
+	media, err := domain.NewEpisode(
+		id,
+		show,
+		2026,
+		season,
+		episode,
+		"Episode",
+		".mkv",
+		size,
+		domain.BackingRef{Provider: "torbox-torrent", ObjectID: key},
 	)
 	require.NoError(t, err)
 	return media

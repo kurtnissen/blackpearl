@@ -7,6 +7,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
+	"sync"
 
 	"github.com/blackpearl-media/blackpearl/internal/domain"
 	"go.opentelemetry.io/otel"
@@ -94,16 +96,29 @@ type MediaSource interface {
 	Ready(ctx context.Context) error
 }
 
+// MediaPrefetcher is an optional scheduling capability implemented by sources
+// that can stage bounded ranges without changing foreground open semantics.
+type MediaPrefetcher interface {
+	Prefetch(ctx context.Context, media domain.Media)
+}
+
 // Catalog orchestrates media metadata and cached bytes.
 type Catalog struct {
-	repository Repository
-	importer   POCImporter
-	source     MediaSource
+	repository       Repository
+	importer         POCImporter
+	source           MediaSource
+	prefetchMu       sync.Mutex
+	prefetchedNextOf map[domain.MediaID]struct{}
 }
 
 // NewCatalog constructs a catalog service from its narrow boundaries.
 func NewCatalog(repository Repository, importer POCImporter, source MediaSource) *Catalog {
-	return &Catalog{repository: repository, importer: importer, source: source}
+	return &Catalog{
+		repository:       repository,
+		importer:         importer,
+		source:           source,
+		prefetchedNextOf: make(map[domain.MediaID]struct{}),
+	}
 }
 
 // ImportPOC imports the legal synthetic fixture and persists its canonical catalog entry.
@@ -178,7 +193,53 @@ func (c *Catalog) Open(ctx context.Context, virtualPath string) (domain.ReadHand
 			closeErr,
 		)
 	}
+	c.prefetchNextEpisode(ctx, media)
 	return reader, nil
+}
+
+func (c *Catalog) prefetchNextEpisode(ctx context.Context, current domain.Media) {
+	prefetcher, supported := c.source.(MediaPrefetcher)
+	if !supported || current.Type != domain.MediaTypeEpisode {
+		return
+	}
+	c.prefetchMu.Lock()
+	if _, exists := c.prefetchedNextOf[current.ID]; exists {
+		c.prefetchMu.Unlock()
+		return
+	}
+	c.prefetchedNextOf[current.ID] = struct{}{}
+	c.prefetchMu.Unlock()
+
+	items, err := c.repository.List(ctx)
+	if err != nil {
+		c.prefetchMu.Lock()
+		delete(c.prefetchedNextOf, current.ID)
+		c.prefetchMu.Unlock()
+		return
+	}
+	next, found := nextEpisode(current, items)
+	if !found {
+		return
+	}
+	prefetcher.Prefetch(ctx, next)
+}
+
+func nextEpisode(current domain.Media, items []domain.Media) (domain.Media, bool) {
+	parts := strings.Split(current.VirtualPath, "/")
+	if len(parts) != 4 || parts[0] != "TV Shows" {
+		return domain.Media{}, false
+	}
+	seriesPrefix := strings.Join(parts[:2], "/") + "/"
+	var selected domain.Media
+	for _, candidate := range items {
+		if candidate.Type != domain.MediaTypeEpisode || candidate.VirtualPath <= current.VirtualPath || !strings.HasPrefix(candidate.VirtualPath, seriesPrefix) {
+			continue
+		}
+		if selected.ID == "" || candidate.VirtualPath < selected.VirtualPath {
+			selected = candidate
+		}
+	}
+	return selected, selected.ID != ""
 }
 
 // Ready verifies catalog persistence and the selected media source without opening a complete object.
