@@ -16,7 +16,7 @@ BlackPearl is an experimental, open-source Go service that exposes a virtual med
 - A portable NFS frontend and macOS Docker Desktop Compose profile that need no
   FUSE mount propagation.
 
-BlackPearl now proves provider-neutral progressive range retrieval and rolling eviction through a strict HTTP range gateway. It does not yet implement discovery, read-ahead, Prowlarr, Usenet, TorBox, or production provider credentials.
+BlackPearl now proves provider-neutral progressive range retrieval and rolling eviction through strict HTTP and TorBox torrent-file gateways. TorBox support is read-only for already-complete files in the user's account. It does not yet implement discovery, read-ahead, Prowlarr, Usenet, or automatic torrent creation.
 
 ## Architecture at a glance
 
@@ -82,6 +82,23 @@ open http://localhost:32401/web
 The verifier checks source isolation, Plex indexing, exact non-sequential
 ranges, live cache occupancy including temporary fetches, eviction/refetch, and
 Plex's `Direct play OK` decision. See [the rolling runbook](docs/macos-rolling-poc.md).
+
+## TorBox provider
+
+TorBox can replace the synthetic HTTP origin while retaining the same rolling
+cache and filesystem path. Configure an already-complete torrent file you are
+authorized to access:
+
+```bash
+export BLACKPEARL_RANGE_PROVIDER=torbox-torrent
+export BLACKPEARL_TORBOX_API_TOKEN='your token'
+export BLACKPEARL_RANGE_OBJECT_ID='torrent-id:file-id'
+./scripts/verify-torbox-live.sh
+```
+
+The token remains environment-only. BlackPearl does not write it or the signed
+TorBox CDN URL to SQLite, cache filenames, or logs. Without these variables,
+TorBox is contract-tested but not live-provider validated.
 
 ## Ubuntu Plex POC
 

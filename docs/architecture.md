@@ -80,3 +80,8 @@ SQLite owns catalog metadata only. Cache bytes and the optional FUSE mount live 
 5. Add optional Prowlarr discovery and additional authorized providers.
 
 Each stage needs its own acceptance evidence. A generic interface alone is not evidence that a provider, rolling cache, or progressive stream works.
+
+The first provider adapter is `torbox-torrent`. It maps an already-complete
+`torrent-id:file-id` account object to a short-lived HTTPS CDN link, validates
+its size, and exposes strict ranges without persisting the API token or URL.
+Public discovery and creating TorBox downloads remain separate milestones.

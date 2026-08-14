@@ -27,6 +27,8 @@ Tested from the `research/portable-filesystem` branch on an Apple Silicon Mac wi
 | Rolling exact random reads | Pass on macOS | Plex ranges at offsets 0, 1,310,720, and 3,145,728 matched the range-origin bytes exactly |
 | Rolling quota and eviction | Pass on macOS | The acceptance script sampled published chunks plus in-flight fetch files throughout a full stream, never exceeded 1 MiB, and observed an evicted range being fetched again after restart |
 | Rolling Plex client playback | Pass on macOS | Plex Web visibly played the generated test pattern from the rolling stack; the server logged `MDE=1000,Direct play OK` with `decision=direct play`, served all 3,417,699 original bytes, and recorded a playing timeline |
+| TorBox API/CDN contract | Pass (mocked) | TLS contract tests cover account metadata, bearer/query authentication, strict non-sequential ranges, immutable validators, signed-link reuse/refresh, redirects, CDN size validation, cancellation, concurrency, and secret redaction |
+| TorBox live provider | Pending credentials | Run `scripts/verify-torbox-live.sh` with an API token and authorized `torrent-id:file-id`; no live-provider claim is made without that evidence |
 | Cross-container Plex mount | Pending Ubuntu | Docker Desktop bind propagation cannot prove this Linux-host behavior |
 
 The current result includes locally verified FUSE and portable NFS adapters, persistent and rolling macOS Plex playback, strict random-range retrieval, a live hard-quota test, eviction, and refetch evidence. The rolling client test completed the eight-second fixture; explicit rolling-client forward/backward seek evidence remains to be captured with a longer fixture. Windows and native-Linux portability remain unverified.
