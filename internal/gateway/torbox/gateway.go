@@ -86,6 +86,7 @@ type torrentRecord struct {
 	ID               int64        `json:"id"`
 	Hash             string       `json:"hash"`
 	DownloadState    string       `json:"download_state"`
+	Progress         float64      `json:"progress"`
 	DownloadFinished bool         `json:"download_finished"`
 	DownloadPresent  bool         `json:"download_present"`
 	Files            []fileRecord `json:"files"`
