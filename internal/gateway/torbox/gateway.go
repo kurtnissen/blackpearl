@@ -73,7 +73,7 @@ type cdnStatusError struct {
 }
 
 func (e *cdnStatusError) Error() string {
-	return fmt.Sprintf("TorBox CDN metadata requires status 200: got %d", e.status)
+	return fmt.Sprintf("TorBox CDN validation requires status 206: got %d", e.status)
 }
 
 type apiEnvelope[T any] struct {
@@ -169,23 +169,28 @@ func (g *Gateway) Open(ctx context.Context, backing domain.BackingRef) (acquisit
 }
 
 func (g *Gateway) validateDownload(ctx context.Context, downloadURL *url.URL, expectedSize int64) (resultErr error) {
-	request, err := http.NewRequestWithContext(ctx, http.MethodHead, downloadURL.String(), nil)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL.String(), nil)
 	if err != nil {
-		return errors.New("construct TorBox CDN metadata request")
+		return errors.New("construct TorBox CDN validation request")
 	}
+	request.Header.Set("Range", "bytes=0-0")
 	response, err := g.client.Do(request)
 	if err != nil {
-		return errors.New("request TorBox CDN metadata")
+		return errors.New("request TorBox CDN validation range")
 	}
 	defer func() { resultErr = errors.Join(resultErr, response.Body.Close()) }()
-	if response.StatusCode != http.StatusOK {
+	if response.StatusCode != http.StatusPartialContent {
 		return &cdnStatusError{status: response.StatusCode}
 	}
-	if response.ContentLength != expectedSize {
-		return fmt.Errorf("TorBox CDN size mismatch: got %d want %d", response.ContentLength, expectedSize)
+	if err := validateContentRange(response.Header.Get("Content-Range"), 0, 0, expectedSize); err != nil {
+		return fmt.Errorf("TorBox CDN size mismatch or invalid validation range: %w", err)
 	}
-	if !strings.Contains(strings.ToLower(response.Header.Get("Accept-Ranges")), "bytes") {
-		return errors.New("TorBox CDN does not advertise byte ranges")
+	body, err := io.ReadAll(io.LimitReader(response.Body, 2))
+	if err != nil {
+		return fmt.Errorf("read TorBox CDN validation range: %w", err)
+	}
+	if len(body) != 1 {
+		return fmt.Errorf("TorBox CDN validation body length mismatch: got %d want 1", len(body))
 	}
 	return nil
 }

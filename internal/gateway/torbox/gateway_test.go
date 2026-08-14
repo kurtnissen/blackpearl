@@ -158,6 +158,44 @@ func TestGatewayOpenMapsCompletedTorrentFile(t *testing.T) {
 	require.Equal(t, int64(1), linkCalls.Load())
 }
 
+func TestGatewayOpenAcceptsCDNThatProvesRangesWithoutAdvertisingThemOnHead(t *testing.T) {
+	t.Parallel()
+	content := []byte("0123456789abcdef")
+	cdn := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.Method {
+		case http.MethodHead:
+			writer.Header().Set("Content-Length", fmt.Sprint(len(content)))
+			writer.WriteHeader(http.StatusOK)
+		case http.MethodGet:
+			require.Equal(t, "bytes=0-0", request.Header.Get("Range"))
+			writer.Header().Set("Content-Range", "bytes 0-0/16")
+			writer.Header().Set("Content-Length", "1")
+			writer.WriteHeader(http.StatusPartialContent)
+			_, err := writer.Write(content[:1])
+			require.NoError(t, err)
+		default:
+			http.Error(writer, "method not allowed", http.StatusMethodNotAllowed)
+		}
+	}))
+	t.Cleanup(cdn.Close)
+	api := newTestAPI(t, func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/v1/api/torrents/mylist":
+			writeTorrentMetadata(writer, 17, 3, int64(len(content)))
+		case "/v1/api/torrents/requestdl":
+			writeEnvelope(writer, true, "ok", fmt.Sprintf("%q", cdn.URL))
+		default:
+			http.NotFound(writer, request)
+		}
+	})
+	gateway := newTestGateway(t, api.URL+"/v1/api/", cdn.Client())
+
+	opened, err := gateway.Open(context.Background(), domainBacking("17:3"))
+
+	require.NoError(t, err)
+	require.NoError(t, opened.Close())
+}
+
 func TestGatewayOpenRejectsCDNSizeMismatchWithoutLeakingURL(t *testing.T) {
 	t.Parallel()
 	cdn := newTestCDN(t, []byte("short"), nil)

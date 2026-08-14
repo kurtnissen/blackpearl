@@ -238,10 +238,13 @@ func TestRunRollingTorBoxRegistersRemotePOCAndStartsNFS(t *testing.T) {
 			require.NoError(t, err)
 		case "/cdn/file":
 			require.Empty(t, request.Header.Get("Authorization"))
-			require.Equal(t, http.MethodHead, request.Method)
-			writer.Header().Set("Content-Length", "16")
-			writer.Header().Set("Accept-Ranges", "bytes")
-			writer.WriteHeader(http.StatusOK)
+			require.Equal(t, http.MethodGet, request.Method)
+			require.Equal(t, "bytes=0-0", request.Header.Get("Range"))
+			writer.Header().Set("Content-Range", "bytes 0-0/16")
+			writer.Header().Set("Content-Length", "1")
+			writer.WriteHeader(http.StatusPartialContent)
+			_, err := writer.Write([]byte("0"))
+			require.NoError(t, err)
 		default:
 			http.NotFound(writer, request)
 		}
@@ -362,17 +365,17 @@ func TestRunBrowserSetupSelectedMediaSurvivesApplyRequestCancellation(t *testing
 			_, err := writer.Write([]byte(fmt.Sprintf(`{"success":true,"detail":"ok","data":%q}`, provider.URL+"/cdn/file")))
 			require.NoError(t, err)
 		case "/cdn/file":
-			writer.Header().Set("Accept-Ranges", "bytes")
-			writer.Header().Set("Content-Length", fmt.Sprintf("%d", len(content)))
-			if request.Method == http.MethodHead {
-				writer.WriteHeader(http.StatusOK)
-				return
+			require.Equal(t, http.MethodGet, request.Method)
+			start, end := 8, 11
+			if request.Header.Get("Range") == "bytes=0-0" {
+				start, end = 0, 0
+			} else {
+				require.Equal(t, "bytes=8-11", request.Header.Get("Range"))
 			}
-			require.Equal(t, "bytes=8-11", request.Header.Get("Range"))
-			writer.Header().Set("Content-Range", "bytes 8-11/16")
-			writer.Header().Set("Content-Length", "4")
+			writer.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/16", start, end))
+			writer.Header().Set("Content-Length", fmt.Sprintf("%d", end-start+1))
 			writer.WriteHeader(http.StatusPartialContent)
-			_, err := writer.Write(content[8:12])
+			_, err := writer.Write(content[start : end+1])
 			require.NoError(t, err)
 		default:
 			http.NotFound(writer, request)

@@ -115,13 +115,15 @@ func TestSourceReadAtRefreshesExpiredLinkOnce(t *testing.T) {
 	content := []byte("0123456789abcdef")
 	var expiredCalls atomic.Int64
 	expired := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.Method == http.MethodHead {
-			writer.Header().Set("Content-Length", fmt.Sprint(len(content)))
-			writer.Header().Set("Accept-Ranges", "bytes")
-			writer.WriteHeader(http.StatusOK)
+		if expiredCalls.Add(1) == 1 {
+			require.Equal(t, "bytes=0-0", request.Header.Get("Range"))
+			writer.Header().Set("Content-Range", fmt.Sprintf("bytes 0-0/%d", len(content)))
+			writer.Header().Set("Content-Length", "1")
+			writer.WriteHeader(http.StatusPartialContent)
+			_, err := writer.Write(content[:1])
+			require.NoError(t, err)
 			return
 		}
-		expiredCalls.Add(1)
 		http.Error(writer, "expired", http.StatusForbidden)
 	}))
 	t.Cleanup(expired.Close)
@@ -155,18 +157,22 @@ func TestSourceReadAtRefreshesExpiredLinkOnce(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 4, count)
 	require.Equal(t, "4567", string(buffer))
-	require.Equal(t, int64(1), expiredCalls.Load())
+	require.Equal(t, int64(2), expiredCalls.Load())
 	require.Equal(t, int64(2), linkCalls.Load())
 }
 
 func TestSourceReadAtRejectsRefreshedLinkWithWrongSize(t *testing.T) {
 	t.Parallel()
 	content := []byte("0123456789abcdef")
+	var expiredCalls atomic.Int64
 	expired := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.Method == http.MethodHead {
-			writer.Header().Set("Content-Length", "16")
-			writer.Header().Set("Accept-Ranges", "bytes")
-			writer.WriteHeader(http.StatusOK)
+		if expiredCalls.Add(1) == 1 {
+			require.Equal(t, "bytes=0-0", request.Header.Get("Range"))
+			writer.Header().Set("Content-Range", "bytes 0-0/16")
+			writer.Header().Set("Content-Length", "1")
+			writer.WriteHeader(http.StatusPartialContent)
+			_, err := writer.Write(content[:1])
+			require.NoError(t, err)
 			return
 		}
 		http.Error(writer, "expired", http.StatusGone)

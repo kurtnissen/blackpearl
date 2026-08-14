@@ -374,7 +374,7 @@ func runBrowserSetup(ctx context.Context, cfg config.Config, logger *slog.Logger
 	if restoreErr := service.Restore(ctx); restoreErr != nil && !errors.Is(restoreErr, domain.ErrNotFound) {
 		logger.WarnContext(ctx, "saved browser setup could not be restored", "error", restoreErr)
 	}
-	apiHandler, err := setuphandler.New(service)
+	apiHandler, err := setuphandler.New(service, logger)
 	if err != nil {
 		return err
 	}

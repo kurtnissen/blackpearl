@@ -208,6 +208,27 @@ func TestServiceApplyDoesNotPublishWhenRepositoryReportsDurabilityErrorAfterVisi
 	require.Zero(t, publisher.calls)
 }
 
+func TestServiceApplyPreservesRuntimePreparationCauseForServerDiagnostics(t *testing.T) {
+	t.Parallel()
+	candidate := mustCandidate(t)
+	service := setupservice.New(&fakeSetupRepository{},
+		func(string) (setupservice.Discoverer, error) {
+			return &fakeDiscoverer{items: []domain.MediaCandidate{candidate}}, nil
+		},
+		func(context.Context, string, domain.SetupConfiguration) (core.CatalogService, error) {
+			return nil, errors.New("TorBox CDN metadata requires status 200: got 206")
+		},
+		&fakePublisher{},
+	)
+
+	_, err := service.Apply(context.Background(), setupservice.ApplyRequest{
+		Token: "new-token", ObjectID: candidate.ObjectID, Title: "Example", Year: 2026,
+	})
+
+	require.ErrorIs(t, err, setupservice.ErrUnavailable)
+	require.ErrorContains(t, err, "TorBox CDN metadata requires status 200: got 206")
+}
+
 func TestServiceRestoreActivatesSavedSelection(t *testing.T) {
 	t.Parallel()
 	configuration := mustConfiguration(t)

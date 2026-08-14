@@ -204,10 +204,10 @@ func (s *Service) Apply(ctx context.Context, request ApplyRequest) (domain.Setup
 	}
 	runtime, err := s.runtimeFactory(ctx, token, configuration)
 	if err != nil {
-		return domain.SetupConfiguration{}, fmt.Errorf("prepare selected media: %w", ErrUnavailable)
+		return domain.SetupConfiguration{}, errors.Join(fmt.Errorf("prepare selected media: %w", ErrUnavailable), err)
 	}
 	if err := runtime.Ready(ctx); err != nil {
-		return domain.SetupConfiguration{}, fmt.Errorf("probe selected media: %w", ErrUnavailable)
+		return domain.SetupConfiguration{}, errors.Join(fmt.Errorf("probe selected media: %w", ErrUnavailable), err)
 	}
 	previousToken, previousConfiguration, loadErr := s.repository.Load(ctx)
 	hadPrevious := loadErr == nil

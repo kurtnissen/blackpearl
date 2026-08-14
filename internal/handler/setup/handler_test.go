@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -103,6 +104,24 @@ func TestHandlerNeverEchoesTokenOnProviderFailure(t *testing.T) {
 
 	require.Equal(t, http.StatusServiceUnavailable, response.Code)
 	require.NotContains(t, response.Body.String(), "private-token")
+}
+
+func TestHandlerLogsInternalSetupFailureWhileKeepingResponsePublicSafe(t *testing.T) {
+	t.Parallel()
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, nil))
+	service := &fakeService{applyErr: errors.New("prepare selected media: private diagnostic")}
+	handler, err := setuphandler.New(service, logger)
+	require.NoError(t, err)
+	csrf := fetchCSRF(t, handler)
+	request := newMutation(t, http.MethodPut, "/api/setup/configuration", csrf, `{"objectId":"17:3","title":"Example","year":2026}`)
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	require.Equal(t, http.StatusServiceUnavailable, response.Code)
+	require.Contains(t, logs.String(), "private diagnostic")
+	require.NotContains(t, response.Body.String(), "private diagnostic")
 }
 
 func TestHandlerExplainsHowToRecoverFromRejectedTorBoxAPIKey(t *testing.T) {

@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -36,15 +37,20 @@ type Service interface {
 type handler struct {
 	service Service
 	csrf    string
+	logger  *slog.Logger
 }
 
 // New constructs a setup API with a process-local CSRF secret.
-func New(service Service) (http.Handler, error) {
+func New(service Service, configuredLogger ...*slog.Logger) (http.Handler, error) {
 	value := make([]byte, 32)
 	if _, err := rand.Read(value); err != nil {
 		return nil, errors.New("generate setup CSRF token")
 	}
-	return &handler{service: service, csrf: hex.EncodeToString(value)}, nil
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	if len(configuredLogger) > 0 && configuredLogger[0] != nil {
+		logger = configuredLogger[0]
+	}
+	return &handler{service: service, csrf: hex.EncodeToString(value), logger: logger}, nil
 }
 
 func (h *handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
@@ -77,12 +83,12 @@ func (h *handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 			return
 		}
 		if err := h.service.AuthorizeSetup(request.Context(), input.Token, request.Header.Get(setupSessionHeader), request.Header.Get(setupBootstrapHeader)); err != nil {
-			writeServiceError(writer, err)
+			h.writeServiceError(writer, request, err)
 			return
 		}
 		items, err := h.service.Discover(request.Context(), input.Token)
 		if err != nil {
-			writeServiceError(writer, err)
+			h.writeServiceError(writer, request, err)
 			return
 		}
 		sessionToken := input.Token
@@ -90,7 +96,7 @@ func (h *handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 			sessionToken = ""
 		}
 		if err := h.issueSession(writer, request, sessionToken); err != nil {
-			writeServiceError(writer, err)
+			h.writeServiceError(writer, request, err)
 			return
 		}
 		writeJSON(writer, http.StatusOK, struct {
@@ -111,16 +117,16 @@ func (h *handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 			return
 		}
 		if err := h.service.AuthorizeSetup(request.Context(), input.Token, request.Header.Get(setupSessionHeader), request.Header.Get(setupBootstrapHeader)); err != nil {
-			writeServiceError(writer, err)
+			h.writeServiceError(writer, request, err)
 			return
 		}
 		selected, err := h.service.Apply(request.Context(), input)
 		if err != nil {
-			writeServiceError(writer, err)
+			h.writeServiceError(writer, request, err)
 			return
 		}
 		if err := h.issueSession(writer, request, ""); err != nil {
-			writeServiceError(writer, err)
+			h.writeServiceError(writer, request, err)
 			return
 		}
 		writeJSON(writer, http.StatusOK, struct {
@@ -129,6 +135,11 @@ func (h *handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	default:
 		http.NotFound(writer, request)
 	}
+}
+
+func (h *handler) writeServiceError(writer http.ResponseWriter, request *http.Request, err error) {
+	h.logger.WarnContext(request.Context(), "setup request failed", "method", request.Method, "path", request.URL.Path, "error", err)
+	writeServiceError(writer, err)
 }
 
 func (h *handler) authorizeBrowser(request *http.Request) bool {
