@@ -21,14 +21,14 @@ configured storage mode.
 
 **Files:** `internal/cache/rolling.go`, `internal/cache/rolling_test.go`
 
-- [ ] Add failing tests for exact random reads, no eviction past a rolling-sized
-  threshold, hit reuse, restart recovery without provider I/O, and separate
-  persistent/rolling namespaces.
-- [ ] Add a narrow persistent options/constructor surface backed by the shared
+- [x] Add failing tests for exact random reads, no eviction past a rolling-sized
+  threshold, hit reuse, restart recovery without provider range refetches, and
+  separate persistent/rolling namespaces.
+- [x] Add a narrow persistent options/constructor surface backed by the shared
   chunk engine.
-- [ ] Make foreground/background reservations and recovery policy-aware while
+- [x] Make foreground/background reservations and recovery policy-aware while
   preserving rolling behavior.
-- [ ] Run `go test -race ./internal/cache` and commit
+- [x] Run `go test -race ./internal/cache` and commit
   `feat: retain provider ranges persistently`.
 
 ### Task 2: Permit browser setup in persistent mode
@@ -36,16 +36,16 @@ configured storage mode.
 **Files:** `internal/config/config.go`, `internal/config/config_test.go`,
 `cmd/blackpearl/app.go`, `cmd/blackpearl/app_test.go`
 
-- [ ] Add failing configuration tests for valid persistent browser setup and
+- [x] Add failing configuration tests for valid persistent browser setup and
   invalid quota/provider/legacy combinations.
-- [ ] Refine storage validation so only provider-backed browser persistent mode
+- [x] Refine storage validation so only provider-backed browser persistent mode
   accepts range settings and prefetch controls.
-- [ ] Add failing app tests proving persistent setup selects one retained pool,
+- [x] Add failing app tests proving persistent setup selects one retained pool,
   restores a manifest, serves an exact read, and reuses it after runtime
   replacement.
-- [ ] Select the cache pool by storage mode without changing downstream setup,
+- [x] Select the cache pool by storage mode without changing downstream setup,
   acquisition, Watchlist, NFS, or Plex-refresh services.
-- [ ] Run focused race tests and commit
+- [x] Run focused race tests and commit
   `feat: run browser setup with persistent retention`.
 
 ### Task 3: Compose and live acceptance
@@ -53,12 +53,12 @@ configured storage mode.
 **Files:** `compose.torbox.yaml`, `scripts/test-torbox-compose.sh`, `README.md`,
 `docs/architecture.md`, `docs/acceptance-evidence.md`
 
-- [ ] Add a storage-mode override while keeping rolling as the default and
+- [x] Add a storage-mode override while keeping rolling as the default and
   assert both rendered profiles remain isolated.
-- [ ] Run `make verify`, frontend lint/test/build, and all four Compose checks.
-- [ ] Rebuild the isolated profile in persistent mode; prove exact NFS ranges,
+- [x] Run `make verify`, frontend lint/test/build, and all four Compose checks.
+- [x] Rebuild the isolated profile in persistent mode; prove exact NFS ranges,
   restart reuse, Direct Play, and seeking in Brave.
-- [ ] Restore the user's normal rolling profile after acceptance unless they
+- [x] Restore the user's normal rolling profile after acceptance unless they
   explicitly choose persistent as the operating default.
-- [ ] Record distinct automated, macOS live, Windows, and native-Linux evidence;
+- [x] Record distinct automated, macOS live, Windows, and native-Linux evidence;
   commit `docs: verify persistent provider retention`.

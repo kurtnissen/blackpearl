@@ -66,7 +66,14 @@ The test suite includes a one-terabyte logical source that generates only reques
 
 The current implementation imports the POC fixture into a SHA-256-addressed object. Publication is atomic: copy to a temporary object, synchronize it, rename it, set read-only service permissions, and synchronize the directory. Core stores only the resulting backing reference and size.
 
-Persistent mode is suitable for a home server where the cache can retain entire objects. Later integrity and quota policy can extend this implementation behind the existing media-source boundary.
+Provider-backed browser setup also uses persistent mode on a home server. It
+retains every verified fixed-size range in a separate `persistent` namespace
+without eviction. Missing ranges still come from the authorized `RangeSource`,
+so first playback and arbitrary seeks begin before a complete local object
+exists. Sequential playback gradually retains the requested object; restart
+recovery reuses published chunks without refetching their ranges. The rolling
+and persistent policies share validation, coalescing, atomic publication,
+read-ahead, and prefetch behavior but never share a cache index.
 
 ## Rolling mode
 
@@ -118,7 +125,7 @@ SQLite owns catalog metadata only. Cache bytes and the optional FUSE mount live 
 1. Extend the implemented movie-only Watchlist ingestion with an explicit season/episode policy for shows and a stable provider contract or RSS fallback.
 2. Add adaptive throughput-based read scheduling. Seek-aware read-ahead is implemented.
 3. Extend the implemented bounded next-episode prefix prefetch with playback-aware cancellation and prioritization.
-4. Implement provider-backed persistent retention policy alongside rolling mode.
+4. Add disk-capacity observability and operator alerts for non-evicting persistent retention.
 5. Add additional explicitly authorized search and range providers.
 
 Each stage needs its own acceptance evidence. A generic interface alone is not evidence that a provider, rolling cache, or progressive stream works.

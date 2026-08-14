@@ -64,17 +64,19 @@ observer, and acquisition coordinator.
 ## Failure behavior
 
 A failed range fetch leaves no published chunk. Existing retained chunks remain
-readable across provider outages and restarts. A missing retained range still
-requires the authorized provider, exactly like a rolling miss. Disk exhaustion
-surfaces as a read error; BlackPearl does not silently evict persistent data or
-fall back to rolling behavior.
+readable through an already-open handle during a provider interruption and are
+reused after restart once provider metadata revalidates the object. A missing
+retained range still requires the authorized provider, exactly like a rolling
+miss. Disk exhaustion surfaces as a read error; BlackPearl does not silently
+evict persistent data or fall back to rolling behavior.
 
 ## Acceptance
 
 Automated tests must prove:
 
 1. persistent range reads fetch exact arbitrary offsets and retain chunks;
-2. a later read and a new process reuse retained chunks without provider I/O;
+2. a later read and a new process reuse retained chunks without provider range
+   refetches;
 3. persistent retention grows beyond a size that would have forced rolling
    eviction, with zero evictions;
 4. rolling hard-quota tests remain unchanged and green;

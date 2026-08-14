@@ -2,7 +2,7 @@
 
 BlackPearl is an experimental, open-source Go service that exposes a virtual media library through read-only FUSE or NFS filesystem frontends. Milestone 1 is intentionally narrow: prove that Plex can scan and Direct Play a synthetic MP4 without touching an existing Plex, media, download, or `*arr` path.
 
-> Status: FUSE remains available for native Linux. The portable NFS profile is designed for Docker Desktop and mounts into an unmodified Plex container through Docker's built-in local-volume driver. Persistent and quota-bounded rolling storage both work in the same binary. macOS Plex Web playback has been verified in both modes.
+> Status: FUSE remains available for native Linux. The portable NFS profile is designed for Docker Desktop and mounts into an unmodified Plex container through Docker's built-in local-volume driver. Provider-backed persistent retention and quota-bounded rolling storage both work in the same binary. macOS Plex Web playback has been verified in both modes.
 
 ## What exists today
 
@@ -102,6 +102,17 @@ The launcher opens a locally paired setup page. Paste a TorBox token, search and
 - a Movies library rooted at `/blackpearl/Movies`; and
 - a TV Shows library rooted at `/blackpearl/TV Shows`.
 
+The profile defaults to a 40 GiB rolling cache. A home server can retain every
+verified range instead, without waiting for the complete media before playback:
+
+```bash
+BLACKPEARL_STORAGE_MODE=persistent ./scripts/torbox-stack.sh start
+```
+
+Persistent and rolling chunks use separate namespaces in the same private data
+volume. Returning to the normal rolling profile requires only the usual launcher
+command with no storage-mode override.
+
 The same stack exposes Prowlarr at `http://localhost:9697`. Complete its
 one-time authentication and authorized-indexer setup. In BlackPearl, select
 **Find something new**, keep the internal URL `http://prowlarr:9696`, and paste
@@ -168,10 +179,12 @@ Then open Plex at `http://YOUR_UBUNTU_SERVER_IP:32400/web`, add one Movies libra
 
 | Mode | Intended deployment | Milestone 1 behavior |
 |---|---|---|
-| `persistent` | Home server with multi-TB storage | Implemented for the local synthetic fixture |
+| `persistent` | Home server with multi-TB storage | Local fixture import plus provider-backed, restart-durable chunk retention with no eviction |
 | `rolling` | Low-compute VPS with roughly 40-80 GB cache | Implemented POC with strict range fetching, hard quota, coalescing, restart recovery, LRU eviction, read-ahead, and bounded next-episode prefetch |
 
-Both modes use the same FUSE and range-oriented media-source contract. Plex Direct Play is a primary target for the later rolling deployment.
+Both modes use the same range-oriented media-source and filesystem contracts.
+Neither mode requires a complete local file before Plex can open, Direct Play,
+or seek the logical media.
 
 ## Project documents
 
