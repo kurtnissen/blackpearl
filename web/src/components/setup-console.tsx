@@ -8,12 +8,14 @@ import {
   discoverMedia,
   getAcquisitionStatus,
   getStatus,
+  getWatchlistStatus,
   SetupAPIError,
   type AcquisitionIntent,
   type MediaCandidate,
 	type ApplyItemInput,
   type SetupAuthorization,
   type SetupConfiguration,
+  type WatchlistStatus,
 } from "../lib/api";
 
 type Phase = "loading" | "credentials" | "select" | "ready";
@@ -53,6 +55,9 @@ export function SetupConsole(): React.JSX.Element {
   const [acquisitionYear, setAcquisitionYear] = useState(new Date().getFullYear());
   const [acquisitionSeason, setAcquisitionSeason] = useState(1);
   const [acquisitionEpisode, setAcquisitionEpisode] = useState(1);
+  const [watchlistStatus, setWatchlistStatus] = useState<WatchlistStatus | null>(null);
+  const [watchlistLoading, setWatchlistLoading] = useState(false);
+  const [watchlistError, setWatchlistError] = useState("");
   const [pending, setPending] = useState(false);
   const [message, setMessage] = useState("Loading BlackPearl setup…");
 
@@ -83,6 +88,22 @@ export function SetupConsole(): React.JSX.Element {
 					setSelectedItems(restoredItems);
           setPhase("ready");
           setMessage("BlackPearl is ready for Plex.");
+          if (storedAuthorization.session || storedAuthorization.bootstrap) {
+            setWatchlistLoading(true);
+            getWatchlistStatus(status.csrfToken, storedAuthorization)
+              .then((result) => {
+                if (!active) return;
+                setWatchlistStatus(result);
+                setWatchlistError("");
+              })
+              .catch((error: unknown) => {
+                if (!active) return;
+                setWatchlistError(publicMessage(error));
+              })
+              .finally(() => {
+                if (active) setWatchlistLoading(false);
+              });
+          }
         } else {
           setPhase("credentials");
           setMessage(status.tokenConfigured && !storedAuthorization.session && !storedAuthorization.bootstrap
@@ -129,6 +150,18 @@ export function SetupConsole(): React.JSX.Element {
       setMessage(publicMessage(error));
     } finally {
       setPending(false);
+    }
+  }
+
+  async function refreshWatchlist(): Promise<void> {
+    setWatchlistLoading(true);
+    setWatchlistError("");
+    try {
+      setWatchlistStatus(await getWatchlistStatus(csrf, authorization));
+    } catch (error: unknown) {
+      setWatchlistError(publicMessage(error));
+    } finally {
+      setWatchlistLoading(false);
     }
   }
 
@@ -351,6 +384,39 @@ export function SetupConsole(): React.JSX.Element {
                 : <button type="button" onClick={() => { setToken(""); setPhase("credentials"); setMessage("Re-enter your saved TorBox token to authorize this browser."); }}>Change video</button>}
               <button type="button" onClick={() => { setToken(""); setShowToken(false); setPhase("credentials"); setMessage("Enter a replacement TorBox token."); }}>Replace token</button>
             </div>
+            <section className="watchlist-panel" aria-labelledby="watchlist-title">
+              <div className="watchlist-panel__heading">
+                <div>
+                  <p className="ready-kicker">AUTOMATIC INTAKE</p>
+                  <h4 id="watchlist-title">Plex Watchlist</h4>
+                </div>
+                {watchlistStatus && (
+                  <span className={`watchlist-badge watchlist-badge--${watchlistStatus.healthy ? "healthy" : "attention"}`}>
+                    {watchlistStatus.healthy
+                      ? (watchlistStatus.acquisitionEnabled ? "AUTO ADD ON" : "OBSERVING")
+                      : "NEEDS ATTENTION"}
+                  </span>
+                )}
+              </div>
+              {watchlistLoading && <div className="loading-rule" aria-label="Refreshing Plex Watchlist" />}
+              {watchlistStatus && (
+                <>
+                  <p className="watchlist-summary">{watchlistSummary(watchlistStatus)}</p>
+                  <div className="watchlist-stats">
+                    <p><strong>{waitingMovieCount(watchlistStatus)} movies waiting</strong><span>Queued or awaiting a cached match</span></p>
+                    <p><strong>{watchlistStatus.queue.observedShows} shows observed</strong><span>Tracked safely; episode intake comes later</span></p>
+                    <p><strong>{watchlistStatus.queue.succeeded} added automatically</strong><span>Published into the BlackPearl manifest</span></p>
+                    <p><strong>{watchlistStatus.queue.manualReview} need review</strong><span>Held instead of making an unsafe guess</span></p>
+                  </div>
+                  {watchlistStatus.lastSyncAt && <p className="watchlist-sync">Last checked {formatWatchlistTime(watchlistStatus.lastSyncAt)}</p>}
+                </>
+              )}
+              {!watchlistStatus && !watchlistLoading && !watchlistError && (
+                <p className="watchlist-summary">Pair this browser from the BlackPearl launcher to see Watchlist activity.</p>
+              )}
+              {watchlistError && <p className="watchlist-error">Watchlist status is temporarily unavailable. Your existing Plex library is unaffected.</p>}
+              <button type="button" onClick={() => void refreshWatchlist()} disabled={watchlistLoading || (!session && !bootstrap)}>Refresh Watchlist</button>
+            </section>
             {acquisitionView !== "closed" && (
               <section className="acquisition-panel" aria-labelledby="acquisition-title">
                 <div className="acquisition-panel__heading">
@@ -423,6 +489,21 @@ function validSetupSecret(value: string | null): string | undefined {
 function publicMessage(error: unknown): string {
   if (error instanceof SetupAPIError) return error.message;
   return "BlackPearl could not reach its local setup service.";
+}
+
+function waitingMovieCount(status: WatchlistStatus): number {
+  return status.queue.pendingMovies + status.queue.acquiring + status.queue.notCached + status.queue.retryable;
+}
+
+function watchlistSummary(status: WatchlistStatus): string {
+  if (!status.enabled) return "Plex Watchlist observation is turned off.";
+  if (!status.healthy) return "BlackPearl could not read Plex Watchlist during its latest check.";
+  if (status.acquisitionEnabled) return "BlackPearl is watching Plex and can add authorized cached matches automatically.";
+  return "BlackPearl is watching Plex. Automatic adding stays off until your authorized Prowlarr indexers are ready.";
+}
+
+function formatWatchlistTime(value: string): string {
+  return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
 }
 
 function suggestTitle(name: string): string {

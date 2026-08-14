@@ -442,7 +442,8 @@ func runBrowserSetup(ctx context.Context, cfg config.Config, logger *slog.Logger
 		}
 		watchlistRepository = openedRepository
 		watchlistObserver, err = watchlistservice.NewObserver(watchlistGateway, watchlistRepository, watchlistservice.ObserverOptions{
-			PollInterval: cfg.WatchlistPollInterval,
+			PollInterval:       cfg.WatchlistPollInterval,
+			AcquisitionEnabled: cfg.WatchlistAcquisitionEnabled,
 		})
 		if err != nil {
 			closeErr := watchlistRepository.Close()

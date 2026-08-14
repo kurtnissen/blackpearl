@@ -27,12 +27,26 @@ func TestObserverSyncPersistsSnapshotAndReturnsAggregateStatus(t *testing.T) {
 
 	require.NoError(t, err)
 	require.True(t, status.Enabled)
+	require.False(t, status.AcquisitionEnabled)
 	require.True(t, status.Healthy)
 	require.NotNil(t, status.LastSyncAt)
 	require.Equal(t, now, *status.LastSyncAt)
 	require.Equal(t, queue.status, status.Queue)
 	require.Equal(t, items, queue.items)
 	require.Equal(t, now, queue.observedAt)
+}
+
+func TestObserverStatusReportsAutomaticAcquisitionPolicy(t *testing.T) {
+	t.Parallel()
+	observer, err := watchlistservice.NewObserver(&fakeSnapshotGateway{}, &fakeQueue{}, watchlistservice.ObserverOptions{
+		PollInterval: time.Hour, AcquisitionEnabled: true,
+	})
+	require.NoError(t, err)
+
+	status, err := observer.Status(context.Background())
+
+	require.NoError(t, err)
+	require.True(t, status.AcquisitionEnabled)
 }
 
 func TestObserverSyncSanitizesProviderAndRepositoryFailures(t *testing.T) {

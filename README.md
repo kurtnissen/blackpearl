@@ -110,8 +110,9 @@ that TorBox already reports as cached.
 The same isolated profile observes Plex Watchlist movies and shows every 15
 minutes. BlackPearl mounts only this stack's named Plex configuration volume,
 read-only; it does not inspect a host Plex installation. Observation stores no
-Plex token in BlackPearl state and does not acquire anything. After authorized
-indexers are configured and the observe-only counts look correct, automatic
+Plex token in BlackPearl state and does not acquire anything. The paired setup
+page shows only aggregate queue counts and observation health; it never returns
+Watchlist titles or identifiers. After authorized indexers are configured and the observe-only counts look correct, automatic
 cached-only movie processing can be enabled explicitly with
 `BLACKPEARL_WATCHLIST_ACQUISITION_ENABLED=true`. Shows remain observation-only
 until an episode policy is configured in a later milestone.

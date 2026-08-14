@@ -263,10 +263,11 @@ components:
     WatchlistStatus:
       type: object
       additionalProperties: false
-      required: [enabled, healthy, queue]
+      required: [enabled, healthy, acquisitionEnabled, queue]
       properties:
         enabled: { type: boolean }
         healthy: { type: boolean }
+        acquisitionEnabled: { type: boolean }
         lastSyncAt: { type: string, format: date-time }
         queue: { $ref: "#/components/schemas/WatchlistQueueStatus" }
     WatchlistQueueStatus:

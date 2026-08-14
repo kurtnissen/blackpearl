@@ -102,6 +102,7 @@ it("keeps the active manifest selected when adding videos with the saved token",
 	window.history.replaceState(null, "", `/#bootstrap=${bootstrap}`);
 	vi.stubGlobal("fetch", vi.fn()
 		.mockResolvedValueOnce(new Response(JSON.stringify({ setupRequired: false, tokenConfigured: true, csrfToken: "csrf", selected: active, selectedItems: [active] }), { status: 200 }))
+		.mockResolvedValueOnce(watchlistResponse())
 		.mockResolvedValueOnce(new Response(JSON.stringify({ candidates: [
 			{ objectId: "17:3", name: "Films/Existing.mp4", extension: ".mp4", size: 1024 },
 			{ objectId: "17:4", name: "Films/New.mp4", extension: ".mp4", size: 2048 },
@@ -207,6 +208,7 @@ it("connects Prowlarr and adds an instant cached movie to the Plex manifest", as
   window.history.replaceState(null, "", `/#bootstrap=${bootstrap}`);
   const fetchSpy = vi.fn()
     .mockResolvedValueOnce(new Response(JSON.stringify({ setupRequired: false, tokenConfigured: true, csrfToken: "csrf", selected: active, selectedItems: [active] }), { status: 200 }))
+    .mockResolvedValueOnce(watchlistResponse())
     .mockResolvedValueOnce(new Response(JSON.stringify({ configured: false }), { status: 200 }))
     .mockResolvedValueOnce(new Response(JSON.stringify({ configured: true }), { status: 200, headers: { "X-BlackPearl-Session": session } }))
     .mockResolvedValueOnce(new Response(JSON.stringify({ selected: added, selectedItems: [active, added] }), { status: 200, headers: { "X-BlackPearl-Session": session } }));
@@ -228,13 +230,49 @@ it("connects Prowlarr and adds an instant cached movie to the Plex manifest", as
   expect(screen.getByRole("status")).toHaveTextContent("Added New Movie to Plex");
   expect(window.sessionStorage.getItem("blackpearl.setup.session")).toBe(session);
   expect(Object.values(window.sessionStorage)).not.toContain("private-prowlarr-key");
-  expect(fetchSpy).toHaveBeenNthCalledWith(3, "/api/acquisition/settings", expect.objectContaining({
+  expect(fetchSpy).toHaveBeenNthCalledWith(4, "/api/acquisition/settings", expect.objectContaining({
     body: JSON.stringify({ baseUrl: "http://prowlarr:9696", apiKey: "private-prowlarr-key" }),
   }));
-  expect(fetchSpy).toHaveBeenNthCalledWith(4, "/api/acquisition/acquire", expect.objectContaining({
+  expect(fetchSpy).toHaveBeenNthCalledWith(5, "/api/acquisition/acquire", expect.objectContaining({
     body: JSON.stringify({ mediaType: "movie", title: "New Movie", year: 2026 }),
   }));
 });
+
+it("shows aggregate Plex Watchlist activity without exposing titles or identifiers", async () => {
+  const bootstrap = "b".repeat(64);
+  const active = { objectId: "17:3", name: "Existing.mkv", extension: ".mkv", size: 1024, mediaType: "movie", title: "Existing", year: 2024 };
+  window.history.replaceState(null, "", `/#bootstrap=${bootstrap}`);
+  vi.stubGlobal("fetch", vi.fn()
+    .mockResolvedValueOnce(new Response(JSON.stringify({ setupRequired: false, tokenConfigured: true, csrfToken: "csrf", selected: active, selectedItems: [active] }), { status: 200 }))
+    .mockResolvedValueOnce(watchlistResponse()));
+
+  render(<SetupConsole />);
+
+  expect(await screen.findByRole("heading", { name: "Plex Watchlist" })).toBeInTheDocument();
+  expect(screen.getByText("OBSERVING")).toBeInTheDocument();
+  expect(screen.getByText("3 movies waiting")).toBeInTheDocument();
+  expect(screen.getByText("2 shows observed")).toBeInTheDocument();
+  expect(screen.getByText(/Automatic adding stays off/)).toBeInTheDocument();
+  expect(screen.queryByText(/objectId/i)).not.toBeInTheDocument();
+});
+
+function watchlistResponse(): Response {
+  return new Response(JSON.stringify({
+    enabled: true,
+    healthy: true,
+    acquisitionEnabled: false,
+    lastSyncAt: "2026-08-14T14:00:00Z",
+    queue: {
+      pendingMovies: 3,
+      acquiring: 0,
+      succeeded: 1,
+      notCached: 0,
+      retryable: 0,
+      manualReview: 0,
+      observedShows: 2,
+    },
+  }), { status: 200 });
+}
 
 function requireVisibleCheckboxCount(count: number): void {
 	expect(screen.getAllByRole("checkbox")).toHaveLength(count);

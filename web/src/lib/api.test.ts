@@ -6,6 +6,7 @@ import {
   discoverMedia,
   getAcquisitionStatus,
   getStatus,
+  getWatchlistStatus,
 } from "./api";
 
 const session = "a".repeat(64);
@@ -76,6 +77,38 @@ describe("setup API", () => {
 
     await expect(getAcquisitionStatus()).resolves.toEqual({ configured: true });
     expect(fetchSpy).toHaveBeenCalledWith("/api/acquisition/status", { method: "GET", cache: "no-store" });
+  });
+
+  it("loads only aggregate Plex watchlist state through the paired boundary", async () => {
+    const aggregate = {
+      enabled: true,
+      healthy: true,
+      acquisitionEnabled: false,
+      lastSyncAt: "2026-08-14T14:00:00Z",
+      queue: {
+        pendingMovies: 3,
+        acquiring: 0,
+        succeeded: 1,
+        notCached: 0,
+        retryable: 0,
+        manualReview: 0,
+        observedShows: 2,
+      },
+    };
+    const fetchSpy = vi.fn(async () => new Response(JSON.stringify(aggregate), { status: 200 }));
+    vi.stubGlobal("fetch", fetchSpy);
+
+    await expect(getWatchlistStatus("csrf-value", { session, bootstrap })).resolves.toEqual(aggregate);
+    expect(fetchSpy).toHaveBeenCalledWith("/api/watchlist/status", {
+      method: "GET",
+      cache: "no-store",
+      headers: {
+        "Content-Type": "application/json",
+        "X-BlackPearl-CSRF": "csrf-value",
+        "X-BlackPearl-Session": session,
+        "X-BlackPearl-Bootstrap": bootstrap,
+      },
+    });
   });
 
   it("configures Prowlarr through the paired mutation boundary", async () => {

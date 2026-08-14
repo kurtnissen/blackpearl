@@ -100,6 +100,21 @@ dl div { display: grid; grid-template-columns: 140px 1fr; gap: 16px; padding: 11
 dt { color: #665b49; font-size: 12px; letter-spacing: .06em; text-transform: uppercase; }
 dd { margin: 0; overflow-wrap: anywhere; }
 
+.watchlist-panel { margin-top: 30px; padding: 22px; border: 1px solid var(--ink); background: rgba(246, 240, 228, .5); }
+.watchlist-panel__heading { display: flex; align-items: start; justify-content: space-between; gap: 18px; }
+.watchlist-panel h4 { margin: 5px 0 0; font-family: Charter, "Iowan Old Style", serif; font-size: 27px; font-weight: 500; }
+.watchlist-badge { flex: none; padding: 6px 9px; border: 1px solid currentColor; font-family: ui-monospace, monospace; font-size: 10px; font-weight: 800; letter-spacing: .12em; }
+.watchlist-badge--healthy { color: var(--green); }
+.watchlist-badge--attention { color: var(--red); }
+.watchlist-summary { max-width: 680px; margin: 18px 0; color: #4f4638; line-height: 1.45; }
+.watchlist-stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); border-top: 1px solid var(--ink); border-left: 1px solid var(--ink); }
+.watchlist-stats p { display: grid; gap: 5px; margin: 0; padding: 14px; border-right: 1px solid var(--ink); border-bottom: 1px solid var(--ink); }
+.watchlist-stats strong { font-size: 15px; }
+.watchlist-stats span, .watchlist-sync { color: #665b49; font-size: 11px; line-height: 1.35; }
+.watchlist-sync { margin: 10px 0 0; font-family: ui-monospace, monospace; }
+.watchlist-error { color: var(--red); }
+.watchlist-panel > button { margin-top: 16px; }
+
 .acquisition-panel { margin-top: 30px; padding-top: 22px; border-top: 1px solid var(--ink); }
 .acquisition-panel__heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 18px; }
 .acquisition-panel h4 { margin: 0; font-family: Charter, "Iowan Old Style", serif; font-size: 27px; font-weight: 500; }
@@ -129,6 +144,9 @@ footer { display: flex; justify-content: space-between; gap: 12px; color: #948a7
   .acquisition-form { grid-template-columns: 1fr; }
   .acquisition-form__actions { grid-column: 1; }
   dl div { grid-template-columns: 1fr; gap: 4px; }
+  .watchlist-panel { padding: 18px; }
+  .watchlist-panel__heading { align-items: start; flex-direction: column; }
+  .watchlist-stats { grid-template-columns: 1fr; }
   footer { flex-direction: column; }
 }
 

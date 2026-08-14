@@ -61,6 +61,24 @@ export type AcquisitionStatus = {
   configured: boolean;
 };
 
+export type WatchlistQueueStatus = {
+  pendingMovies: number;
+  acquiring: number;
+  succeeded: number;
+  notCached: number;
+  retryable: number;
+  manualReview: number;
+  observedShows: number;
+};
+
+export type WatchlistStatus = {
+  enabled: boolean;
+  healthy: boolean;
+  acquisitionEnabled: boolean;
+  lastSyncAt?: string;
+  queue: WatchlistQueueStatus;
+};
+
 export type ProwlarrSettingsInput = {
   baseUrl: string;
   apiKey: string;
@@ -114,6 +132,18 @@ export async function applyConfiguration(input: ApplyInput, csrfToken: string, a
 export async function getAcquisitionStatus(): Promise<AcquisitionStatus> {
   const response = await fetch("/api/acquisition/status", { method: "GET", cache: "no-store" });
   return readJSON(response, isAcquisitionStatus, "invalid_acquisition_status");
+}
+
+export async function getWatchlistStatus(
+  csrfToken: string,
+  authorization: SetupAuthorization,
+): Promise<WatchlistStatus> {
+  const response = await fetch("/api/watchlist/status", {
+    method: "GET",
+    cache: "no-store",
+    headers: mutationHeaders(csrfToken, authorization),
+  });
+  return readJSON(response, isWatchlistStatus, "invalid_watchlist_status");
 }
 
 export async function configureAcquisition(
@@ -231,4 +261,29 @@ function isSelectionEnvelope(value: unknown): value is { selected: SetupConfigur
 
 function isAcquisitionStatus(value: unknown): value is AcquisitionStatus {
   return isRecord(value) && typeof value.configured === "boolean";
+}
+
+function isWatchlistStatus(value: unknown): value is WatchlistStatus {
+  return isRecord(value)
+    && typeof value.enabled === "boolean"
+    && typeof value.healthy === "boolean"
+    && typeof value.acquisitionEnabled === "boolean"
+    && (value.lastSyncAt === undefined
+      || (typeof value.lastSyncAt === "string" && Number.isFinite(Date.parse(value.lastSyncAt))))
+    && isWatchlistQueueStatus(value.queue);
+}
+
+function isWatchlistQueueStatus(value: unknown): value is WatchlistQueueStatus {
+  return isRecord(value)
+    && isCount(value.pendingMovies)
+    && isCount(value.acquiring)
+    && isCount(value.succeeded)
+    && isCount(value.notCached)
+    && isCount(value.retryable)
+    && isCount(value.manualReview)
+    && isCount(value.observedShows);
+}
+
+function isCount(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0;
 }

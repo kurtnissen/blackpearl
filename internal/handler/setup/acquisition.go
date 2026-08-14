@@ -62,7 +62,7 @@ func (h *handler) serveWatchlistStatus(writer http.ResponseWriter, request *http
 		methodNotAllowed(writer, http.MethodGet)
 		return
 	}
-	if !h.authorizeBrowser(request) {
+	if !h.authorizeBrowserRead(request) {
 		writeError(writer, http.StatusForbidden, "forbidden", "Setup requests are accepted only from this local page.")
 		return
 	}

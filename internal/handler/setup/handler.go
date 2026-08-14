@@ -158,15 +158,32 @@ func (h *handler) writeServiceError(writer http.ResponseWriter, request *http.Re
 }
 
 func (h *handler) authorizeBrowser(request *http.Request) bool {
+	if request.Header.Get("Origin") == "" || !h.authorizeBrowserRead(request) {
+		return false
+	}
+	return validLoopbackOrigin(request)
+}
+
+// authorizeBrowserRead accepts normal same-origin GET requests, which browsers
+// send without Origin, while retaining the loopback, CSRF, and pairing gates.
+// If an Origin is present it must still match exactly.
+func (h *handler) authorizeBrowserRead(request *http.Request) bool {
 	if !loopbackHost(request.Host) {
 		return false
 	}
+	provided := request.Header.Get("X-BlackPearl-CSRF")
+	if len(provided) != len(h.csrf) || subtle.ConstantTimeCompare([]byte(provided), []byte(h.csrf)) != 1 {
+		return false
+	}
+	return request.Header.Get("Origin") == "" || validLoopbackOrigin(request)
+}
+
+func validLoopbackOrigin(request *http.Request) bool {
 	origin, err := url.Parse(request.Header.Get("Origin"))
 	if err != nil || (origin.Scheme != "http" && origin.Scheme != "https") || !loopbackHost(origin.Host) || !strings.EqualFold(origin.Host, request.Host) {
 		return false
 	}
-	provided := request.Header.Get("X-BlackPearl-CSRF")
-	return len(provided) == len(h.csrf) && subtle.ConstantTimeCompare([]byte(provided), []byte(h.csrf)) == 1
+	return true
 }
 
 func (h *handler) issueSession(writer http.ResponseWriter, request *http.Request, token string) error {

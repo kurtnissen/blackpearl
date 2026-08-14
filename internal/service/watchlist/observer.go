@@ -29,25 +29,28 @@ type QueueRepository interface {
 
 // ObserverOptions configures serialized observation polling.
 type ObserverOptions struct {
-	PollInterval time.Duration
-	Now          func() time.Time
+	PollInterval       time.Duration
+	AcquisitionEnabled bool
+	Now                func() time.Time
 }
 
 // ObserverStatus is safe to return only through the paired local API. It never
 // contains watchlist titles, identifiers, or credentials.
 type ObserverStatus struct {
-	Enabled    bool                                   `json:"enabled"`
-	Healthy    bool                                   `json:"healthy"`
-	LastSyncAt *time.Time                             `json:"lastSyncAt,omitempty"`
-	Queue      acquisitiondomain.WatchlistQueueStatus `json:"queue"`
+	Enabled            bool                                   `json:"enabled"`
+	Healthy            bool                                   `json:"healthy"`
+	AcquisitionEnabled bool                                   `json:"acquisitionEnabled"`
+	LastSyncAt         *time.Time                             `json:"lastSyncAt,omitempty"`
+	Queue              acquisitiondomain.WatchlistQueueStatus `json:"queue"`
 }
 
 // Observer polls and durably records watchlist metadata without acquiring it.
 type Observer struct {
-	gateway      SnapshotGateway
-	queue        QueueRepository
-	pollInterval time.Duration
-	now          func() time.Time
+	gateway            SnapshotGateway
+	queue              QueueRepository
+	pollInterval       time.Duration
+	acquisitionEnabled bool
+	now                func() time.Time
 
 	syncMu     sync.Mutex
 	mu         sync.RWMutex
@@ -67,7 +70,10 @@ func NewObserver(gateway SnapshotGateway, queue QueueRepository, options Observe
 	if now == nil {
 		now = time.Now
 	}
-	return &Observer{gateway: gateway, queue: queue, pollInterval: options.PollInterval, now: now}, nil
+	return &Observer{
+		gateway: gateway, queue: queue, pollInterval: options.PollInterval,
+		acquisitionEnabled: options.AcquisitionEnabled, now: now,
+	}, nil
 }
 
 // Sync reads and persists one snapshot without calling acquisition providers.
@@ -130,7 +136,9 @@ func (o *Observer) Status(ctx context.Context) (ObserverStatus, error) {
 		return ObserverStatus{}, publicError(ctx, "read watchlist status", err)
 	}
 	o.mu.RLock()
-	status := ObserverStatus{Enabled: true, Healthy: o.healthy, Queue: queueStatus}
+	status := ObserverStatus{
+		Enabled: true, Healthy: o.healthy, AcquisitionEnabled: o.acquisitionEnabled, Queue: queueStatus,
+	}
 	if o.lastSyncAt != nil {
 		lastSyncAt := *o.lastSyncAt
 		status.LastSyncAt = &lastSyncAt
