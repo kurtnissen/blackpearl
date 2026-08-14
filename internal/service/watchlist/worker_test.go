@@ -104,6 +104,28 @@ func TestWorkerDoesNotSubmitWhenPublishedMediaLookupFails(t *testing.T) {
 	require.Empty(t, queue.completions)
 }
 
+func TestWorkerBoundsPublishedMediaLookupByOperationTimeout(t *testing.T) {
+	t.Parallel()
+	claim := mustClaim(t, "plex://movie/index-timeout", 1, "")
+	queue := &fakeWorkerQueue{claims: []acquisition.WatchlistClaim{claim}}
+	manager := &fakeJobManager{}
+	index := &fakePublishedMediaIndex{waitForCancellation: true}
+	worker, err := watchlistservice.NewWorker(queue, manager, index, watchlistservice.WorkerOptions{
+		LeaseDuration: time.Minute, OperationTimeout: 10 * time.Millisecond, IdleInterval: time.Second,
+		ReconcileInterval: 30 * time.Second, NotCachedCooldown: time.Hour, RetryCooldown: time.Minute,
+	})
+	require.NoError(t, err)
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	t.Cleanup(cancel)
+	started := time.Now()
+
+	_, err = worker.ProcessOne(ctx)
+
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.Less(t, time.Since(started), 100*time.Millisecond)
+	require.Zero(t, manager.submitCalls)
+}
+
 func TestWorkerDefersActiveDurableJobWithoutResubmitting(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, time.August, 14, 16, 0, 0, 0, time.UTC)
@@ -233,6 +255,9 @@ func TestWorkerReportsNoWorkAndValidatesOptions(t *testing.T) {
 	require.Error(t, err)
 	_, err = watchlistservice.NewWorker(queue, manager, index, watchlistservice.WorkerOptions{})
 	require.Error(t, err)
+	valid.LeaseDuration = valid.OperationTimeout + 5*time.Second
+	_, err = watchlistservice.NewWorker(queue, manager, index, valid)
+	require.Error(t, err)
 }
 
 func TestWorkerRunStopsAfterProcessCancellation(t *testing.T) {
@@ -279,10 +304,11 @@ func newWorkerWithIndex(
 }
 
 type fakePublishedMediaIndex struct {
-	objectID string
-	found    bool
-	err      error
-	request  acquisition.SearchRequest
+	objectID            string
+	found               bool
+	err                 error
+	request             acquisition.SearchRequest
+	waitForCancellation bool
 }
 
 func (f *fakePublishedMediaIndex) FindPublishedMovie(_ context.Context, title string, year int) (string, bool, error) {
@@ -290,8 +316,12 @@ func (f *fakePublishedMediaIndex) FindPublishedMovie(_ context.Context, title st
 	return f.objectID, f.found, f.err
 }
 
-func (f *fakePublishedMediaIndex) FindPublished(_ context.Context, request acquisition.SearchRequest) (string, bool, error) {
+func (f *fakePublishedMediaIndex) FindPublished(ctx context.Context, request acquisition.SearchRequest) (string, bool, error) {
 	f.request = request
+	if f.waitForCancellation {
+		<-ctx.Done()
+		return "", false, ctx.Err()
+	}
 	return f.objectID, f.found, f.err
 }
 
@@ -385,7 +415,13 @@ func (f *fakeWorkerQueue) Claim(ctx context.Context, _ time.Time, _ time.Duratio
 	return claim, nil
 }
 
-func (f *fakeWorkerQueue) AttachJob(ctx context.Context, _ acquisition.WatchlistClaim, jobID string, nextAttempt time.Time) error {
+func (f *fakeWorkerQueue) AttachJob(
+	ctx context.Context,
+	_ acquisition.WatchlistClaim,
+	jobID string,
+	nextAttempt time.Time,
+	_ time.Time,
+) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.transitionContextCanceled = ctx.Err() != nil
@@ -394,7 +430,12 @@ func (f *fakeWorkerQueue) AttachJob(ctx context.Context, _ acquisition.Watchlist
 	return nil
 }
 
-func (f *fakeWorkerQueue) DeferJob(ctx context.Context, _ acquisition.WatchlistClaim, nextAttempt time.Time) error {
+func (f *fakeWorkerQueue) DeferJob(
+	ctx context.Context,
+	_ acquisition.WatchlistClaim,
+	nextAttempt time.Time,
+	_ time.Time,
+) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.transitionContextCanceled = ctx.Err() != nil
@@ -402,7 +443,12 @@ func (f *fakeWorkerQueue) DeferJob(ctx context.Context, _ acquisition.WatchlistC
 	return nil
 }
 
-func (f *fakeWorkerQueue) Complete(ctx context.Context, _ acquisition.WatchlistClaim, completion acquisition.WatchlistCompletion) error {
+func (f *fakeWorkerQueue) Complete(
+	ctx context.Context,
+	_ acquisition.WatchlistClaim,
+	completion acquisition.WatchlistCompletion,
+	_ time.Time,
+) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.transitionContextCanceled = ctx.Err() != nil

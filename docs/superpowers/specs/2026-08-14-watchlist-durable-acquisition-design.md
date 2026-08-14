@@ -45,7 +45,7 @@ short reconciliation delay. A claimed movie with a job ID reads the durable job:
 
 A service or repository failure before a durable job is attached leaves the
 Watchlist lease to expire. A failure after attachment retains the job ID. Every
-Watchlist transition is lease-version checked, and process cancellation does
+Watchlist transition is lease-version and lease-deadline checked, and process cancellation does
 not cancel the bounded SQLite commit that records an already-created job ID.
 
 ## Configuration and safety

@@ -34,7 +34,7 @@ func TestRepositoryPersistsSnapshotAndKeepsSucceededMovieFinal(t *testing.T) {
 	require.ErrorIs(t, err, domain.ErrNotFound)
 	completion, err := acquisitiondomain.NewWatchlistSucceeded("torbox-object-17")
 	require.NoError(t, err)
-	require.NoError(t, repository.Complete(context.Background(), claim, completion))
+	require.NoError(t, repository.Complete(context.Background(), claim, completion, now))
 
 	updatedMovie := mustItem(t, movie.ExternalID(), acquisitiondomain.WatchlistMediaTypeMovie, "Renamed Movie")
 	require.NoError(t, repository.UpsertSnapshot(context.Background(), []acquisitiondomain.WatchlistItem{updatedMovie}, now.Add(time.Hour)))
@@ -65,7 +65,7 @@ func TestRepositoryClaimsOnlyMoviesFirstObservedAfterAutomaticBaseline(t *testin
 	require.Equal(t, newItem.ExternalID(), claim.Item().ExternalID())
 	success, err := acquisitiondomain.NewWatchlistSucceeded("authorized-object")
 	require.NoError(t, err)
-	require.NoError(t, repository.Complete(context.Background(), claim, success))
+	require.NoError(t, repository.Complete(context.Background(), claim, success, now.Add(time.Minute)))
 	_, err = repository.Claim(context.Background(), now.Add(2*time.Minute), time.Minute)
 	require.ErrorIs(t, err, domain.ErrNotFound)
 }
@@ -81,7 +81,7 @@ func TestRepositoryDefersNotCachedMovieUntilCooldownExpires(t *testing.T) {
 	require.NoError(t, err)
 	completion, err := acquisitiondomain.NewWatchlistDeferred(acquisitiondomain.WatchlistQueueStateNotCached, now.Add(time.Hour))
 	require.NoError(t, err)
-	require.NoError(t, repository.Complete(context.Background(), claim, completion))
+	require.NoError(t, repository.Complete(context.Background(), claim, completion, now))
 
 	_, err = repository.Claim(context.Background(), now.Add(time.Hour-time.Millisecond), time.Minute)
 	require.ErrorIs(t, err, domain.ErrNotFound)
@@ -105,7 +105,7 @@ func TestRepositoryAttachesDurableJobAndRecoversItAfterRestart(t *testing.T) {
 	require.NoError(t, err)
 	jobID := "0123456789abcdef0123456789abcdef"
 
-	require.NoError(t, repository.AttachJob(context.Background(), claim, jobID, reconcileAt))
+	require.NoError(t, repository.AttachJob(context.Background(), claim, jobID, reconcileAt, now))
 	_, err = repository.Claim(context.Background(), reconcileAt.Add(-time.Millisecond), 30*time.Second)
 	require.ErrorIs(t, err, domain.ErrNotFound)
 	require.NoError(t, repository.Close())
@@ -129,9 +129,11 @@ func TestRepositoryDefersLinkedJobAndRejectsStaleTransitions(t *testing.T) {
 	require.NoError(t, err)
 	jobID := "11111111111111111111111111111111"
 
-	err = repository.AttachJob(context.Background(), first, jobID, now.Add(2*time.Minute))
+	err = repository.AttachJob(context.Background(), first, jobID, now.Add(2*time.Minute), now.Add(time.Minute))
 	require.ErrorIs(t, err, acquisitiondomain.ErrStaleWatchlistClaim)
-	require.NoError(t, repository.AttachJob(context.Background(), second, jobID, now.Add(2*time.Minute)))
+	require.NoError(t, repository.AttachJob(
+		context.Background(), second, jobID, now.Add(2*time.Minute), now.Add(time.Minute),
+	))
 	linked, err := repository.Claim(context.Background(), now.Add(2*time.Minute), time.Minute)
 	require.NoError(t, err)
 	require.Equal(t, jobID, linked.BackgroundJobID())
@@ -140,9 +142,11 @@ func TestRepositoryDefersLinkedJobAndRejectsStaleTransitions(t *testing.T) {
 		second.Item(), second.LeaseVersion(), second.Attempt(), jobID,
 	)
 	require.NoError(t, claimErr)
-	err = repository.DeferJob(context.Background(), staleLinked, now.Add(3*time.Minute))
+	err = repository.DeferJob(context.Background(), staleLinked, now.Add(3*time.Minute), now.Add(2*time.Minute))
 	require.ErrorIs(t, err, acquisitiondomain.ErrStaleWatchlistClaim)
-	require.NoError(t, repository.DeferJob(context.Background(), linked, now.Add(3*time.Minute)))
+	require.NoError(t, repository.DeferJob(
+		context.Background(), linked, now.Add(3*time.Minute), now.Add(2*time.Minute),
+	))
 	_, err = repository.Claim(context.Background(), now.Add(3*time.Minute-time.Millisecond), time.Minute)
 	require.ErrorIs(t, err, domain.ErrNotFound)
 	retry, err := repository.Claim(context.Background(), now.Add(3*time.Minute), time.Minute)
@@ -166,9 +170,26 @@ func TestRepositoryReclaimsExpiredLeaseAndRejectsStaleCompletion(t *testing.T) {
 	success, err := acquisitiondomain.NewWatchlistSucceeded("torbox-object-new")
 	require.NoError(t, err)
 
-	err = repository.Complete(context.Background(), first, success)
+	err = repository.Complete(context.Background(), first, success, now.Add(time.Minute))
 	require.ErrorIs(t, err, acquisitiondomain.ErrStaleWatchlistClaim)
-	require.NoError(t, repository.Complete(context.Background(), second, success))
+	require.NoError(t, repository.Complete(context.Background(), second, success, now.Add(time.Minute)))
+}
+
+func TestRepositoryRejectsCompletionAfterLeaseExpiresWithoutReclaim(t *testing.T) {
+	t.Parallel()
+	repository := openRepository(t, filepath.Join(t.TempDir(), "blackpearl.db"))
+	now := time.Date(2026, time.August, 14, 12, 0, 0, 0, time.UTC)
+	require.NoError(t, repository.UpsertSnapshot(context.Background(), []acquisitiondomain.WatchlistItem{
+		mustItem(t, "plex://movie/expired", acquisitiondomain.WatchlistMediaTypeMovie, "Expired Lease"),
+	}, now))
+	claim, err := repository.Claim(context.Background(), now, time.Minute)
+	require.NoError(t, err)
+	success, err := acquisitiondomain.NewWatchlistSucceeded("torbox-object-expired")
+	require.NoError(t, err)
+
+	err = repository.Complete(context.Background(), claim, success, now.Add(time.Minute))
+
+	require.ErrorIs(t, err, acquisitiondomain.ErrStaleWatchlistClaim)
 }
 
 func TestRepositoryAllowsOnlyOneConcurrentClaim(t *testing.T) {
@@ -245,7 +266,9 @@ func TestRepositoryRejectsInvalidArgumentsAndHonorsCancellation(t *testing.T) {
 	require.Error(t, err)
 	err = repository.UpsertSnapshot(context.Background(), nil, time.Time{})
 	require.Error(t, err)
-	err = repository.Complete(context.Background(), acquisitiondomain.WatchlistClaim{}, acquisitiondomain.WatchlistCompletion{})
+	err = repository.Complete(
+		context.Background(), acquisitiondomain.WatchlistClaim{}, acquisitiondomain.WatchlistCompletion{}, time.Now(),
+	)
 	require.Error(t, err)
 }
 
@@ -315,7 +338,7 @@ func TestRepositoryPersistsPilotPolicyAndClaimsExactShowIntent(t *testing.T) {
 		acquisitiondomain.WatchlistQueueStateNotCached, now.Add(time.Hour),
 	)
 	require.NoError(t, err)
-	require.NoError(t, repository.Complete(context.Background(), claim, deferred))
+	require.NoError(t, repository.Complete(context.Background(), claim, deferred, now))
 	offPolicy, err := acquisitiondomain.NewWatchlistPolicy(true, acquisitiondomain.WatchlistShowPolicyOff)
 	require.NoError(t, err)
 	require.NoError(t, repository.SetPolicy(context.Background(), offPolicy))
@@ -557,5 +580,5 @@ func seedSucceededShow(
 	require.NoError(t, err)
 	completion, err := acquisitiondomain.NewWatchlistSucceeded(objectID)
 	require.NoError(t, err)
-	require.NoError(t, repository.Complete(context.Background(), claim, completion))
+	require.NoError(t, repository.Complete(context.Background(), claim, completion, observedAt))
 }

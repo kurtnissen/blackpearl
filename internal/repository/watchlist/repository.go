@@ -351,16 +351,22 @@ func (r *Repository) AttachJob(
 	claim acquisitiondomain.WatchlistClaim,
 	jobID string,
 	nextAttempt time.Time,
+	now time.Time,
 ) error {
 	validated, err := validateClaimWithJob(claim, jobID)
 	if err != nil {
 		return fmt.Errorf("validate watchlist job attachment: %w", err)
 	}
-	return r.transitionJob(ctx, validated, nextAttempt, jobID, "attach")
+	return r.transitionJob(ctx, validated, nextAttempt, jobID, now, "attach")
 }
 
 // DeferJob releases a linked Watchlist claim until its next reconciliation.
-func (r *Repository) DeferJob(ctx context.Context, claim acquisitiondomain.WatchlistClaim, nextAttempt time.Time) error {
+func (r *Repository) DeferJob(
+	ctx context.Context,
+	claim acquisitiondomain.WatchlistClaim,
+	nextAttempt time.Time,
+	now time.Time,
+) error {
 	if claim.BackgroundJobID() == "" {
 		return errors.New("deferred watchlist job requires a linked background job")
 	}
@@ -368,7 +374,7 @@ func (r *Repository) DeferJob(ctx context.Context, claim acquisitiondomain.Watch
 	if err != nil {
 		return fmt.Errorf("validate deferred watchlist job: %w", err)
 	}
-	return r.transitionJob(ctx, validated, nextAttempt, validated.BackgroundJobID(), "defer")
+	return r.transitionJob(ctx, validated, nextAttempt, validated.BackgroundJobID(), now, "defer")
 }
 
 func (r *Repository) transitionJob(
@@ -376,10 +382,14 @@ func (r *Repository) transitionJob(
 	claim acquisitiondomain.WatchlistClaim,
 	nextAttempt time.Time,
 	jobID string,
+	now time.Time,
 	operation string,
 ) error {
 	if nextAttempt.IsZero() {
 		return fmt.Errorf("%s watchlist job requires a next attempt time", operation)
+	}
+	if now.IsZero() {
+		return fmt.Errorf("%s watchlist job requires a transition time", operation)
 	}
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("%s watchlist job: %w", operation, err)
@@ -388,9 +398,10 @@ func (r *Repository) transitionJob(
 		UPDATE watchlist_queue
 		SET state = 'acquiring', lease_until_unix_ms = 0, next_attempt_unix_ms = ?,
 			background_job_id = ?, updated_unix_ms = ?
-		WHERE source = ? AND external_id = ? AND state = 'acquiring' AND lease_version = ?
-	`, nextAttempt.UTC().UnixMilli(), jobID, time.Now().UTC().UnixMilli(),
-		claim.Item().Source(), claim.Item().ExternalID(), claim.LeaseVersion())
+		WHERE source = ? AND external_id = ? AND state = 'acquiring'
+			AND lease_version = ? AND lease_until_unix_ms > ?
+	`, nextAttempt.UTC().UnixMilli(), jobID, now.UTC().UnixMilli(),
+		claim.Item().Source(), claim.Item().ExternalID(), claim.LeaseVersion(), now.UTC().UnixMilli())
 	if err != nil {
 		return fmt.Errorf("%s watchlist job: %w", operation, err)
 	}
@@ -405,7 +416,12 @@ func (r *Repository) transitionJob(
 }
 
 // Complete commits a result only when the caller still owns the exact lease.
-func (r *Repository) Complete(ctx context.Context, claim acquisitiondomain.WatchlistClaim, completion acquisitiondomain.WatchlistCompletion) error {
+func (r *Repository) Complete(
+	ctx context.Context,
+	claim acquisitiondomain.WatchlistClaim,
+	completion acquisitiondomain.WatchlistCompletion,
+	now time.Time,
+) error {
 	validatedClaim, err := validateClaim(claim)
 	if err != nil {
 		return fmt.Errorf("invalid watchlist completion claim: %w", err)
@@ -417,6 +433,9 @@ func (r *Repository) Complete(ctx context.Context, claim acquisitiondomain.Watch
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("complete watchlist item: %w", err)
 	}
+	if now.IsZero() {
+		return errors.New("complete watchlist item requires a transition time")
+	}
 	nextAttemptMillis := int64(0)
 	if !validatedCompletion.NextAttempt().IsZero() {
 		nextAttemptMillis = validatedCompletion.NextAttempt().UTC().UnixMilli()
@@ -425,9 +444,11 @@ func (r *Repository) Complete(ctx context.Context, claim acquisitiondomain.Watch
 		UPDATE watchlist_queue
 		SET state = ?, lease_until_unix_ms = 0, next_attempt_unix_ms = ?,
 			published_object_id = ?, background_job_id = '', updated_unix_ms = ?
-		WHERE source = ? AND external_id = ? AND state = 'acquiring' AND lease_version = ?
+		WHERE source = ? AND external_id = ? AND state = 'acquiring'
+			AND lease_version = ? AND lease_until_unix_ms > ?
 	`, validatedCompletion.State(), nextAttemptMillis, validatedCompletion.PublishedObjectID(),
-		time.Now().UTC().UnixMilli(), validatedClaim.Item().Source(), validatedClaim.Item().ExternalID(), validatedClaim.LeaseVersion())
+		now.UTC().UnixMilli(), validatedClaim.Item().Source(), validatedClaim.Item().ExternalID(),
+		validatedClaim.LeaseVersion(), now.UTC().UnixMilli())
 	if err != nil {
 		return fmt.Errorf("complete watchlist item: %w", err)
 	}

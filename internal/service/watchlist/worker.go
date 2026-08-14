@@ -17,9 +17,9 @@ const durableCompletionTimeout = 5 * time.Second
 // AcquisitionQueue owns versioned claims and durable outcomes.
 type AcquisitionQueue interface {
 	Claim(ctx context.Context, now time.Time, leaseDuration time.Duration) (acquisition.WatchlistClaim, error)
-	AttachJob(ctx context.Context, claim acquisition.WatchlistClaim, jobID string, nextAttempt time.Time) error
-	DeferJob(ctx context.Context, claim acquisition.WatchlistClaim, nextAttempt time.Time) error
-	Complete(ctx context.Context, claim acquisition.WatchlistClaim, completion acquisition.WatchlistCompletion) error
+	AttachJob(ctx context.Context, claim acquisition.WatchlistClaim, jobID string, nextAttempt time.Time, now time.Time) error
+	DeferJob(ctx context.Context, claim acquisition.WatchlistClaim, nextAttempt time.Time, now time.Time) error
+	Complete(ctx context.Context, claim acquisition.WatchlistClaim, completion acquisition.WatchlistCompletion, now time.Time) error
 }
 
 // JobManager submits and reads restart-safe background acquisition jobs.
@@ -74,6 +74,9 @@ func NewWorker(queue AcquisitionQueue, manager JobManager, index PublishedMediaI
 			return nil, fmt.Errorf("watchlist worker %s must be positive", name)
 		}
 	}
+	if options.LeaseDuration <= options.OperationTimeout+durableCompletionTimeout {
+		return nil, errors.New("watchlist lease must exceed operation and durable-completion timeouts")
+	}
 	now := options.Now
 	if now == nil {
 		now = time.Now
@@ -96,19 +99,21 @@ func (w *Worker) ProcessOne(ctx context.Context) (acquisition.WatchlistQueueStat
 		return "", workerBoundaryError(ctx, "claim watchlist movie", err)
 	}
 	if claim.BackgroundJobID() == "" {
-		return w.submit(ctx, claim, now)
+		return w.submit(ctx, claim)
 	}
-	return w.reconcile(ctx, claim, now)
+	return w.reconcile(ctx, claim)
 }
 
-func (w *Worker) submit(ctx context.Context, claim acquisition.WatchlistClaim, now time.Time) (acquisition.WatchlistQueueState, error) {
+func (w *Worker) submit(ctx context.Context, claim acquisition.WatchlistClaim) (acquisition.WatchlistQueueState, error) {
 	request, err := claim.SearchRequest()
 	if err != nil {
 		return w.completeDurably(ctx, claim, acquisition.NewWatchlistManualReview())
 	}
-	objectID, found, err := w.index.FindPublished(ctx, request)
+	operationContext, cancel := context.WithTimeout(ctx, w.options.OperationTimeout)
+	defer cancel()
+	objectID, found, err := w.index.FindPublished(operationContext, request)
 	if err != nil {
-		return "", workerBoundaryError(ctx, "read published media index", err)
+		return "", workerBoundaryError(operationContext, "read published media index", err)
 	}
 	if found {
 		completion, completionErr := acquisition.NewWatchlistSucceeded(objectID)
@@ -117,21 +122,22 @@ func (w *Worker) submit(ctx context.Context, claim acquisition.WatchlistClaim, n
 		}
 		return w.completeDurably(ctx, claim, completion)
 	}
-	operationContext, cancel := context.WithTimeout(ctx, w.options.OperationTimeout)
 	job, _, submitErr := w.manager.Submit(operationContext, request)
-	cancel()
 	if submitErr != nil {
-		return "", workerBoundaryError(ctx, "submit watchlist background job", submitErr)
+		return "", workerBoundaryError(operationContext, "submit watchlist background job", submitErr)
 	}
 	if err := w.commitDurably(ctx, func(commitContext context.Context) error {
-		return w.queue.AttachJob(commitContext, claim, job.ID(), now.Add(w.options.ReconcileInterval))
+		transitionNow := w.now().UTC()
+		return w.queue.AttachJob(
+			commitContext, claim, job.ID(), transitionNow.Add(w.options.ReconcileInterval), transitionNow,
+		)
 	}); err != nil {
 		return "", err
 	}
 	return acquisition.WatchlistQueueStateAcquiring, nil
 }
 
-func (w *Worker) reconcile(ctx context.Context, claim acquisition.WatchlistClaim, now time.Time) (acquisition.WatchlistQueueState, error) {
+func (w *Worker) reconcile(ctx context.Context, claim acquisition.WatchlistClaim) (acquisition.WatchlistQueueState, error) {
 	operationContext, cancel := context.WithTimeout(ctx, w.options.OperationTimeout)
 	job, err := w.manager.Get(operationContext, claim.BackgroundJobID())
 	cancel()
@@ -141,10 +147,13 @@ func (w *Worker) reconcile(ctx context.Context, claim acquisition.WatchlistClaim
 	if err != nil {
 		return "", workerBoundaryError(ctx, "read watchlist background job", err)
 	}
+	transitionNow := w.now().UTC()
 	switch job.State() {
 	case acquisition.JobStateQueued, acquisition.JobStateSelected, acquisition.JobStatePreparing:
 		if err := w.commitDurably(ctx, func(commitContext context.Context) error {
-			return w.queue.DeferJob(commitContext, claim, now.Add(w.options.ReconcileInterval))
+			return w.queue.DeferJob(
+				commitContext, claim, transitionNow.Add(w.options.ReconcileInterval), transitionNow,
+			)
 		}); err != nil {
 			return "", err
 		}
@@ -158,7 +167,7 @@ func (w *Worker) reconcile(ctx context.Context, claim acquisition.WatchlistClaim
 	case acquisition.JobStateManualReview:
 		return w.completeDurably(ctx, claim, acquisition.NewWatchlistManualReview())
 	case acquisition.JobStateFailed:
-		return w.completeFailedJob(ctx, claim, job.ErrorCode(), now)
+		return w.completeFailedJob(ctx, claim, job.ErrorCode(), transitionNow)
 	default:
 		return w.completeDurably(ctx, claim, acquisition.NewWatchlistManualReview())
 	}
@@ -198,7 +207,7 @@ func (w *Worker) completeDurably(
 	completion acquisition.WatchlistCompletion,
 ) (acquisition.WatchlistQueueState, error) {
 	if err := w.commitDurably(ctx, func(commitContext context.Context) error {
-		return w.queue.Complete(commitContext, claim, completion)
+		return w.queue.Complete(commitContext, claim, completion, w.now().UTC())
 	}); err != nil {
 		return "", err
 	}

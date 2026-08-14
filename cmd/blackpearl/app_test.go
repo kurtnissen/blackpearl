@@ -642,7 +642,7 @@ func TestRunBrowserSetupAdvancesPublishedEpisodeFromPlexPlayback(t *testing.T) {
 	require.NoError(t, err)
 	completion, err := acquisitiondomain.NewWatchlistSucceeded(episode.Backing().ObjectID)
 	require.NoError(t, err)
-	require.NoError(t, queue.Complete(context.Background(), claim, completion))
+	require.NoError(t, queue.Complete(context.Background(), claim, completion, observedAt))
 	require.NoError(t, queue.Close())
 
 	nfs := &fakeNFSServer{address: fakeAddress("127.0.0.1:2049")}
