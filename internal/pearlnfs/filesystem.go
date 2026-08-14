@@ -24,9 +24,16 @@ type Catalog interface {
 }
 
 type filesystem struct {
-	ctx     context.Context
-	catalog Catalog
-	entries map[string]entry
+	ctx       context.Context
+	catalog   Catalog
+	entriesMu sync.RWMutex
+	entries   map[string]entry
+}
+
+// Reloadable is a read-only filesystem whose namespace can be atomically refreshed.
+type Reloadable interface {
+	billy.Filesystem
+	Reload(ctx context.Context) error
 }
 
 type entry struct {
@@ -37,32 +44,59 @@ type entry struct {
 
 // New validates a catalog snapshot and adapts it to a read-only Billy filesystem.
 func New(ctx context.Context, catalog Catalog) (billy.Filesystem, error) {
+	return NewReloadable(ctx, catalog)
+}
+
+// NewReloadable validates a catalog snapshot and returns a reloadable filesystem.
+func NewReloadable(ctx context.Context, catalog Catalog) (Reloadable, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, fmt.Errorf("create PearlNFS filesystem: %w", err)
 	}
 	if catalog == nil {
 		return nil, errors.New("PearlNFS catalog is required")
 	}
-	items, err := catalog.List(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("list catalog for PearlNFS: %w", err)
-	}
 	result := &filesystem{
 		ctx:     ctx,
 		catalog: catalog,
-		entries: map[string]entry{"": {name: "/"}},
 	}
+	if err := result.Reload(ctx); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// Reload builds a complete namespace off-lock and publishes it atomically.
+func (f *filesystem) Reload(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("reload PearlNFS filesystem: %w", err)
+	}
+	items, err := f.catalog.List(ctx)
+	if err != nil {
+		return fmt.Errorf("list catalog for PearlNFS: %w", err)
+	}
+	entries, err := buildEntries(items)
+	if err != nil {
+		return err
+	}
+	f.entriesMu.Lock()
+	f.entries = entries
+	f.entriesMu.Unlock()
+	return nil
+}
+
+func buildEntries(items []domain.Media) (map[string]entry, error) {
+	builder := &filesystem{entries: map[string]entry{"": {name: "/"}}}
 	for index := range items {
 		media := items[index]
-		if err := result.addMedia(media); err != nil {
+		if err := builder.addMedia(media); err != nil {
 			return nil, err
 		}
 	}
-	for key, value := range result.entries {
+	for key, value := range builder.entries {
 		sort.Strings(value.children)
-		result.entries[key] = value
+		builder.entries[key] = value
 	}
-	return result, nil
+	return builder.entries, nil
 }
 
 func (f *filesystem) addMedia(media domain.Media) error {
@@ -117,7 +151,9 @@ func (f *filesystem) Create(string) (billy.File, error) {
 
 func (f *filesystem) Open(filename string) (billy.File, error) {
 	virtualPath := cleanPath(filename)
+	f.entriesMu.RLock()
 	value, exists := f.entries[virtualPath]
+	f.entriesMu.RUnlock()
 	if !exists {
 		return nil, os.ErrNotExist
 	}
@@ -139,7 +175,9 @@ func (f *filesystem) OpenFile(filename string, flag int, _ os.FileMode) (billy.F
 }
 
 func (f *filesystem) Stat(filename string) (os.FileInfo, error) {
+	f.entriesMu.RLock()
 	value, exists := f.entries[cleanPath(filename)]
+	f.entriesMu.RUnlock()
 	if !exists {
 		return nil, os.ErrNotExist
 	}
@@ -164,6 +202,8 @@ func (f *filesystem) TempFile(string, string) (billy.File, error) {
 
 func (f *filesystem) ReadDir(dirname string) ([]os.FileInfo, error) {
 	virtualPath := cleanPath(dirname)
+	f.entriesMu.RLock()
+	defer f.entriesMu.RUnlock()
 	directory, exists := f.entries[virtualPath]
 	if !exists {
 		return nil, os.ErrNotExist
@@ -327,6 +367,7 @@ func (i fileInfo) Sys() any {
 }
 
 var _ billy.Filesystem = (*filesystem)(nil)
+var _ Reloadable = (*filesystem)(nil)
 var _ billy.Chroot = (*filesystem)(nil)
 var _ billy.Basic = (*filesystem)(nil)
 var _ billy.Dir = (*filesystem)(nil)

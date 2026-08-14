@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"sync"
 	"testing"
 
 	"github.com/blackpearl-media/blackpearl/internal/domain"
@@ -216,6 +217,52 @@ func TestFilesystemPropagatesServiceCancellationToReads(t *testing.T) {
 	require.ErrorIs(t, err, context.Canceled)
 }
 
+func TestFilesystemReloadPublishesNewLogicalMediaAndTailReads(t *testing.T) {
+	t.Parallel()
+	backing, err := domain.NewBackingRef("generated", "reload")
+	require.NoError(t, err)
+	media, err := domain.NewMovie("selected", "Reloaded", 2026, ".mkv", testLogicalSize, backing)
+	require.NoError(t, err)
+	catalog := &mutableCatalog{}
+	filesystem, err := pearlnfs.NewReloadable(context.Background(), catalog)
+	require.NoError(t, err)
+	_, err = filesystem.Stat(media.VirtualPath)
+	require.ErrorIs(t, err, os.ErrNotExist)
+	catalog.set([]domain.Media{media}, nil)
+
+	require.NoError(t, filesystem.Reload(context.Background()))
+	info, err := filesystem.Stat(media.VirtualPath)
+	require.NoError(t, err)
+	require.Equal(t, testLogicalSize, info.Size())
+	file, err := filesystem.Open(media.VirtualPath)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, file.Close()) })
+	tail := make([]byte, 4)
+	count, err := file.ReadAt(tail, testLogicalSize-4)
+	require.NoError(t, err)
+	require.Equal(t, 4, count)
+	require.Equal(t, []byte{252, 253, 254, 255}, tail)
+}
+
+func TestFilesystemReloadKeepsPriorNamespaceWhenSnapshotIsInvalid(t *testing.T) {
+	t.Parallel()
+	backing, err := domain.NewBackingRef("generated", "reload")
+	require.NoError(t, err)
+	media, err := domain.NewMovie("selected", "Stable", 2026, ".mp4", 42, backing)
+	require.NoError(t, err)
+	catalog := &mutableCatalog{items: []domain.Media{media}}
+	filesystem, err := pearlnfs.NewReloadable(context.Background(), catalog)
+	require.NoError(t, err)
+	catalog.set(nil, errors.New("database unavailable"))
+
+	err = filesystem.Reload(context.Background())
+
+	require.ErrorContains(t, err, "list catalog")
+	info, statErr := filesystem.Stat(media.VirtualPath)
+	require.NoError(t, statErr)
+	require.Equal(t, int64(42), info.Size())
+}
+
 func newTestFilesystem(t *testing.T, ctx context.Context) billy.Filesystem {
 	t.Helper()
 	backing, err := domain.NewBackingRef("generated", "one-terabyte")
@@ -229,6 +276,36 @@ func newTestFilesystem(t *testing.T, ctx context.Context) billy.Filesystem {
 
 type generatedCatalog struct {
 	media domain.Media
+}
+
+type mutableCatalog struct {
+	mu      sync.RWMutex
+	items   []domain.Media
+	listErr error
+}
+
+func (c *mutableCatalog) set(items []domain.Media, err error) {
+	c.mu.Lock()
+	c.items = items
+	c.listErr = err
+	c.mu.Unlock()
+}
+
+func (c *mutableCatalog) List(context.Context) ([]domain.Media, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return append([]domain.Media(nil), c.items...), c.listErr
+}
+
+func (c *mutableCatalog) Open(_ context.Context, virtualPath string) (domain.ReadHandle, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	for _, media := range c.items {
+		if media.VirtualPath == virtualPath {
+			return &generatedHandle{size: media.Size}, nil
+		}
+	}
+	return nil, domain.ErrNotFound
 }
 
 type catalogStub struct {

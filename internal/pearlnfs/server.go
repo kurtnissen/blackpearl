@@ -16,11 +16,12 @@ const handleCacheSize = 4096
 
 // Server owns one PearlNFS listener and its serving lifecycle.
 type Server struct {
-	listener  net.Listener
-	done      chan struct{}
-	closeOnce sync.Once
-	closeErr  error
-	serveErr  error
+	listener   net.Listener
+	reloadable Reloadable
+	done       chan struct{}
+	closeOnce  sync.Once
+	closeErr   error
+	serveErr   error
 }
 
 // Start binds a read-only NFSv3 server for the supplied filesystem.
@@ -36,6 +37,9 @@ func Start(ctx context.Context, address string, filesystem billy.Filesystem) (*S
 		return nil, fmt.Errorf("listen for PearlNFS on %s: %w", address, err)
 	}
 	server := &Server{listener: listener, done: make(chan struct{})}
+	if reloadable, ok := filesystem.(Reloadable); ok {
+		server.reloadable = reloadable
+	}
 	handler := nfshelper.NewCachingHandler(nfshelper.NewNullAuthHandler(filesystem), handleCacheSize)
 	protocolServer := &nfs.Server{Handler: handler, Context: ctx}
 	go func() {
@@ -50,6 +54,17 @@ func Start(ctx context.Context, address string, filesystem billy.Filesystem) (*S
 		}
 	}()
 	return server, nil
+}
+
+// Reload atomically refreshes the exported namespace from its catalog.
+func (s *Server) Reload(ctx context.Context) error {
+	if s.reloadable == nil {
+		return errors.New("PearlNFS filesystem does not support reload")
+	}
+	if err := s.reloadable.Reload(ctx); err != nil {
+		return fmt.Errorf("reload PearlNFS: %w", err)
+	}
+	return nil
 }
 
 // Addr reports the bound NFS listener address.
