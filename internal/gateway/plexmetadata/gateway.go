@@ -122,6 +122,18 @@ func (g *Gateway) Next(ctx context.Context, externalShowID string, current domai
 		if episodeErr != nil {
 			return domain.EpisodeCoordinate{}, episodeErr
 		}
+		if season.index == current.Season() {
+			currentEpisodeFound := false
+			for _, episode := range episodes {
+				if episode == current.Episode() {
+					currentEpisodeFound = true
+					break
+				}
+			}
+			if !currentEpisodeFound {
+				return domain.EpisodeCoordinate{}, domain.ErrNotFound
+			}
+		}
 		for _, episode := range episodes {
 			coordinate, coordinateErr := domain.NewEpisodeCoordinate(season.index, episode)
 			if coordinateErr == nil && coordinate.After(current) {

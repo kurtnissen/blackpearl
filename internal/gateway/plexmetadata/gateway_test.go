@@ -76,6 +76,28 @@ func TestGatewayNextReturnsNotFoundForTerminalOrUnknownCurrentSeason(t *testing.
 	require.ErrorIs(t, err, domain.ErrNotFound)
 }
 
+func TestGatewayNextRequiresCurrentEpisodeInMetadataBeforeAdvancing(t *testing.T) {
+	t.Parallel()
+	showID := "5d9c086ce98e47001eb0f520"
+	seasonID := "5d9c09de2192ba001f32230f"
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/library/metadata/" + showID + "/children":
+			_, err := fmt.Fprintf(response, `{"MediaContainer":{"size":1,"Metadata":[{"type":"season","index":1,"ratingKey":%q}]}}`, seasonID)
+			require.NoError(t, err)
+		case "/library/metadata/" + seasonID + "/children":
+			_, err := fmt.Fprint(response, `{"MediaContainer":{"size":1,"Metadata":[{"type":"episode","parentIndex":1,"index":2}]}}`)
+			require.NoError(t, err)
+		}
+	}))
+	t.Cleanup(server.Close)
+	gateway := newMetadataGateway(t, server.URL, &metadataTokenSource{token: metadataToken})
+
+	_, err := gateway.Next(context.Background(), "plex://show/"+showID, mustCoordinate(t, 1, 1))
+
+	require.ErrorIs(t, err, domain.ErrNotFound)
+}
+
 func TestGatewayNextRejectsMalformedIdentityAndFailsClosedAtHTTPBoundary(t *testing.T) {
 	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
