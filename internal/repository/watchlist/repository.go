@@ -506,17 +506,6 @@ func scanClaim(scanner rowScanner) (acquisitiondomain.WatchlistClaim, error) {
 	return acquisitiondomain.NewWatchlistIntentClaim(observation, leaseVersion, attempt)
 }
 
-func validateItem(item acquisitiondomain.WatchlistItem) (acquisitiondomain.WatchlistItem, error) {
-	validated, err := acquisitiondomain.NewWatchlistItem(acquisitiondomain.WatchlistItemInput{
-		Source: item.Source(), ExternalID: item.ExternalID(), MediaType: item.MediaType(),
-		Title: item.Title(), Year: item.Year(),
-	})
-	if err != nil {
-		return acquisitiondomain.WatchlistItem{}, fmt.Errorf("invalid watchlist snapshot item: %w", err)
-	}
-	return validated, nil
-}
-
 func validateObservation(observation acquisitiondomain.WatchlistObservation) (acquisitiondomain.WatchlistObservation, error) {
 	validated, err := acquisitiondomain.NewWatchlistObservation(
 		observation.Item(), observation.AutoEligible(), observation.Season(), observation.Episode(),
