@@ -364,6 +364,10 @@ func (g *Gateway) requestDownloadURL(ctx context.Context, identifier objectID) (
 }
 
 func (g *Gateway) doJSON(request *http.Request, destination any) (resultErr error) {
+	return g.doJSONLimited(request, destination, maximumResponseBody)
+}
+
+func (g *Gateway) doJSONLimited(request *http.Request, destination any, maximumBody int64) (resultErr error) {
 	response, err := g.client.Do(request)
 	if err != nil {
 		if contextErr := request.Context().Err(); contextErr != nil {
@@ -375,7 +379,7 @@ func (g *Gateway) doJSON(request *http.Request, destination any) (resultErr erro
 	if response.StatusCode != http.StatusOK {
 		return fmt.Errorf("TorBox API requires status 200: got %d", response.StatusCode)
 	}
-	decoder := json.NewDecoder(io.LimitReader(response.Body, maximumResponseBody+1))
+	decoder := json.NewDecoder(io.LimitReader(response.Body, maximumBody+1))
 	if err := decoder.Decode(destination); err != nil {
 		return fmt.Errorf("decode TorBox API response: %w", err)
 	}
