@@ -301,7 +301,7 @@ git commit -m "feat: advance durable Watchlist episode frontier"
 - Consumes consumer-defined `PlaybackSnapshotter`, `PublishedEpisodeIndex`, `EpisodeFrontier`, and `NextEpisodeResolver` interfaces matching Tasks 2 through 5.
 - Produces: `NewWorker(...)`, `Worker.Process(ctx) (int, error)`, and `Worker.Run(ctx)`.
 
-- [ ] **Step 1: Write failing service tests**
+- [x] **Step 1: Write failing service tests**
 
 Use fakes only at the four architecture boundaries. Prove one qualifying exact session advances once; below-threshold, foreign/missing manifest, metadata mismatch, wrong backing object, disabled/stale frontier, terminal show, duplicate sessions, and canceled context do nothing. Prove transient playback, manifest, metadata, and repository failures return sanitized `ErrUnavailable`, and two concurrent `Process` calls serialize.
 
@@ -312,17 +312,17 @@ require.Equal(t, 1, count)
 require.Equal(t, mustCoordinate(t, 1, 2), frontier.advanced.Next)
 ```
 
-- [ ] **Step 2: Run service tests and verify RED**
+- [x] **Step 2: Run service tests and verify RED**
 
 Run: `go test ./internal/service/playbackadvance -count=1`
 
 Expected: build failure because the package does not exist.
 
-- [ ] **Step 3: Implement the serialized worker**
+- [x] **Step 3: Implement the serialized worker**
 
 Use constants for 120 seconds and 10 percent. Compute freshness as `now - 2*watchlistPollInterval`. For each qualified session: exact manifest lookup, season/episode match, `CanAdvanceEpisode`, metadata `Next`, then optimistic `AdvanceEpisode`. A no-op is not an error. Wrap operation I/O in `OperationTimeout`; `Run` waits `PollInterval` between snapshots and exits on cancellation.
 
-- [ ] **Step 4: Run service and neighboring race tests**
+- [x] **Step 4: Run service and neighboring race tests**
 
 Run:
 
@@ -332,7 +332,7 @@ go test -race ./internal/service/playbackadvance ./internal/service/watchlist ./
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit orchestration**
+- [x] **Step 5: Commit orchestration**
 
 ```bash
 git add internal/service/playbackadvance
