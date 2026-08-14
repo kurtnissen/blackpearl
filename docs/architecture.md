@@ -56,9 +56,11 @@ ownership provenance, lease/version state, and public error code. It never
 stores credentials, magnets, download URLs, signed media URLs, or torrent-file
 bytes. A serialized process-lifetime worker combines authorized search
 providers, rejects results that do not satisfy the complete movie/episode
-intent, deduplicates stable hashes, and moves TorBox-cached candidates ahead of
-uncached candidates only after that eligibility boundary. Planning and first
-selection are one SQLite transaction before provider mutation.
+intent, rejects auxiliary-video markers outside the requested title,
+deduplicates stable hashes, and probes up to 100 eligible torrent hashes before
+moving TorBox-cached candidates ahead of uncached candidates. Only then is the
+ordered plan capped to five durable fallbacks. Planning and first selection are
+one SQLite transaction before provider mutation.
 
 For each selected candidate, the worker reconciles by hash before mutation,
 materializes bounded transient provider input when absent, records whether the
@@ -74,14 +76,19 @@ refresh boundary.
 
 The optional `internet-archive` gateway is a legal-POC search provider, not a
 filesystem source. It queries only the public Archive metadata endpoint,
-returns stable item identifiers and info hashes, and materializes the selected
-item's bounded `.torrent` file. Redirects are limited to the configured origin
-or official Archive HTTPS hosts, and the bencoded info dictionary must hash to
-the selected fingerprint. The durable worker combines Archive and Prowlarr
-results so a partial provider outage does not discard the other source. Movie
-results must begin with the complete requested title and include the requested
-year; episode results must contain the complete title and `SnnEnn` token. This
-prevents a cached preview, trailer, or unrelated title hit from bypassing
+returns stable item identifiers, structured movie years, and info hashes, and
+materializes the selected item's bounded `.torrent` file. A movie result is
+accepted only when its structured Archive year equals the requested year; that
+year is appended to the normalized release title when the source title omits
+it. Redirects are limited to the configured origin or official Archive HTTPS
+hosts, and the bencoded info dictionary must hash to the selected fingerprint.
+The durable worker combines Archive and Prowlarr results so a partial provider
+outage does not discard the other source. Movie results must begin with the
+complete requested title and include the requested year; episode results must
+contain the complete title and `SnnEnn` token. Extra `trailer`, `teaser`,
+`sample`, `preview`, or `featurette` tokens make either kind of release
+ineligible, without rejecting a marker that is actually part of the requested
+title. This prevents a cached auxiliary or unrelated title hit from bypassing
 intent correctness. Both gateways feed the same provider-neutral release and
 job contracts.
 

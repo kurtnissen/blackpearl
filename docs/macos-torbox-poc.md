@@ -34,16 +34,19 @@ then use the configured indexers, deterministic release ranking, and a strict
 TorBox cached-only check before the Plex manifest changes.
 
 The Compose profile enables BlackPearl's direct open-media search adapter.
-BlackPearl combines public Archive and configured Prowlarr results, tolerates a
-failure from either source when the other succeeds, and persists at most five
-deduplicated torrent candidates. Complete title/year or title/episode matching
-is an eligibility boundary before TorBox cache status can affect ordering, so
-an already-cached preview cannot outrank the requested movie. Archive torrent
-metadata is downloaded only from the selected Archive item, followed only
-across trusted Archive HTTPS hosts, bounded to 4 MiB, and verified against the
-selected BitTorrent info hash before TorBox receives it. This avoids depending
-on peer metadata discovery while preserving the same provider-neutral job
-boundary.
+BlackPearl combines public Archive and configured Prowlarr results and tolerates
+a failure from either source when the other succeeds. Archive movie search uses
+the record's structured year rather than requiring the year to appear in
+free-form title text, and normalizes that verified year into the candidate
+title. Complete title/year or title/episode matching remains an eligibility
+boundary, and auxiliary trailers, teasers, samples, previews, and featurettes
+are removed before cache ordering. BlackPearl cache-probes up to 100 eligible
+unique hashes, moves cached releases first, and only then persists at most five
+deduplicated torrent candidates. Archive torrent metadata is downloaded only
+from the selected Archive item, followed only across trusted Archive HTTPS
+hosts, bounded to 4 MiB, and verified against the selected BitTorrent info hash
+before TorBox receives it. This avoids depending on peer metadata discovery
+while preserving the same provider-neutral job boundary.
 
 If the top-ranked release is not cached, the page offers **Prepare through
 TorBox**. BlackPearl persists only the request, up to five locator-free release
@@ -207,6 +210,15 @@ Two additional legal public torrents stopped at TorBox's explicit no-seed
 state and were not published; their exact test objects were removed.
 
 The Watchlist gateway, durable linked-job queue, observe-only process wiring,
-and serialized durable handoff are covered by mocked full-process tests. Live
-observe-only counts pass; a live Watchlist-triggered provider mutation remains
-a separate acceptance gate.
+and serialized durable handoff are covered by full-process race tests. Live
+acceptance added the public-domain *House on Haunted Hill (1959)* after the
+startup baseline. BlackPearl attached a durable acquisition job, safely fell
+through unavailable releases, published a 197,597,484-byte MP4, refreshed the
+movie library, and reached `succeeded`. Plex indexed metadata ID 17, Brave
+played it with `decision="directplay"` and no transcode session, and forward and
+reverse seeks succeeded. Start, midpoint, and tail NFS reads were exact; after
+a BlackPearl rebuild the same logical size and midpoint hash returned and Plex
+resumed the paused Direct Play session. The final rolling cache held 46 files
+and 46,540 KiB for this 197,597,484-byte logical movie, not a complete local
+copy. Temporary acceptance Watchlist entries were removed afterward while the
+three pre-existing entries were preserved.
