@@ -80,14 +80,19 @@ BLACKPEARL_WATCHLIST_ACQUISITION_ENABLED=true ./scripts/torbox-stack.sh start
 After startup, the paired setup page's **Turn automatic adding on/off** control
 is authoritative and survives restart. The opt-in allows TorBox to download the
 selected release when it is not cached, so use it only with authorized sources.
-Movies already in the Watchlist remain observation-only, and only a movie added
-on a later enabled sync is eligible. Turning the control off blocks new claims
-without canceling provider work already preparing. The Watchlist queue persists the
-durable acquisition job ID and reconciles it across restarts. No-source or
-stalled jobs wait six hours before another attempt. Known transient failures
-wait 15 minutes. Any provider or publication mutation with an ambiguous result
-moves to manual review instead of being retried. Watchlisted shows are counted
-but never acquired because a show alone does not specify season or episode.
+Items already in the Watchlist remain observation-only, and only an item first
+seen on a later enabled sync is eligible. Movies use their exact title and year.
+Shows remain observation-only unless **Start new shows with S01E01** is enabled
+beneath the master control; that durable policy converts a newly observed show
+into exactly one season 1 episode 1 request. It never requests a full season or
+series, and enabling it is non-retroactive. Turning either control off blocks
+matching new and retry claims without canceling provider work already preparing.
+The Watchlist queue persists the exact movie/episode coordinates and durable
+acquisition job ID and reconciles them across restarts. No-source or stalled
+jobs wait six hours before another attempt. Known transient failures wait 15
+minutes. Any provider or publication mutation with an ambiguous result moves to
+manual review instead of being retried. Playback-triggered next-episode intent
+is a later milestone and is intentionally separate from Watchlist membership.
 
 The launcher creates a private local pairing value under the ignored
 `runtime/` directory and carries it in the setup page URL fragment. The

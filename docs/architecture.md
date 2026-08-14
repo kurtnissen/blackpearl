@@ -162,22 +162,29 @@ cannot roll back or block the published namespace. The isolated Compose profile
 keeps Plex and BlackPearl on disjoint networks and reaches the host-published
 Plex endpoint without exposing the control API to Plex.
 
-The Watchlist observer writes provider-neutral movie intent to its own SQLite
-queue. When explicitly enabled, a separate Watchlist worker submits that intent
-to the durable acquisition-job manager and persists the returned job ID before
-releasing its lease. Later claims only reconcile public job state. Search,
-provider mutation, preparation polling, publication, and Plex refresh remain
-owned by the acquisition-job worker. This allows a Watchlist request to survive
-restarts and multi-hour preparation without holding a Watchlist lease. Shows are
-observed but never submitted because they lack season and episode intent. The
-first successful observer sync after startup is a non-acquiring baseline;
-immutable per-row eligibility permits only movies first seen on later opted-in
-syncs, so enabling the feature cannot drain a historical Watchlist backlog.
-The opt-in is a durable singleton policy in the same SQLite database. The paired
-control API updates it at runtime, observer syncs read it before assigning new
-eligibility, and the atomic claim statement checks it again before leasing work.
-Disabling therefore blocks new and retry claims immediately without canceling
-an already-running provider operation or changing the manifest.
+The Watchlist observer writes provider-neutral movie or exact-episode intent to
+its own SQLite queue. When explicitly enabled, a separate Watchlist worker
+submits that intent to the durable acquisition-job manager and persists the
+returned job ID before releasing its lease. Later claims only reconcile public
+job state. Search, provider mutation, preparation polling, publication, and Plex
+refresh remain owned by the acquisition-job worker. This allows a Watchlist
+request to survive restarts and multi-hour preparation without holding a
+Watchlist lease.
+
+The durable policy has an independent master acquisition switch and show policy.
+The only show policy implemented today is `pilot`: a show first observed after
+both controls are enabled receives immutable coordinates `1,1`, which map to one
+`S01E01` search request. `off` and all baseline shows retain coordinates `0,0`
+and cannot be claimed. No Watchlist state can represent a season or series
+request. The first successful observer sync after startup is a non-acquiring
+baseline; immutable per-row eligibility permits only items first seen on later
+opted-in syncs, so enabling the feature cannot drain a historical Watchlist
+backlog. Observer syncs read the policy before assigning eligibility, and the
+atomic claim statement checks it again before leasing work. Disabling therefore
+blocks matching new and retry claims immediately without canceling an
+already-running provider operation or changing the manifest. Advancing beyond
+S01E01 requires a future explicit playback-state signal, not continued
+Watchlist membership.
 
 Provider readiness inspection returns safe media candidates together with a
 provider-neutral integer progress value. TorBox maps its fractional progress to
@@ -198,11 +205,12 @@ SQLite owns catalog metadata only. Cache bytes and the optional FUSE mount live 
 
 ## Extension roadmap
 
-1. Extend the implemented movie-only Watchlist ingestion with an explicit season/episode policy for shows and a stable provider contract or RSS fallback.
-2. Add adaptive throughput-based read scheduling. Seek-aware read-ahead is implemented.
-3. Extend bounded next-episode prefix prefetch with an explicit playback-state signal; ordinary read-ahead cancellation is handle-aware now.
-4. Add disk-capacity observability and operator alerts for non-evicting persistent retention.
-5. Add additional explicitly authorized search and range providers.
+1. Add an explicit playback-state signal that can advance an opted-in show from the implemented S01E01 pilot to the next exact episode; Watchlist membership must never authorize a season or series.
+2. Add a stable Plex Watchlist provider contract or RSS fallback.
+3. Add adaptive throughput-based read scheduling. Seek-aware read-ahead is implemented.
+4. Extend bounded next-episode prefix prefetch with the playback-state signal; ordinary read-ahead cancellation is handle-aware now.
+5. Add disk-capacity observability and operator alerts for non-evicting persistent retention.
+6. Add additional explicitly authorized search and range providers.
 
 Each stage needs its own acceptance evidence. A generic interface alone is not evidence that a provider, rolling cache, or progressive stream works.
 

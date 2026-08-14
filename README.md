@@ -14,7 +14,7 @@ BlackPearl is an experimental, open-source Go service that exposes a virtual med
 - Explicit uncached preparation persists a redacted SQLite job, verifies transient torrent metadata against the ranked release fingerprint, reconciles provider mutations, survives restarts, reports monotonic provider-neutral preparation progress, and publishes only after TorBox exposes playable media.
 - The optional direct Internet Archive adapter gives the legal POC a bounded, verified open-media search path. It validates Archive's structured movie year, adds that year to the normalized release title when needed, and combines eligible results with the generic authorized Prowlarr path.
 - A paired localhost acquisition console privately configures Prowlarr, accepts validated movie or TV-episode intent, and returns only the updated public Plex manifest. Provider credentials and release locators never return to the browser.
-- Durable Plex Watchlist ingestion observes movies and shows through a bounded, header-authenticated adapter, stores a lease-based SQLite queue, and can submit opted-in movies to the restart-safe acquisition queue without inventing episode intent for a show.
+- Durable Plex Watchlist ingestion observes movies and shows through a bounded, header-authenticated adapter and stores a lease-based SQLite queue. Opted-in movies enter the restart-safe acquisition queue; an independent `pilot` policy can turn a newly observed show into exactly one immutable `S01E01` request without authorizing a season or series.
 - Best-effort Plex refresh notifications rescan the exact BlackPearl movie and TV libraries after successful manifest publication without coupling Plex availability to the publication transaction.
 - `persistent` and `rolling` configuration modes. Rolling mode fetches strict HTTP ranges into fixed-size chunks, coalesces misses, cancels stale handle-scoped read-ahead after seeks or closes, performs bounded next-episode prefix prefetch, and enforces a hard local byte quota with LRU eviction.
 - A generated 8-second H.264/AAC test-pattern MP4 with no third-party media.
@@ -23,7 +23,7 @@ BlackPearl is an experimental, open-source Go service that exposes a virtual med
 - A portable NFS frontend and macOS Docker Desktop Compose profile that need no
   FUSE mount propagation.
 
-BlackPearl now proves provider-neutral progressive range retrieval and rolling eviction through strict HTTP and TorBox torrent-file gateways. The TorBox profile includes a localhost setup page that discovers eligible completed MP4/MKV files and atomically publishes a searchable manifest of up to 100 selected movies or TV episodes without restarting the stack. Live macOS acceptance has verified a mixed movie/episode manifest, Plex movie and TV scans, Direct Play, non-sequential seeks, restart recovery, seek-aware read-ahead, bounded next-episode prefetch, and continued reads from logical files that never existed completely on BlackPearl's disk. Cached and explicit background TorBox acquisition are exposed through the paired API/UI. A legal uncached *Tears of Steel (2012)* release completed through verified Archive torrent metadata; Plex Direct Played its logical MP4 with bidirectional seeking while BlackPearl retained only requested rolling chunks. A post-baseline public-domain *House on Haunted Hill (1959)* Watchlist item also completed the durable provider, publication, Plex scan, Direct Play, bidirectional seek, and restart-recovery path while only partial rolling chunks existed locally. The portable profile observes the isolated Plex server's Watchlist by default through a read-only config-volume mount. Automatic Watchlist movie acquisition remains disabled by default until authorized indexers are configured.
+BlackPearl now proves provider-neutral progressive range retrieval and rolling eviction through strict HTTP and TorBox torrent-file gateways. The TorBox profile includes a localhost setup page that discovers eligible completed MP4/MKV files and atomically publishes a searchable manifest of up to 100 selected movies or TV episodes without restarting the stack. Live macOS acceptance has verified a mixed movie/episode manifest, Plex movie and TV scans, Direct Play, non-sequential seeks, restart recovery, seek-aware read-ahead, bounded next-episode prefetch, and continued reads from logical files that never existed completely on BlackPearl's disk. Cached and explicit background TorBox acquisition are exposed through the paired API/UI. A legal uncached *Tears of Steel (2012)* release completed through verified Archive torrent metadata; Plex Direct Played its logical MP4 with bidirectional seeking while BlackPearl retained only requested rolling chunks. A post-baseline public-domain *House on Haunted Hill (1959)* Watchlist item also completed the durable provider, publication, Plex scan, Direct Play, bidirectional seek, and restart-recovery path while only partial rolling chunks existed locally. The portable profile observes the isolated Plex server's Watchlist by default through a read-only config-volume mount. Automatic Watchlist acquisition and the independent S01E01 show-pilot policy remain disabled by default until authorized sources are configured.
 
 ## Architecture at a glance
 
@@ -142,11 +142,15 @@ paired setup page. The choice is stored in SQLite and survives restart;
 `BLACKPEARL_WATCHLIST_ACQUISITION_ENABLED` only seeds a database that has no
 saved choice yet. This opt-in permits the same TorBox download behavior as the
 setup page's **Prepare through TorBox** action, so use it only with authorized
-sources. Existing Watchlist movies remain observation-only, and only new movies
-added on a later enabled sync are eligible for automatic preparation. Turning
-the switch off immediately prevents new claims without canceling work already
-preparing or removing published media. Shows remain observation-only until an
-episode policy is configured in a later milestone.
+sources. Existing Watchlist items remain observation-only, and only items first
+seen on a later enabled sync can become eligible. Movies request the exact title
+and year. Shows remain observation-only unless **Start new shows with S01E01**
+is also enabled; that policy authorizes exactly season 1 episode 1 for a newly
+observed show and never a full season or series. Both controls are durable and
+non-retroactive. Turning either control off immediately prevents matching new
+and retry claims without canceling work already preparing or removing published
+media. A later milestone may use an explicit playback signal to request the
+next episode; Watchlist membership alone will not do that.
 
 Successful manifest publication also schedules a best-effort refresh of the
 exact Plex library roots `/blackpearl/Movies` and `/blackpearl/TV Shows`. The
