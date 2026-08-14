@@ -49,6 +49,7 @@ func TestGatewayInspectCreatedTorrentDistinguishesNotReadyAndEmptyMedia(t *testi
 	}{
 		{name: "unfinished", data: `{"id":17,"download_finished":false,"download_present":true,"files":[]}`},
 		{name: "not present", data: `{"id":17,"download_finished":true,"download_present":false,"files":[]}`},
+		{name: "finished while provider briefly reports stalled", data: `{"id":17,"download_state":"stalled","download_finished":true,"download_present":false,"files":[]}`},
 		{name: "ready without video", data: `{"id":17,"download_finished":true,"download_present":true,"files":[{"id":1,"name":"subtitle.srt","size":1,"hash":"subtitle"}]}`, wantReady: true},
 	}
 	for _, test := range tests {
@@ -125,6 +126,18 @@ func TestGatewayInspectCreatedTorrentPreservesNotFoundAuthAndCancellation(t *tes
 		t.Parallel()
 		api := newTestAPI(t, func(writer http.ResponseWriter, _ *http.Request) {
 			writeEnvelope(writer, true, "ok", `{"id":18,"download_finished":true,"download_present":true,"files":[]}`)
+		})
+		gateway := newTestGateway(t, api.URL+"/v1/api/", api.Client())
+
+		_, err := gateway.InspectCreatedTorrent(context.Background(), created)
+
+		require.ErrorIs(t, err, domain.ErrNotFound)
+	})
+
+	t.Run("empty provider list", func(t *testing.T) {
+		t.Parallel()
+		api := newTestAPI(t, func(writer http.ResponseWriter, _ *http.Request) {
+			writeEnvelope(writer, true, "ok", `[]`)
 		})
 		gateway := newTestGateway(t, api.URL+"/v1/api/", api.Client())
 

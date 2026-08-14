@@ -51,18 +51,24 @@ func (g *Gateway) InspectCreatedTorrent(ctx context.Context, created acquisition
 	var torrent torrentRecord
 	if err := json.Unmarshal(envelope.Data, &torrent); err != nil {
 		var torrents []torrentRecord
-		if listErr := json.Unmarshal(envelope.Data, &torrents); listErr != nil || len(torrents) != 1 {
+		if listErr := json.Unmarshal(envelope.Data, &torrents); listErr != nil {
 			return nil, errors.New("decode created TorBox inspection data")
+		}
+		if len(torrents) == 0 {
+			return nil, fmt.Errorf("created TorBox torrent not found: %w", domain.ErrNotFound)
+		}
+		if len(torrents) != 1 {
+			return nil, fmt.Errorf("created TorBox inspection returned multiple objects: %w", acquisition.ErrAmbiguousProviderObjects)
 		}
 		torrent = torrents[0]
 	}
 	if torrent.ID != torrentID {
 		return nil, fmt.Errorf("created TorBox torrent not found: %w", domain.ErrNotFound)
 	}
-	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(torrent.DownloadState)), "stalled") {
-		return nil, fmt.Errorf("created TorBox torrent has no available source: %w", acquisition.ErrStalled)
-	}
 	if !torrent.DownloadFinished || !torrent.DownloadPresent {
+		if !torrent.DownloadFinished && strings.HasPrefix(strings.ToLower(strings.TrimSpace(torrent.DownloadState)), "stalled") {
+			return nil, fmt.Errorf("created TorBox torrent has no available source: %w", acquisition.ErrStalled)
+		}
 		return nil, fmt.Errorf("created TorBox torrent is not ready: %w", acquisition.ErrNotReady)
 	}
 	result := candidatesFromTorrent(torrent)

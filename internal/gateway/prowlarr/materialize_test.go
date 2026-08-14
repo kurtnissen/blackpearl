@@ -37,8 +37,7 @@ func TestMaterializeDownloadsBoundedSameOriginTorrentAndVerifiesHash(t *testing.
 	t.Parallel()
 	payload, infoHash := torrentPayload()
 	const apiKey = "private-key"
-	var server *httptest.Server
-	server = httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		require.Equal(t, "/prowlarr/api/v1/indexer/1/download", request.URL.Path)
 		require.Equal(t, apiKey, request.Header.Get("X-Api-Key"))
 		writer.Header().Set("Content-Type", "application/x-bittorrent")

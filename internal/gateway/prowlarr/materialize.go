@@ -21,7 +21,7 @@ func (g *Gateway) Materialize(ctx context.Context, release acquisition.Release) 
 		return acquisition.TorrentInput{}, fmt.Errorf("materialize Prowlarr release: %w", err)
 	}
 	if release.Provider() != providerName || release.Protocol() != acquisition.ReleaseProtocolTorrent || release.InfoHash() == "" {
-		return acquisition.TorrentInput{}, errors.New("Prowlarr materialization requires a validated torrent release with info hash")
+		return acquisition.TorrentInput{}, errors.New("prowlarr materialization requires a validated torrent release with info hash")
 	}
 	if release.MagnetURL() != "" {
 		input, err := acquisition.NewMagnetTorrentInput(release.InfoHash(), release.MagnetURL())
@@ -31,11 +31,11 @@ func (g *Gateway) Materialize(ctx context.Context, release acquisition.Release) 
 		return input, nil
 	}
 	if release.DownloadURL() == "" {
-		return acquisition.TorrentInput{}, errors.New("Prowlarr release has no materializable locator")
+		return acquisition.TorrentInput{}, errors.New("prowlarr release has no materializable locator")
 	}
 	download, err := url.Parse(release.DownloadURL())
 	if err != nil || !g.allowedMaterialURL(download) {
-		return acquisition.TorrentInput{}, errors.New("Prowlarr material URL is outside the configured origin")
+		return acquisition.TorrentInput{}, errors.New("prowlarr material URL is outside the configured origin")
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, download.String(), nil)
 	if err != nil {
@@ -56,21 +56,21 @@ func (g *Gateway) Materialize(ctx context.Context, release acquisition.Release) 
 		}
 	}()
 	if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
-		return acquisition.TorrentInput{}, fmt.Errorf("Prowlarr rejected material credentials: %w", domain.ErrUnauthorized)
+		return acquisition.TorrentInput{}, fmt.Errorf("prowlarr rejected material credentials: %w", domain.ErrUnauthorized)
 	}
 	if response.StatusCode != http.StatusOK {
-		return acquisition.TorrentInput{}, fmt.Errorf("Prowlarr material returned HTTP status %d", response.StatusCode)
+		return acquisition.TorrentInput{}, fmt.Errorf("prowlarr material returned HTTP status %d", response.StatusCode)
 	}
 	mediaType := strings.ToLower(strings.TrimSpace(strings.Split(response.Header.Get("Content-Type"), ";")[0]))
 	if mediaType == "text/html" || mediaType == "application/json" || strings.HasPrefix(mediaType, "text/") {
-		return acquisition.TorrentInput{}, errors.New("Prowlarr material response is not a torrent file")
+		return acquisition.TorrentInput{}, errors.New("prowlarr material response is not a torrent file")
 	}
 	payload, err := io.ReadAll(io.LimitReader(response.Body, acquisition.MaximumTorrentFileBytes+1))
 	if err != nil {
 		return acquisition.TorrentInput{}, errors.New("read Prowlarr torrent material")
 	}
 	if len(payload) > acquisition.MaximumTorrentFileBytes {
-		return acquisition.TorrentInput{}, fmt.Errorf("Prowlarr torrent material exceeds %d bytes", acquisition.MaximumTorrentFileBytes)
+		return acquisition.TorrentInput{}, fmt.Errorf("prowlarr torrent material exceeds %d bytes", acquisition.MaximumTorrentFileBytes)
 	}
 	input, err := acquisition.NewTorrentFileInput(release.InfoHash(), payload)
 	if err != nil {

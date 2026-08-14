@@ -46,13 +46,13 @@ type searchDocument struct {
 func New(baseURL string, client *http.Client) (*Gateway, error) {
 	parsed, err := url.Parse(baseURL)
 	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
-		return nil, errors.New("Internet Archive base URL must be absolute HTTP(S) without credentials, query, or fragment")
+		return nil, errors.New("internet Archive base URL must be absolute HTTP(S) without credentials, query, or fragment")
 	}
 	if client == nil {
-		return nil, errors.New("Internet Archive HTTP client is required")
+		return nil, errors.New("internet Archive HTTP client is required")
 	}
 	isolated := *client
-	isolated.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	isolated.CheckRedirect = archiveRedirectPolicy(parsed)
 	return &Gateway{baseURL: parsed, client: &isolated}, nil
 }
 
@@ -61,7 +61,7 @@ func (g *Gateway) Name() string { return providerName }
 
 // Capabilities reports verified torrent info hashes and magnet material.
 func (g *Gateway) Capabilities() acquisition.ProviderCapabilities {
-	return acquisition.NewProviderCapabilities([]acquisition.ReleaseProtocol{acquisition.ReleaseProtocolTorrent}, true, true, false)
+	return acquisition.NewProviderCapabilities([]acquisition.ReleaseProtocol{acquisition.ReleaseProtocolTorrent}, true, true, true)
 }
 
 // Search returns normalized public Archive BitTorrent items for one intent.
@@ -100,14 +100,14 @@ func (g *Gateway) Search(ctx context.Context, search acquisition.SearchRequest) 
 		}
 	}()
 	if response.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("Internet Archive search returned HTTP status %d", response.StatusCode)
+		return nil, fmt.Errorf("internet Archive search returned HTTP status %d", response.StatusCode)
 	}
 	body, err := io.ReadAll(io.LimitReader(response.Body, maximumBodyBytes+1))
 	if err != nil {
 		return nil, errors.New("read Internet Archive search response")
 	}
 	if len(body) > maximumBodyBytes {
-		return nil, errors.New("Internet Archive search response exceeds 2 MiB")
+		return nil, errors.New("internet Archive search response exceeds 2 MiB")
 	}
 	var envelope searchEnvelope
 	if err := json.Unmarshal(body, &envelope); err != nil {
@@ -115,7 +115,7 @@ func (g *Gateway) Search(ctx context.Context, search acquisition.SearchRequest) 
 	}
 	releases := make([]acquisition.Release, 0, len(envelope.Response.Docs))
 	for _, document := range envelope.Response.Docs {
-		release, releaseErr := archiveRelease(document)
+		release, releaseErr := archiveRelease(g.baseURL, document)
 		if releaseErr == nil {
 			releases = append(releases, release)
 		}
@@ -123,17 +123,56 @@ func (g *Gateway) Search(ctx context.Context, search acquisition.SearchRequest) 
 	return releases, nil
 }
 
-// Materialize returns the already verified magnet without persisting it.
-func (g *Gateway) Materialize(ctx context.Context, release acquisition.Release) (acquisition.TorrentInput, error) {
+// Materialize downloads the provider-owned torrent metadata, verifies its
+// info hash, and returns the bounded bytes without persisting them.
+func (g *Gateway) Materialize(ctx context.Context, release acquisition.Release) (_ acquisition.TorrentInput, resultErr error) {
 	if err := ctx.Err(); err != nil {
 		return acquisition.TorrentInput{}, fmt.Errorf("materialize Internet Archive release: %w", err)
 	}
-	if release.Provider() != providerName || release.Protocol() != acquisition.ReleaseProtocolTorrent || release.InfoHash() == "" || release.MagnetURL() == "" {
-		return acquisition.TorrentInput{}, errors.New("Internet Archive materialization requires its validated torrent magnet")
+	if release.Provider() != providerName || release.Protocol() != acquisition.ReleaseProtocolTorrent || release.InfoHash() == "" || release.DownloadURL() == "" {
+		return acquisition.TorrentInput{}, errors.New("internet Archive materialization requires its validated torrent file")
 	}
-	input, err := acquisition.NewMagnetTorrentInput(release.InfoHash(), release.MagnetURL())
+	expectedURL, err := archiveTorrentURL(g.baseURL, release.SourceID())
 	if err != nil {
-		return acquisition.TorrentInput{}, errors.New("validate Internet Archive magnet material")
+		return acquisition.TorrentInput{}, errors.New("construct Internet Archive torrent material URL")
+	}
+	if release.DownloadURL() != expectedURL {
+		return acquisition.TorrentInput{}, errors.New("internet Archive material URL is outside the selected item")
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, expectedURL, nil)
+	if err != nil {
+		return acquisition.TorrentInput{}, errors.New("construct Internet Archive torrent material request")
+	}
+	request.Header.Set("Accept", "application/x-bittorrent, application/octet-stream")
+	response, err := g.client.Do(request)
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return acquisition.TorrentInput{}, fmt.Errorf("request Internet Archive torrent material: %w", ctxErr)
+		}
+		return acquisition.TorrentInput{}, errors.New("request Internet Archive torrent material")
+	}
+	defer func() {
+		if closeErr := response.Body.Close(); closeErr != nil {
+			resultErr = errors.Join(resultErr, errors.New("close Internet Archive torrent material response"))
+		}
+	}()
+	if response.StatusCode != http.StatusOK {
+		return acquisition.TorrentInput{}, fmt.Errorf("internet Archive torrent material returned HTTP status %d", response.StatusCode)
+	}
+	mediaType := strings.ToLower(strings.TrimSpace(strings.Split(response.Header.Get("Content-Type"), ";")[0]))
+	if mediaType == "text/html" || mediaType == "application/json" || strings.HasPrefix(mediaType, "text/") {
+		return acquisition.TorrentInput{}, errors.New("internet Archive material response is not a torrent file")
+	}
+	payload, err := io.ReadAll(io.LimitReader(response.Body, acquisition.MaximumTorrentFileBytes+1))
+	if err != nil {
+		return acquisition.TorrentInput{}, errors.New("read Internet Archive torrent material")
+	}
+	if len(payload) > acquisition.MaximumTorrentFileBytes {
+		return acquisition.TorrentInput{}, fmt.Errorf("internet Archive torrent material exceeds %d bytes", acquisition.MaximumTorrentFileBytes)
+	}
+	input, err := acquisition.NewTorrentFileInput(release.InfoHash(), payload)
+	if err != nil {
+		return acquisition.TorrentInput{}, errors.New("validate Internet Archive torrent material")
 	}
 	return input, nil
 }
@@ -152,14 +191,68 @@ func quoteSearch(value string) string {
 	return `"` + escaped + `"`
 }
 
-func archiveRelease(document searchDocument) (acquisition.Release, error) {
+func archiveRelease(baseURL *url.URL, document searchDocument) (acquisition.Release, error) {
 	values := url.Values{}
 	values.Set("xt", "urn:btih:"+document.InfoHash)
 	values.Set("dn", document.Identifier)
-	return acquisition.NewRelease(acquisition.ReleaseInput{
+	input := acquisition.ReleaseInput{
 		Provider: providerName, SourceID: document.Identifier, Title: document.Title,
 		Protocol: acquisition.ReleaseProtocolTorrent, Size: document.ItemSize,
 		Indexer: internetArchiveTag, InfoHash: document.InfoHash,
 		MagnetURL: "magnet:?" + values.Encode(),
-	})
+	}
+	validated, err := acquisition.NewRelease(input)
+	if err != nil {
+		return acquisition.Release{}, err
+	}
+	downloadURL, err := archiveTorrentURL(baseURL, validated.SourceID())
+	if err != nil {
+		return acquisition.Release{}, err
+	}
+	input.DownloadURL = downloadURL
+	return acquisition.NewRelease(input)
+}
+
+func archiveTorrentURL(baseURL *url.URL, identifier string) (string, error) {
+	if baseURL == nil || identifier == "" || identifier == "." || identifier == ".." || strings.ContainsAny(identifier, `/\\?#`) {
+		return "", errors.New("invalid Internet Archive identifier")
+	}
+	return url.JoinPath(baseURL.String(), "download", identifier, identifier+"_archive.torrent")
+}
+
+func archiveRedirectPolicy(baseURL *url.URL) func(*http.Request, []*http.Request) error {
+	return func(request *http.Request, via []*http.Request) error {
+		if len(via) >= 3 {
+			return errors.New("internet Archive material redirect limit exceeded")
+		}
+		candidate := request.URL
+		if candidate == nil || candidate.User != nil || candidate.Fragment != "" {
+			return errors.New("internet Archive material redirect is invalid")
+		}
+		if sameOrigin(baseURL, candidate) {
+			return nil
+		}
+		baseHost := strings.ToLower(baseURL.Hostname())
+		candidateHost := strings.ToLower(candidate.Hostname())
+		if baseURL.Scheme == "https" && baseHost == "archive.org" && candidate.Scheme == "https" &&
+			(candidateHost == "archive.org" || strings.HasSuffix(candidateHost, ".archive.org")) && effectivePort(candidate) == "443" {
+			return nil
+		}
+		return errors.New("internet Archive material redirect left the trusted origin")
+	}
+}
+
+func sameOrigin(left *url.URL, right *url.URL) bool {
+	return left != nil && right != nil && strings.EqualFold(left.Scheme, right.Scheme) &&
+		strings.EqualFold(left.Hostname(), right.Hostname()) && effectivePort(left) == effectivePort(right)
+}
+
+func effectivePort(value *url.URL) string {
+	if port := value.Port(); port != "" {
+		return port
+	}
+	if strings.EqualFold(value.Scheme, "https") {
+		return "443"
+	}
+	return "80"
 }
