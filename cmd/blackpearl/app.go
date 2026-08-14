@@ -384,9 +384,7 @@ func runBrowserSetup(ctx context.Context, cfg config.Config, logger *slog.Logger
 		return catalog, nil
 	}
 	service := setupservice.New(setupRepository, gatewayFactory, runtimeFactory, &setupPublisher{switcher: switcher, nfs: nfs}, cfg.SetupBootstrapToken)
-	if restoreErr := service.Restore(ctx); restoreErr != nil && !errors.Is(restoreErr, domain.ErrNotFound) {
-		logger.WarnContext(ctx, "saved browser setup could not be restored", "error", restoreErr)
-	}
+	startSetupRestore(ctx, service, logger, 2*time.Second)
 	apiHandler, err := setuphandler.New(service, logger)
 	if err != nil {
 		return err
@@ -424,6 +422,52 @@ func runBrowserSetup(ctx context.Context, cfg config.Config, logger *slog.Logger
 		}
 	}
 	return runErr
+}
+
+type setupRestorer interface {
+	Restore(ctx context.Context) error
+}
+
+func startSetupRestore(ctx context.Context, restorer setupRestorer, logger *slog.Logger, retryDelay time.Duration) {
+	err := restorer.Restore(ctx)
+	if err == nil || errors.Is(err, domain.ErrNotFound) {
+		return
+	}
+	logger.WarnContext(ctx, "saved browser setup could not be restored", "error", err)
+	if !errors.Is(err, setupservice.ErrUnavailable) {
+		return
+	}
+	go retrySetupRestore(ctx, restorer, logger, retryDelay)
+}
+
+func retrySetupRestore(ctx context.Context, restorer setupRestorer, logger *slog.Logger, retryDelay time.Duration) {
+	delay := retryDelay
+	for {
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+		err := restorer.Restore(ctx)
+		if err == nil {
+			logger.InfoContext(ctx, "saved browser setup restored after retry")
+			return
+		}
+		if !errors.Is(err, setupservice.ErrUnavailable) {
+			if !errors.Is(err, domain.ErrNotFound) {
+				logger.WarnContext(ctx, "saved browser setup retry stopped", "error", err)
+			}
+			return
+		}
+		logger.WarnContext(ctx, "saved browser setup retry failed", "error", err)
+		if delay < time.Minute/2 {
+			delay *= 2
+		} else {
+			delay = time.Minute
+		}
+	}
 }
 
 func resolveTorBoxToken(ctx context.Context, cfg config.Config) (string, error) {

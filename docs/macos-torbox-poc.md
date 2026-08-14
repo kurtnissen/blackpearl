@@ -75,6 +75,10 @@ uses the same hard quota, retains foreground headroom, stops instead of evicting
 current cache data, and never downloads the
 whole next episode unless the configured prefix itself spans the whole file.
 
+If TorBox is briefly unavailable while BlackPearl starts, saved setup restore
+retries with bounded exponential backoff. The setup page remains available, and
+the existing manifest is republished automatically when the provider recovers.
+
 ## Inspect and stop
 
 ```bash

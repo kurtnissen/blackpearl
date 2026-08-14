@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -20,6 +21,7 @@ import (
 	"github.com/blackpearl-media/blackpearl/internal/config"
 	"github.com/blackpearl-media/blackpearl/internal/domain"
 	"github.com/blackpearl-media/blackpearl/internal/pearlfs"
+	setupservice "github.com/blackpearl-media/blackpearl/internal/service/setup"
 	"github.com/blackpearl-media/blackpearl/internal/state"
 	"github.com/stretchr/testify/require"
 )
@@ -594,6 +596,79 @@ func TestReadinessGateRequiresMountAndDelegates(t *testing.T) {
 	require.True(t, delegate.called)
 }
 
+func TestStartSetupRestoreRetriesTransientFailure(t *testing.T) {
+	t.Parallel()
+	restorer := &fakeSetupRestorer{results: []error{setupservice.ErrUnavailable, nil}, calls: make(chan struct{}, 2)}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	startSetupRestore(ctx, restorer, testLogger(), time.Millisecond)
+
+	for range 2 {
+		select {
+		case <-restorer.calls:
+		case <-time.After(time.Second):
+			require.FailNow(t, "saved setup restore was not retried")
+		}
+	}
+}
+
+func TestStartSetupRestoreDoesNotRetryMissingState(t *testing.T) {
+	t.Parallel()
+	restorer := &fakeSetupRestorer{results: []error{domain.ErrNotFound}, calls: make(chan struct{}, 2)}
+
+	startSetupRestore(context.Background(), restorer, testLogger(), time.Millisecond)
+
+	select {
+	case <-restorer.calls:
+	case <-time.After(time.Second):
+		require.FailNow(t, "initial saved setup restore did not run")
+	}
+	select {
+	case <-restorer.calls:
+		require.FailNow(t, "missing setup state was retried")
+	case <-time.After(20 * time.Millisecond):
+	}
+}
+
+func TestStartSetupRestoreDoesNotRetryPermanentFailure(t *testing.T) {
+	t.Parallel()
+	restorer := &fakeSetupRestorer{results: []error{errors.New("invalid saved setup")}, calls: make(chan struct{}, 2)}
+
+	startSetupRestore(context.Background(), restorer, testLogger(), time.Millisecond)
+
+	select {
+	case <-restorer.calls:
+	case <-time.After(time.Second):
+		require.FailNow(t, "initial saved setup restore did not run")
+	}
+	select {
+	case <-restorer.calls:
+		require.FailNow(t, "permanent setup failure was retried")
+	case <-time.After(20 * time.Millisecond):
+	}
+}
+
+func TestStartSetupRestoreStopsRetryingAfterShutdown(t *testing.T) {
+	t.Parallel()
+	restorer := &fakeSetupRestorer{results: []error{setupservice.ErrUnavailable}, calls: make(chan struct{}, 2)}
+	ctx, cancel := context.WithCancel(context.Background())
+
+	startSetupRestore(ctx, restorer, testLogger(), time.Hour)
+	cancel()
+
+	select {
+	case <-restorer.calls:
+	case <-time.After(time.Second):
+		require.FailNow(t, "initial saved setup restore did not run")
+	}
+	select {
+	case <-restorer.calls:
+		require.FailNow(t, "saved setup restore retried after shutdown")
+	case <-time.After(20 * time.Millisecond):
+	}
+}
+
 func TestDefaultDependenciesAreComplete(t *testing.T) {
 	t.Parallel()
 
@@ -659,6 +734,24 @@ func (f *fakeMountServer) Wait() {}
 type fakeReadyCatalog struct {
 	err    error
 	called bool
+}
+
+type fakeSetupRestorer struct {
+	mu      sync.Mutex
+	results []error
+	calls   chan struct{}
+}
+
+func (f *fakeSetupRestorer) Restore(context.Context) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls <- struct{}{}
+	if len(f.results) == 0 {
+		return nil
+	}
+	result := f.results[0]
+	f.results = f.results[1:]
+	return result
 }
 
 type fakeNFSServer struct {
