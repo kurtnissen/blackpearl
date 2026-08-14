@@ -71,4 +71,23 @@ assert "lookupcache=none" in mount_options
 assert all(not volume.get("source", "").startswith("/") for service in services.values() for volume in service.get("volumes", []))
 '
 
+BLACKPEARL_STORAGE_MODE=persistent BLACKPEARL_CACHE_MAX_BYTES=0 \
+  docker compose -f "${compose_file}" config --format json |
+  python3 -c '
+import json
+import sys
+
+model = json.load(sys.stdin)
+blackpearl = model["services"]["blackpearl"]
+environment = blackpearl["environment"]
+assert environment["BLACKPEARL_STORAGE_MODE"] == "persistent"
+assert str(environment["BLACKPEARL_CACHE_MAX_BYTES"]) == "0"
+assert set(blackpearl["networks"]) == {"blackpearl-control"}
+assert set(model["services"]["plex"]["networks"]) == {"plex-runtime"}
+assert set(blackpearl["networks"]).isdisjoint(model["services"]["plex"]["networks"])
+assert all(volume.get("type") == "volume" for volume in blackpearl.get("volumes", []))
+assert not blackpearl.get("devices")
+assert not blackpearl.get("cap_add")
+'
+
 printf 'TorBox Compose safety checks passed.\n'

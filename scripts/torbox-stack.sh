@@ -25,6 +25,21 @@ if [[ ! "${BLACKPEARL_SETUP_BOOTSTRAP_TOKEN}" =~ ^[0-9a-f]{64}$ ]]; then
 fi
 export BLACKPEARL_SETUP_BOOTSTRAP_TOKEN
 
+BLACKPEARL_STORAGE_MODE="${BLACKPEARL_STORAGE_MODE:-rolling}"
+case "${BLACKPEARL_STORAGE_MODE}" in
+  rolling)
+    BLACKPEARL_CACHE_MAX_BYTES="${BLACKPEARL_CACHE_MAX_BYTES:-42949672960}"
+    ;;
+  persistent)
+    BLACKPEARL_CACHE_MAX_BYTES="${BLACKPEARL_CACHE_MAX_BYTES:-0}"
+    ;;
+  *)
+    printf 'BLACKPEARL_STORAGE_MODE must be rolling or persistent.\n' >&2
+    exit 1
+    ;;
+esac
+export BLACKPEARL_STORAGE_MODE BLACKPEARL_CACHE_MAX_BYTES
+
 command="${1:-start}"
 case "${command}" in
   start)
