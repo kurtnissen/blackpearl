@@ -36,6 +36,64 @@ func TestParseUsesIsolatedContainerDefaults(t *testing.T) {
 	require.Equal(t, 15*time.Minute, cfg.WatchlistPollInterval)
 	require.Empty(t, cfg.WatchlistPreferencesPath)
 	require.Empty(t, cfg.WatchlistTokenFile)
+	require.False(t, cfg.WatchlistAcquisitionEnabled)
+	require.Equal(t, 10*time.Minute, cfg.WatchlistLeaseDuration)
+	require.Equal(t, 5*time.Minute, cfg.WatchlistAcquisitionTimeout)
+	require.Equal(t, 30*time.Second, cfg.WatchlistWorkerIdleInterval)
+	require.Equal(t, 6*time.Hour, cfg.WatchlistNotCachedCooldown)
+	require.Equal(t, 15*time.Minute, cfg.WatchlistRetryCooldown)
+}
+
+func TestParseAcceptsSerializedPlexWatchlistAcquisition(t *testing.T) {
+	t.Parallel()
+	environment := browserSetupEnvironment()
+	environment["BLACKPEARL_WATCHLIST_ENABLED"] = "true"
+	environment["BLACKPEARL_WATCHLIST_TOKEN_FILE"] = "/run/secrets/plex_watchlist_token"
+	environment["BLACKPEARL_WATCHLIST_ACQUISITION_ENABLED"] = "true"
+
+	cfg, err := config.Parse(environment)
+
+	require.NoError(t, err)
+	require.True(t, cfg.WatchlistAcquisitionEnabled)
+}
+
+func TestParseRejectsUnsafePlexWatchlistAcquisitionTiming(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		mutate func(map[string]string)
+	}{
+		{name: "requires observation", mutate: func(environment map[string]string) {
+			delete(environment, "BLACKPEARL_WATCHLIST_ENABLED")
+			delete(environment, "BLACKPEARL_WATCHLIST_TOKEN_FILE")
+		}},
+		{name: "lease shorter than work", mutate: func(environment map[string]string) {
+			environment["BLACKPEARL_WATCHLIST_LEASE_DURATION"] = "5m"
+		}},
+		{name: "short acquisition timeout", mutate: func(environment map[string]string) {
+			environment["BLACKPEARL_WATCHLIST_ACQUISITION_TIMEOUT"] = "9s"
+		}},
+		{name: "short idle interval", mutate: func(environment map[string]string) {
+			environment["BLACKPEARL_WATCHLIST_WORKER_IDLE_INTERVAL"] = "500ms"
+		}},
+		{name: "short no-cache cooldown", mutate: func(environment map[string]string) {
+			environment["BLACKPEARL_WATCHLIST_NOT_CACHED_COOLDOWN"] = "30s"
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			environment := browserSetupEnvironment()
+			environment["BLACKPEARL_WATCHLIST_ENABLED"] = "true"
+			environment["BLACKPEARL_WATCHLIST_TOKEN_FILE"] = "/run/secrets/plex_watchlist_token"
+			environment["BLACKPEARL_WATCHLIST_ACQUISITION_ENABLED"] = "true"
+			test.mutate(environment)
+
+			_, err := config.Parse(environment)
+
+			require.ErrorContains(t, err, "WATCHLIST")
+		})
+	}
 }
 
 func TestParseAcceptsObserveOnlyPlexWatchlistSources(t *testing.T) {

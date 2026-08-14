@@ -37,6 +37,7 @@ import (
 	"github.com/blackpearl-media/blackpearl/internal/state"
 	webui "github.com/blackpearl-media/blackpearl/web"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"golang.org/x/sync/errgroup"
 )
 
 type mountServer interface {
@@ -419,6 +420,8 @@ func runBrowserSetup(ctx context.Context, cfg config.Config, logger *slog.Logger
 		return fmt.Errorf("configure browser acquisition coordinator: %w", err)
 	}
 	var watchlistObserver *watchlistservice.Observer
+	var watchlistWorker *watchlistservice.Worker
+	var watchlistRepository *watchlistrepo.Repository
 	if cfg.WatchlistEnabled {
 		var tokenSource plexwatchlist.TokenSource
 		if cfg.WatchlistPreferencesPath != "" {
@@ -433,10 +436,11 @@ func runBrowserSetup(ctx context.Context, cfg config.Config, logger *slog.Logger
 		if gatewayErr != nil {
 			return fmt.Errorf("configure Plex watchlist gateway: %w", gatewayErr)
 		}
-		watchlistRepository, repositoryErr := watchlistrepo.Open(ctx, cfg.DBPath)
+		openedRepository, repositoryErr := watchlistrepo.Open(ctx, cfg.DBPath)
 		if repositoryErr != nil {
 			return fmt.Errorf("open Plex watchlist queue: %w", repositoryErr)
 		}
+		watchlistRepository = openedRepository
 		watchlistObserver, err = watchlistservice.NewObserver(watchlistGateway, watchlistRepository, watchlistservice.ObserverOptions{
 			PollInterval: cfg.WatchlistPollInterval,
 		})
@@ -444,19 +448,39 @@ func runBrowserSetup(ctx context.Context, cfg config.Config, logger *slog.Logger
 			closeErr := watchlistRepository.Close()
 			return errors.Join(fmt.Errorf("configure Plex watchlist observer: %w", err), closeErr)
 		}
-		observerContext, stopObserver := context.WithCancel(ctx)
-		observerDone := make(chan struct{})
-		go func() {
-			watchlistObserver.Run(observerContext)
-			close(observerDone)
-		}()
-		defer func() {
-			stopObserver()
-			<-observerDone
-			runErr = errors.Join(runErr, watchlistRepository.Close())
-		}()
+		if cfg.WatchlistAcquisitionEnabled {
+			watchlistWorker, err = watchlistservice.NewWorker(watchlistRepository, acquisitionCoordinator, watchlistservice.WorkerOptions{
+				LeaseDuration:      cfg.WatchlistLeaseDuration,
+				AcquisitionTimeout: cfg.WatchlistAcquisitionTimeout,
+				IdleInterval:       cfg.WatchlistWorkerIdleInterval,
+				NotCachedCooldown:  cfg.WatchlistNotCachedCooldown,
+				RetryCooldown:      cfg.WatchlistRetryCooldown,
+			})
+			if err != nil {
+				closeErr := watchlistRepository.Close()
+				return errors.Join(fmt.Errorf("configure Plex watchlist acquisition worker: %w", err), closeErr)
+			}
+		}
 	}
 	startSetupRestore(ctx, service, logger, 2*time.Second)
+	if watchlistObserver != nil {
+		watchlistContext, stopWatchlist := context.WithCancel(ctx)
+		var watchlistGroup errgroup.Group
+		watchlistGroup.Go(func() error {
+			watchlistObserver.Run(watchlistContext)
+			return nil
+		})
+		if watchlistWorker != nil {
+			watchlistGroup.Go(func() error {
+				watchlistWorker.Run(watchlistContext)
+				return nil
+			})
+		}
+		defer func() {
+			stopWatchlist()
+			runErr = errors.Join(runErr, watchlistGroup.Wait(), watchlistRepository.Close())
+		}()
+	}
 	var apiHandler http.Handler
 	if watchlistObserver != nil {
 		apiHandler, err = setuphandler.NewWithAcquisitionAndWatchlist(service, acquisitionCoordinator, watchlistObserver, logger)

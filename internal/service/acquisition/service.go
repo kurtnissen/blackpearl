@@ -23,6 +23,9 @@ var (
 	ErrNoPlayableMedia = errors.New("acquired object contains no matching playable media")
 	// ErrUnavailable is a public-safe acquisition boundary failure.
 	ErrUnavailable = errors.New("acquisition is temporarily unavailable")
+	// ErrAmbiguousMutation means a provider or publication mutation may have
+	// committed and must not be retried automatically.
+	ErrAmbiguousMutation = errors.New("acquisition mutation outcome is ambiguous")
 )
 
 // Searcher returns validated releases in policy rank order.
@@ -102,25 +105,28 @@ func (s *Service) Acquire(ctx context.Context, request acquisitiondomain.SearchR
 	selectedRelease := cached[0]
 	created, err := s.gateway.CreateCachedTorrent(ctx, selectedRelease)
 	if err != nil {
-		return acquisitiondomain.AcquiredMedia{}, publicBoundaryError("create cached acquisition object", err)
+		if errors.Is(err, domain.ErrUnauthorized) {
+			return acquisitiondomain.AcquiredMedia{}, publicBoundaryError("create cached acquisition object", err)
+		}
+		return acquisitiondomain.AcquiredMedia{}, ambiguousMutationError("create cached acquisition object", err)
 	}
 	items, err := s.waitForMedia(ctx, created)
 	if err != nil {
-		return acquisitiondomain.AcquiredMedia{}, err
+		return acquisitiondomain.AcquiredMedia{}, ambiguousMutationError("inspect created acquisition object", err)
 	}
 	selected, err := selectCandidate(validated, items)
 	if err != nil {
-		return acquisitiondomain.AcquiredMedia{}, err
+		return acquisitiondomain.AcquiredMedia{}, ambiguousMutationError("select created acquisition media", err)
 	}
 	result, err := acquisitiondomain.NewAcquiredMedia(validated, selectedRelease, selected)
 	if err != nil {
-		return acquisitiondomain.AcquiredMedia{}, ErrNoPlayableMedia
+		return acquisitiondomain.AcquiredMedia{}, ambiguousMutationError("validate created acquisition media", ErrNoPlayableMedia)
 	}
 	if err := s.publisher.PublishAcquired(ctx, result); err != nil {
 		if contextErr := ctx.Err(); contextErr != nil {
-			return acquisitiondomain.AcquiredMedia{}, fmt.Errorf("publish acquired media: %w", contextErr)
+			return acquisitiondomain.AcquiredMedia{}, ambiguousMutationError("publish acquired media", contextErr)
 		}
-		return acquisitiondomain.AcquiredMedia{}, fmt.Errorf("publish acquired media: %w", ErrUnavailable)
+		return acquisitiondomain.AcquiredMedia{}, ambiguousMutationError("publish acquired media", ErrUnavailable)
 	}
 	return result, nil
 }
@@ -147,6 +153,22 @@ func publicBoundaryError(action string, err error) error {
 		return fmt.Errorf("%s: %w", action, domain.ErrUnauthorized)
 	}
 	return fmt.Errorf("%s: %w", action, ErrUnavailable)
+}
+
+func ambiguousMutationError(action string, err error) error {
+	causes := []error{ErrAmbiguousMutation}
+	for _, safe := range []error{
+		context.Canceled,
+		context.DeadlineExceeded,
+		domain.ErrUnauthorized,
+		ErrNoPlayableMedia,
+		ErrUnavailable,
+	} {
+		if errors.Is(err, safe) {
+			causes = append(causes, safe)
+		}
+	}
+	return fmt.Errorf("%s: %w", action, errors.Join(causes...))
 }
 
 func (s *Service) waitForMedia(ctx context.Context, created acquisitiondomain.CreatedObject) ([]domain.MediaCandidate, error) {

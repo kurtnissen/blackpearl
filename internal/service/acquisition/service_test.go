@@ -75,7 +75,7 @@ func TestServiceAcquireNeverFallsThroughAfterAmbiguousCreateFailure(t *testing.T
 
 	_, err = service.Acquire(context.Background(), request)
 
-	require.ErrorIs(t, err, acquisitionservice.ErrUnavailable)
+	require.ErrorIs(t, err, acquisitionservice.ErrAmbiguousMutation)
 	require.NotContains(t, err.Error(), "secret")
 	require.NotContains(t, err.Error(), "magnet")
 	require.Equal(t, 1, gateway.createCalls)
@@ -167,7 +167,7 @@ func TestServiceAcquirePreservesAuthorizationButSanitizesOtherBoundaries(t *test
 		{name: "search auth", searcher: &fakeSearcher{err: domain.ErrUnauthorized}, gateway: &fakeCachedGateway{}, publisher: &fakePublisher{}, want: domain.ErrUnauthorized},
 		{name: "cache failure", searcher: &fakeSearcher{releases: []acquisitiondomain.Release{release}}, gateway: &fakeCachedGateway{cachedErr: errors.New("secret locator")}, publisher: &fakePublisher{}, want: acquisitionservice.ErrUnavailable},
 		{name: "inspect auth", searcher: &fakeSearcher{releases: []acquisitiondomain.Release{release}}, gateway: &fakeCachedGateway{cached: []acquisitiondomain.Release{release}, created: created, inspectErr: domain.ErrUnauthorized}, publisher: &fakePublisher{}, want: domain.ErrUnauthorized},
-		{name: "publish failure", searcher: &fakeSearcher{releases: []acquisitiondomain.Release{release}}, gateway: &fakeCachedGateway{cached: []acquisitiondomain.Release{release}, created: created, inspections: []inspectionResult{{items: []domain.MediaCandidate{mustCandidate(t, "17:1", "Example.2026.mkv", 20)}}}}, publisher: &fakePublisher{err: errors.New("private persistence path")}, want: acquisitionservice.ErrUnavailable},
+		{name: "publish failure", searcher: &fakeSearcher{releases: []acquisitiondomain.Release{release}}, gateway: &fakeCachedGateway{cached: []acquisitiondomain.Release{release}, created: created, inspections: []inspectionResult{{items: []domain.MediaCandidate{mustCandidate(t, "17:1", "Example.2026.mkv", 20)}}}}, publisher: &fakePublisher{err: errors.New("private persistence path")}, want: acquisitionservice.ErrAmbiguousMutation},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

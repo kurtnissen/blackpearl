@@ -30,36 +30,42 @@ func (p Plex) Enabled() bool {
 
 // Config contains all process configuration.
 type Config struct {
-	DataDir                  string             `env:"BLACKPEARL_DATA_DIR" envDefault:"/var/lib/blackpearl"`
-	DBPath                   string             `env:"BLACKPEARL_DB_PATH" envDefault:"/var/lib/blackpearl/blackpearl.db"`
-	CacheDir                 string             `env:"BLACKPEARL_CACHE_DIR" envDefault:"/var/lib/blackpearl/cache"`
-	MountPath                string             `env:"BLACKPEARL_MOUNT_PATH" envDefault:"/mnt/blackpearl"`
-	POCSource                string             `env:"BLACKPEARL_POC_SOURCE"`
-	HTTPAddr                 string             `env:"BLACKPEARL_HTTP_ADDR" envDefault:":8080"`
-	LogLevel                 string             `env:"BLACKPEARL_LOG_LEVEL" envDefault:"info"`
-	StorageMode              domain.StorageMode `env:"BLACKPEARL_STORAGE_MODE" envDefault:"persistent"`
-	CacheMaxBytes            int64              `env:"BLACKPEARL_CACHE_MAX_BYTES" envDefault:"0"`
-	CacheChunkBytes          int64              `env:"BLACKPEARL_CACHE_CHUNK_BYTES" envDefault:"262144"`
-	CacheReadAheadChunks     int                `env:"BLACKPEARL_CACHE_READ_AHEAD_CHUNKS" envDefault:"0"`
-	CacheNextEpisodeChunks   int                `env:"BLACKPEARL_CACHE_NEXT_EPISODE_CHUNKS" envDefault:"0"`
-	RangeProvider            string             `env:"BLACKPEARL_RANGE_PROVIDER" envDefault:"http-range"`
-	RangeOriginURL           string             `env:"BLACKPEARL_RANGE_ORIGIN_URL"`
-	RangeObjectID            string             `env:"BLACKPEARL_RANGE_OBJECT_ID"`
-	RangeTimeout             time.Duration      `env:"BLACKPEARL_RANGE_TIMEOUT" envDefault:"30s"`
-	TorBoxAPIURL             string             `env:"BLACKPEARL_TORBOX_API_URL" envDefault:"https://api.torbox.app/v1/api/"`
-	TorBoxAPIToken           string             `env:"BLACKPEARL_TORBOX_API_TOKEN"`
-	TorBoxAPITokenFile       string             `env:"BLACKPEARL_TORBOX_API_TOKEN_FILE"`
-	SetupEnabled             bool               `env:"BLACKPEARL_SETUP_ENABLED" envDefault:"false"`
-	SetupDir                 string             `env:"BLACKPEARL_SETUP_DIR" envDefault:"/var/lib/blackpearl/setup"`
-	SetupBootstrapToken      string             `env:"BLACKPEARL_SETUP_BOOTSTRAP_TOKEN"`
-	WatchlistEnabled         bool               `env:"BLACKPEARL_WATCHLIST_ENABLED" envDefault:"false"`
-	WatchlistBaseURL         string             `env:"BLACKPEARL_WATCHLIST_BASE_URL" envDefault:"https://discover.provider.plex.tv"`
-	WatchlistPollInterval    time.Duration      `env:"BLACKPEARL_WATCHLIST_POLL_INTERVAL" envDefault:"15m"`
-	WatchlistPreferencesPath string             `env:"BLACKPEARL_WATCHLIST_PREFERENCES_PATH"`
-	WatchlistTokenFile       string             `env:"BLACKPEARL_WATCHLIST_TOKEN_FILE"`
-	FilesystemMode           string             `env:"BLACKPEARL_FILESYSTEM_MODE" envDefault:"fuse"`
-	NFSAddr                  string             `env:"BLACKPEARL_NFS_ADDR" envDefault:":2049"`
-	Plex                     Plex
+	DataDir                     string             `env:"BLACKPEARL_DATA_DIR" envDefault:"/var/lib/blackpearl"`
+	DBPath                      string             `env:"BLACKPEARL_DB_PATH" envDefault:"/var/lib/blackpearl/blackpearl.db"`
+	CacheDir                    string             `env:"BLACKPEARL_CACHE_DIR" envDefault:"/var/lib/blackpearl/cache"`
+	MountPath                   string             `env:"BLACKPEARL_MOUNT_PATH" envDefault:"/mnt/blackpearl"`
+	POCSource                   string             `env:"BLACKPEARL_POC_SOURCE"`
+	HTTPAddr                    string             `env:"BLACKPEARL_HTTP_ADDR" envDefault:":8080"`
+	LogLevel                    string             `env:"BLACKPEARL_LOG_LEVEL" envDefault:"info"`
+	StorageMode                 domain.StorageMode `env:"BLACKPEARL_STORAGE_MODE" envDefault:"persistent"`
+	CacheMaxBytes               int64              `env:"BLACKPEARL_CACHE_MAX_BYTES" envDefault:"0"`
+	CacheChunkBytes             int64              `env:"BLACKPEARL_CACHE_CHUNK_BYTES" envDefault:"262144"`
+	CacheReadAheadChunks        int                `env:"BLACKPEARL_CACHE_READ_AHEAD_CHUNKS" envDefault:"0"`
+	CacheNextEpisodeChunks      int                `env:"BLACKPEARL_CACHE_NEXT_EPISODE_CHUNKS" envDefault:"0"`
+	RangeProvider               string             `env:"BLACKPEARL_RANGE_PROVIDER" envDefault:"http-range"`
+	RangeOriginURL              string             `env:"BLACKPEARL_RANGE_ORIGIN_URL"`
+	RangeObjectID               string             `env:"BLACKPEARL_RANGE_OBJECT_ID"`
+	RangeTimeout                time.Duration      `env:"BLACKPEARL_RANGE_TIMEOUT" envDefault:"30s"`
+	TorBoxAPIURL                string             `env:"BLACKPEARL_TORBOX_API_URL" envDefault:"https://api.torbox.app/v1/api/"`
+	TorBoxAPIToken              string             `env:"BLACKPEARL_TORBOX_API_TOKEN"`
+	TorBoxAPITokenFile          string             `env:"BLACKPEARL_TORBOX_API_TOKEN_FILE"`
+	SetupEnabled                bool               `env:"BLACKPEARL_SETUP_ENABLED" envDefault:"false"`
+	SetupDir                    string             `env:"BLACKPEARL_SETUP_DIR" envDefault:"/var/lib/blackpearl/setup"`
+	SetupBootstrapToken         string             `env:"BLACKPEARL_SETUP_BOOTSTRAP_TOKEN"`
+	WatchlistEnabled            bool               `env:"BLACKPEARL_WATCHLIST_ENABLED" envDefault:"false"`
+	WatchlistBaseURL            string             `env:"BLACKPEARL_WATCHLIST_BASE_URL" envDefault:"https://discover.provider.plex.tv"`
+	WatchlistPollInterval       time.Duration      `env:"BLACKPEARL_WATCHLIST_POLL_INTERVAL" envDefault:"15m"`
+	WatchlistPreferencesPath    string             `env:"BLACKPEARL_WATCHLIST_PREFERENCES_PATH"`
+	WatchlistTokenFile          string             `env:"BLACKPEARL_WATCHLIST_TOKEN_FILE"`
+	WatchlistAcquisitionEnabled bool               `env:"BLACKPEARL_WATCHLIST_ACQUISITION_ENABLED" envDefault:"false"`
+	WatchlistLeaseDuration      time.Duration      `env:"BLACKPEARL_WATCHLIST_LEASE_DURATION" envDefault:"10m"`
+	WatchlistAcquisitionTimeout time.Duration      `env:"BLACKPEARL_WATCHLIST_ACQUISITION_TIMEOUT" envDefault:"5m"`
+	WatchlistWorkerIdleInterval time.Duration      `env:"BLACKPEARL_WATCHLIST_WORKER_IDLE_INTERVAL" envDefault:"30s"`
+	WatchlistNotCachedCooldown  time.Duration      `env:"BLACKPEARL_WATCHLIST_NOT_CACHED_COOLDOWN" envDefault:"6h"`
+	WatchlistRetryCooldown      time.Duration      `env:"BLACKPEARL_WATCHLIST_RETRY_COOLDOWN" envDefault:"15m"`
+	FilesystemMode              string             `env:"BLACKPEARL_FILESYSTEM_MODE" envDefault:"fuse"`
+	NFSAddr                     string             `env:"BLACKPEARL_NFS_ADDR" envDefault:":2049"`
+	Plex                        Plex
 }
 
 // Load parses configuration from the current process environment.
@@ -134,6 +140,26 @@ func (c Config) validate() error {
 		}
 	} else if c.WatchlistPreferencesPath != "" || c.WatchlistTokenFile != "" {
 		return errors.New("BLACKPEARL_WATCHLIST_PREFERENCES_PATH and BLACKPEARL_WATCHLIST_TOKEN_FILE require BLACKPEARL_WATCHLIST_ENABLED=true")
+	}
+	if c.WatchlistAcquisitionEnabled {
+		if !c.WatchlistEnabled {
+			return errors.New("BLACKPEARL_WATCHLIST_ACQUISITION_ENABLED requires BLACKPEARL_WATCHLIST_ENABLED=true")
+		}
+		if c.WatchlistAcquisitionTimeout < 10*time.Second || c.WatchlistAcquisitionTimeout > 30*time.Minute {
+			return errors.New("BLACKPEARL_WATCHLIST_ACQUISITION_TIMEOUT must be between 10s and 30m")
+		}
+		if c.WatchlistLeaseDuration < c.WatchlistAcquisitionTimeout+time.Minute || c.WatchlistLeaseDuration > time.Hour {
+			return errors.New("BLACKPEARL_WATCHLIST_LEASE_DURATION must exceed the acquisition timeout by at least 1m and not exceed 1h")
+		}
+		if c.WatchlistWorkerIdleInterval < time.Second || c.WatchlistWorkerIdleInterval > 10*time.Minute {
+			return errors.New("BLACKPEARL_WATCHLIST_WORKER_IDLE_INTERVAL must be between 1s and 10m")
+		}
+		if c.WatchlistNotCachedCooldown < time.Minute || c.WatchlistNotCachedCooldown > 7*24*time.Hour {
+			return errors.New("BLACKPEARL_WATCHLIST_NOT_CACHED_COOLDOWN must be between 1m and 168h")
+		}
+		if c.WatchlistRetryCooldown < time.Minute || c.WatchlistRetryCooldown > 24*time.Hour {
+			return errors.New("BLACKPEARL_WATCHLIST_RETRY_COOLDOWN must be between 1m and 24h")
+		}
 	}
 	switch c.StorageMode {
 	case domain.StorageModePersistent:

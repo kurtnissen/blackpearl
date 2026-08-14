@@ -22,7 +22,9 @@ import (
 	"github.com/blackpearl-media/blackpearl/internal/config"
 	"github.com/blackpearl-media/blackpearl/internal/domain"
 	"github.com/blackpearl-media/blackpearl/internal/pearlfs"
+	acquisitionrepo "github.com/blackpearl-media/blackpearl/internal/repository/acquisition"
 	setuprepo "github.com/blackpearl-media/blackpearl/internal/repository/setup"
+	watchlistrepo "github.com/blackpearl-media/blackpearl/internal/repository/watchlist"
 	setupservice "github.com/blackpearl-media/blackpearl/internal/service/setup"
 	"github.com/blackpearl-media/blackpearl/internal/state"
 	"github.com/stretchr/testify/require"
@@ -470,6 +472,129 @@ func TestRunBrowserSetupObservesPlexWatchlistWithoutAcquiring(t *testing.T) {
 	require.Equal(t, 1, watchlistStatus.Queue.PendingMovies)
 	require.Equal(t, 1, watchlistStatus.Queue.ObservedShows)
 	require.Zero(t, watchlistStatus.Queue.Acquiring)
+
+	cancel()
+	require.NoError(t, <-result)
+}
+
+func TestRunBrowserSetupSeriallyAcquiresCachedWatchlistMovie(t *testing.T) {
+	root := t.TempDir()
+	credentialPath := filepath.Join(root, "plex-token")
+	require.NoError(t, os.WriteFile(credentialPath, []byte("private-plex-token"), 0o600))
+	var createCalls atomic.Int32
+	var provider *httptest.Server
+	provider = httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/library/sections/watchlist/all":
+			require.Equal(t, "private-plex-token", request.Header.Get("X-Plex-Token"))
+			_, err := writer.Write([]byte(`{"MediaContainer":{"size":1,"totalSize":1,"Metadata":[{"guid":"plex://movie/auto","type":"movie","title":"Automatic Movie","year":2026}]}}`))
+			require.NoError(t, err)
+		case "/prowlarr/api/v1/search":
+			require.Equal(t, "private-prowlarr-key", request.Header.Get("X-Api-Key"))
+			require.Equal(t, "Automatic Movie 2026", request.URL.Query().Get("query"))
+			_, err := writer.Write([]byte(`[{"id":1,"guid":"release","size":16,"indexerId":1,"indexer":"Authorized","title":"Automatic.Movie.2026.1080p","protocol":"torrent","infoHash":"0123456789abcdef0123456789abcdef01234567","seeders":20}]`))
+			require.NoError(t, err)
+		case "/v1/api/torrents/checkcached":
+			_, err := writer.Write([]byte(`{"success":true,"detail":"ok","data":{"0123456789abcdef0123456789abcdef01234567":{"name":"cached","size":16,"hash":"0123456789abcdef0123456789abcdef01234567"}}}`))
+			require.NoError(t, err)
+		case "/v1/api/torrents/createtorrent":
+			createCalls.Add(1)
+			_, err := writer.Write([]byte(`{"success":true,"detail":"added","data":{"hash":"0123456789abcdef0123456789abcdef01234567","torrent_id":18,"auth_id":"redacted"}}`))
+			require.NoError(t, err)
+		case "/v1/api/torrents/mylist":
+			torrentID := request.URL.Query().Get("id")
+			fileID := "3"
+			name := "Existing.Movie.2025.mkv"
+			if torrentID == "18" {
+				fileID = "2"
+				name = "Automatic.Movie.2026.mkv"
+			}
+			_, err := fmt.Fprintf(writer, `{"success":true,"detail":"ok","data":{"id":%s,"download_finished":true,"download_present":true,"files":[{"id":%s,"name":%q,"size":16,"hash":"file-hash","zipped":false,"infected":false}]}}`, torrentID, fileID, name)
+			require.NoError(t, err)
+		case "/v1/api/torrents/requestdl":
+			_, err := writer.Write([]byte(fmt.Sprintf(`{"success":true,"detail":"ok","data":%q}`, provider.URL+"/cdn/file")))
+			require.NoError(t, err)
+		case "/cdn/file":
+			writer.Header().Set("Content-Range", "bytes 0-0/16")
+			writer.Header().Set("Content-Length", "1")
+			writer.WriteHeader(http.StatusPartialContent)
+			_, err := writer.Write([]byte("0"))
+			require.NoError(t, err)
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	t.Cleanup(provider.Close)
+
+	cfg := testConfig(root, "")
+	cfg.StorageMode = domain.StorageModeRolling
+	cfg.CacheMaxBytes = 1024
+	cfg.CacheChunkBytes = 256
+	cfg.RangeProvider = "torbox-torrent"
+	cfg.FilesystemMode = "nfs"
+	cfg.SetupEnabled = true
+	cfg.SetupDir = filepath.Join(root, "data", "setup")
+	cfg.SetupBootstrapToken = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	cfg.TorBoxAPIURL = provider.URL + "/v1/api/"
+	cfg.RangeTimeout = time.Second
+	cfg.WatchlistEnabled = true
+	cfg.WatchlistBaseURL = provider.URL
+	cfg.WatchlistPollInterval = time.Hour
+	cfg.WatchlistTokenFile = credentialPath
+	cfg.WatchlistAcquisitionEnabled = true
+	cfg.WatchlistLeaseDuration = time.Minute
+	cfg.WatchlistAcquisitionTimeout = 30 * time.Second
+	cfg.WatchlistWorkerIdleInterval = 5 * time.Millisecond
+	cfg.WatchlistNotCachedCooldown = time.Hour
+	cfg.WatchlistRetryCooldown = time.Minute
+	setupRepository, err := setuprepo.New(cfg.SetupDir)
+	require.NoError(t, err)
+	existingCandidate, err := domain.NewMediaCandidate("17:3", "Existing.Movie.2025.mkv", 16)
+	require.NoError(t, err)
+	existing, err := domain.NewSetupConfiguration(existingCandidate, "Existing Movie", 2025)
+	require.NoError(t, err)
+	existingManifest, err := domain.NewSetupManifest([]domain.SetupConfiguration{existing})
+	require.NoError(t, err)
+	require.NoError(t, setupRepository.SaveManifest(context.Background(), "saved-torbox-token", existingManifest))
+	searchRepository, err := acquisitionrepo.New(filepath.Join(cfg.SetupDir, "acquisition"))
+	require.NoError(t, err)
+	searchSettings, err := acquisitiondomain.NewSearchProviderSettings("prowlarr", provider.URL+"/prowlarr/", "private-prowlarr-key")
+	require.NoError(t, err)
+	require.NoError(t, searchRepository.Save(context.Background(), searchSettings))
+
+	nfs := &fakeNFSServer{address: fakeAddress("127.0.0.1:2049")}
+	httpAddress := make(chan string, 1)
+	deps := defaultDependencies()
+	deps.httpClient = provider.Client()
+	deps.torBoxClient = provider.Client()
+	deps.serveNFS = func(context.Context, string, nfsCatalog) (nfsServer, error) { return nfs, nil }
+	deps.listen = func(network string, address string) (net.Listener, error) {
+		listener, listenErr := net.Listen(network, address)
+		if listenErr == nil {
+			httpAddress <- listener.Addr().String()
+		}
+		return listener, listenErr
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	result := make(chan error, 1)
+	go func() { result <- run(ctx, cfg, testLogger(), deps) }()
+	<-httpAddress
+	require.Eventually(t, func() bool {
+		_, manifest, loadErr := setupRepository.LoadManifest(context.Background())
+		return loadErr == nil && len(manifest.Items) == 2
+	}, 5*time.Second, 10*time.Millisecond)
+	queue, err := watchlistrepo.Open(context.Background(), cfg.DBPath)
+	require.NoError(t, err)
+	var queueStatus acquisitiondomain.WatchlistQueueStatus
+	require.Eventually(t, func() bool {
+		var statusErr error
+		queueStatus, statusErr = queue.Status(context.Background())
+		return statusErr == nil && queueStatus.Succeeded == 1
+	}, 5*time.Second, 10*time.Millisecond)
+	require.NoError(t, queue.Close())
+	require.Equal(t, 1, queueStatus.Succeeded)
+	require.Equal(t, int32(1), createCalls.Load())
 
 	cancel()
 	require.NoError(t, <-result)
