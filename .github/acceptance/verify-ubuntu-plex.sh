@@ -43,16 +43,25 @@ library_file="$(mktemp)"
 decision_file="$(mktemp)"
 range_file="$(mktemp)"
 fixture_range_file="$(mktemp)"
-trap 'rm -f "${sections_file}" "${library_file}" "${decision_file}" "${range_file}" "${fixture_range_file}"' EXIT
+create_response_file="$(mktemp)"
+trap 'rm -f "${sections_file}" "${library_file}" "${decision_file}" "${range_file}" "${fixture_range_file}" "${create_response_file}"' EXIT
 
-curl --fail --silent --show-error --request POST --get \
+create_status="$(curl --silent --show-error --request POST --get \
   --data-urlencode 'name=BlackPearl POC' \
   --data-urlencode 'type=movie' \
   --data-urlencode 'agent=tv.plex.agents.movie' \
   --data-urlencode 'scanner=Plex Movie' \
   --data-urlencode 'language=en-US' \
   --data-urlencode 'location=/blackpearl/Movies' \
-  "${plex_url}/library/sections" >/dev/null
+  --output "${create_response_file}" \
+  --write-out '%{http_code}' \
+  "${plex_url}/library/sections")"
+if [[ ! "${create_status}" =~ ^2[0-9][0-9]$ ]]; then
+  printf 'Plex library creation returned HTTP %s: ' "${create_status}" >&2
+  head -c 4096 "${create_response_file}" >&2
+  printf '\n' >&2
+  exit 1
+fi
 
 curl --fail --silent --show-error "${plex_url}/library/sections" >"${sections_file}"
 section_key="$(xmllint --xpath "string(//Directory[@title='BlackPearl POC']/@key)" "${sections_file}")"
@@ -77,7 +86,7 @@ if [[ ! "${rating_key}" =~ ^[0-9]+$ ]]; then
 fi
 
 metadata_file="$(mktemp)"
-trap 'rm -f "${sections_file}" "${library_file}" "${decision_file}" "${range_file}" "${fixture_range_file}" "${metadata_file}"' EXIT
+trap 'rm -f "${sections_file}" "${library_file}" "${decision_file}" "${range_file}" "${fixture_range_file}" "${create_response_file}" "${metadata_file}"' EXIT
 curl --fail --silent --show-error "${plex_url}/library/metadata/${rating_key}" >"${metadata_file}"
 part_key="$(xmllint --xpath 'string(//Part/@key)' "${metadata_file}")"
 logical_size="$(xmllint --xpath 'string(//Part/@size)' "${metadata_file}")"
@@ -133,4 +142,3 @@ fi
 
 printf 'Ubuntu Plex acceptance passed: section=%s ratingKey=%s size=%s decision=%s\n' \
   "${section_key}" "${rating_key}" "${logical_size}" "${decision}"
-

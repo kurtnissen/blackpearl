@@ -41,7 +41,8 @@ jobs:
           findmnt -no TARGET,PROPAGATION --target runtime/mount || true
           docker compose -f compose.yaml -f compose.poc.yaml -f .github/acceptance/compose.ubuntu-plex.yaml ps || true
           docker compose -f compose.yaml -f compose.poc.yaml -f .github/acceptance/compose.ubuntu-plex.yaml logs --no-color --tail=300 || true
+          docker compose -f compose.yaml -f compose.poc.yaml -f .github/acceptance/compose.ubuntu-plex.yaml exec -T plex sh -c \
+            'tail -n 300 "/config/Library/Application Support/Plex Media Server/Logs/Plex Media Server.log"' || true
       - name: Stop isolated stack and unmount PearlFS
         if: always()
         run: ./scripts/cleanup-poc.sh
-
