@@ -16,6 +16,7 @@ import (
 	"github.com/blackpearl-media/blackpearl/internal/core"
 	"github.com/blackpearl-media/blackpearl/internal/domain"
 	"github.com/blackpearl-media/blackpearl/internal/gateway/httporigin"
+	"github.com/blackpearl-media/blackpearl/internal/gateway/torbox"
 	"github.com/blackpearl-media/blackpearl/internal/httpserver"
 	"github.com/blackpearl-media/blackpearl/internal/pearlfs"
 	"github.com/blackpearl-media/blackpearl/internal/pearlnfs"
@@ -124,9 +125,27 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger, deps depen
 	case domain.StorageModeRolling:
 		rangeClient := *deps.httpClient
 		rangeClient.Timeout = cfg.RangeTimeout
-		gateway, gatewayErr := httporigin.New(cfg.RangeOriginURL, &rangeClient)
-		if gatewayErr != nil {
-			return fmt.Errorf("configure HTTP range gateway: %w", gatewayErr)
+		var gateway cache.RangeOpener
+		switch cfg.RangeProvider {
+		case "", "http-range":
+			httpGateway, gatewayErr := httporigin.New(cfg.RangeOriginURL, &rangeClient)
+			if gatewayErr != nil {
+				return fmt.Errorf("configure HTTP range gateway: %w", gatewayErr)
+			}
+			gateway = httpGateway
+		case "torbox-torrent":
+			torboxGateway, gatewayErr := torbox.New(torbox.Options{
+				APIBaseURL:  cfg.TorBoxAPIURL,
+				APIToken:    cfg.TorBoxAPIToken,
+				MetadataTTL: time.Minute,
+				LinkTTL:     2 * time.Hour,
+			}, &rangeClient)
+			if gatewayErr != nil {
+				return fmt.Errorf("configure TorBox range gateway: %w", gatewayErr)
+			}
+			gateway = torboxGateway
+		default:
+			return fmt.Errorf("unsupported range provider: %q", cfg.RangeProvider)
 		}
 		rollingSource, rollingErr := cache.NewRolling(ctx, cache.RollingOptions{
 			Root:         cfg.CacheDir,
@@ -137,7 +156,11 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger, deps depen
 		if rollingErr != nil {
 			return fmt.Errorf("open rolling cache: %w", rollingErr)
 		}
-		backing, backingErr := domain.NewBackingRef("http-range", cfg.RangeObjectID)
+		providerName := cfg.RangeProvider
+		if providerName == "" {
+			providerName = "http-range"
+		}
+		backing, backingErr := domain.NewBackingRef(providerName, cfg.RangeObjectID)
 		if backingErr != nil {
 			return fmt.Errorf("construct rolling POC backing: %w", backingErr)
 		}

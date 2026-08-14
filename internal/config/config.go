@@ -39,9 +39,12 @@ type Config struct {
 	StorageMode     domain.StorageMode `env:"BLACKPEARL_STORAGE_MODE" envDefault:"persistent"`
 	CacheMaxBytes   int64              `env:"BLACKPEARL_CACHE_MAX_BYTES" envDefault:"0"`
 	CacheChunkBytes int64              `env:"BLACKPEARL_CACHE_CHUNK_BYTES" envDefault:"262144"`
+	RangeProvider   string             `env:"BLACKPEARL_RANGE_PROVIDER" envDefault:"http-range"`
 	RangeOriginURL  string             `env:"BLACKPEARL_RANGE_ORIGIN_URL"`
 	RangeObjectID   string             `env:"BLACKPEARL_RANGE_OBJECT_ID"`
 	RangeTimeout    time.Duration      `env:"BLACKPEARL_RANGE_TIMEOUT" envDefault:"30s"`
+	TorBoxAPIURL    string             `env:"BLACKPEARL_TORBOX_API_URL" envDefault:"https://api.torbox.app/v1/api/"`
+	TorBoxAPIToken  string             `env:"BLACKPEARL_TORBOX_API_TOKEN"`
 	FilesystemMode  string             `env:"BLACKPEARL_FILESYSTEM_MODE" envDefault:"fuse"`
 	NFSAddr         string             `env:"BLACKPEARL_NFS_ADDR" envDefault:":2049"`
 	Plex            Plex
@@ -110,9 +113,31 @@ func (c Config) validate() error {
 		if strings.TrimSpace(c.RangeObjectID) == "" || strings.ContainsRune(c.RangeObjectID, 0) {
 			return errors.New("BLACKPEARL_RANGE_OBJECT_ID is required and must not contain NUL in rolling mode")
 		}
-		origin, err := url.Parse(c.RangeOriginURL)
-		if err != nil || (origin.Scheme != "http" && origin.Scheme != "https") || origin.Host == "" {
-			return fmt.Errorf("BLACKPEARL_RANGE_ORIGIN_URL must be an absolute HTTP URL in rolling mode: %q", c.RangeOriginURL)
+		switch c.RangeProvider {
+		case "http-range":
+			if c.TorBoxAPIToken != "" {
+				return errors.New("BLACKPEARL_TORBOX_API_TOKEN requires BLACKPEARL_RANGE_PROVIDER=torbox-torrent")
+			}
+			origin, err := url.Parse(c.RangeOriginURL)
+			if err != nil || (origin.Scheme != "http" && origin.Scheme != "https") || origin.Host == "" {
+				return fmt.Errorf("BLACKPEARL_RANGE_ORIGIN_URL must be an absolute HTTP URL in HTTP rolling mode: %q", c.RangeOriginURL)
+			}
+		case "torbox-torrent":
+			if c.RangeOriginURL != "" {
+				return errors.New("BLACKPEARL_RANGE_ORIGIN_URL must be empty with BLACKPEARL_RANGE_PROVIDER=torbox-torrent")
+			}
+			if strings.TrimSpace(c.TorBoxAPIToken) == "" || strings.TrimSpace(c.TorBoxAPIToken) != c.TorBoxAPIToken {
+				return errors.New("BLACKPEARL_TORBOX_API_TOKEN is required without surrounding whitespace")
+			}
+			torboxURL, err := url.Parse(c.TorBoxAPIURL)
+			if err != nil || torboxURL.Scheme != "https" || torboxURL.Host == "" {
+				return errors.New("BLACKPEARL_TORBOX_API_URL must be an absolute HTTPS URL")
+			}
+			if !canonicalTorBoxObjectID(c.RangeObjectID) {
+				return errors.New("BLACKPEARL_RANGE_OBJECT_ID must use canonical positive <torrent-id>:<file-id> form for TorBox")
+			}
+		default:
+			return fmt.Errorf("BLACKPEARL_RANGE_PROVIDER must be http-range or torbox-torrent: %q", c.RangeProvider)
 		}
 	default:
 		return fmt.Errorf("BLACKPEARL_STORAGE_MODE must be persistent or rolling: %q", c.StorageMode)
@@ -153,4 +178,25 @@ func (c Config) validate() error {
 		}
 	}
 	return nil
+}
+
+func canonicalTorBoxObjectID(value string) bool {
+	parts := strings.Split(value, ":")
+	if len(parts) != 2 {
+		return false
+	}
+	for _, part := range parts {
+		if part == "" || part[0] == '0' {
+			return false
+		}
+		for _, character := range part {
+			if character < '0' || character > '9' {
+				return false
+			}
+		}
+		if _, err := strconv.ParseInt(part, 10, 64); err != nil {
+			return false
+		}
+	}
+	return true
 }

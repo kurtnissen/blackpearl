@@ -23,6 +23,8 @@ func TestParseUsesIsolatedContainerDefaults(t *testing.T) {
 	require.Equal(t, domain.StorageModePersistent, cfg.StorageMode)
 	require.Zero(t, cfg.CacheMaxBytes)
 	require.Equal(t, int64(262_144), cfg.CacheChunkBytes)
+	require.Equal(t, "http-range", cfg.RangeProvider)
+	require.Equal(t, "https://api.torbox.app/v1/api/", cfg.TorBoxAPIURL)
 	require.Equal(t, 30*time.Second, cfg.RangeTimeout)
 	require.False(t, cfg.Plex.Enabled())
 	require.Equal(t, "fuse", cfg.FilesystemMode)
@@ -93,6 +95,58 @@ func TestParseAcceptsCompleteRollingRangeConfiguration(t *testing.T) {
 	require.Equal(t, "http://range-origin/media/", cfg.RangeOriginURL)
 	require.Equal(t, "blackpearl-poc.mp4", cfg.RangeObjectID)
 	require.Equal(t, 30*time.Second, cfg.RangeTimeout)
+}
+
+func TestParseAcceptsCompleteRollingTorBoxConfiguration(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := config.Parse(map[string]string{
+		"BLACKPEARL_STORAGE_MODE":     "rolling",
+		"BLACKPEARL_CACHE_MAX_BYTES":  "42949672960",
+		"BLACKPEARL_RANGE_PROVIDER":   "torbox-torrent",
+		"BLACKPEARL_RANGE_OBJECT_ID":  "17:3",
+		"BLACKPEARL_TORBOX_API_URL":   "https://api.torbox.app/v1/api/",
+		"BLACKPEARL_TORBOX_API_TOKEN": "secret-token",
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, "torbox-torrent", cfg.RangeProvider)
+	require.Equal(t, "17:3", cfg.RangeObjectID)
+	require.Equal(t, "secret-token", cfg.TorBoxAPIToken)
+	require.Empty(t, cfg.RangeOriginURL)
+}
+
+func TestParseRejectsInvalidRollingTorBoxConfiguration(t *testing.T) {
+	t.Parallel()
+	valid := map[string]string{
+		"BLACKPEARL_STORAGE_MODE":     "rolling",
+		"BLACKPEARL_CACHE_MAX_BYTES":  "1048576",
+		"BLACKPEARL_RANGE_PROVIDER":   "torbox-torrent",
+		"BLACKPEARL_RANGE_OBJECT_ID":  "17:3",
+		"BLACKPEARL_TORBOX_API_URL":   "https://api.torbox.app/v1/api/",
+		"BLACKPEARL_TORBOX_API_TOKEN": "secret-token",
+	}
+	tests := []struct{ name, variable, value, message string }{
+		{name: "missing token", variable: "BLACKPEARL_TORBOX_API_TOKEN", value: "", message: "TORBOX_API_TOKEN"},
+		{name: "insecure API URL", variable: "BLACKPEARL_TORBOX_API_URL", value: "http://api.torbox.app/v1/api/", message: "TORBOX_API_URL"},
+		{name: "noncanonical object", variable: "BLACKPEARL_RANGE_OBJECT_ID", value: "017:3", message: "RANGE_OBJECT_ID"},
+		{name: "HTTP origin mixed in", variable: "BLACKPEARL_RANGE_ORIGIN_URL", value: "https://origin.invalid/", message: "RANGE_ORIGIN_URL"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			environment := make(map[string]string, len(valid)+1)
+			for key, value := range valid {
+				environment[key] = value
+			}
+			environment[test.variable] = test.value
+
+			_, err := config.Parse(environment)
+
+			require.ErrorContains(t, err, test.message)
+			require.NotContains(t, err.Error(), "secret-token")
+		})
+	}
 }
 
 func TestParseRejectsRollingModeWithoutPositiveQuota(t *testing.T) {

@@ -220,6 +220,62 @@ func TestRunRollingModeRegistersRemotePOCAndStartsNFS(t *testing.T) {
 	}))
 }
 
+func TestRunRollingTorBoxRegistersRemotePOCAndStartsNFS(t *testing.T) {
+	root := t.TempDir()
+	api := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		require.Equal(t, "Bearer secret-token", request.Header.Get("Authorization"))
+		switch request.URL.Path {
+		case "/v1/api/torrents/mylist":
+			_, err := writer.Write([]byte(`{"success":true,"detail":"ok","data":{"id":17,"download_finished":true,"download_present":true,"files":[{"id":3,"size":16,"hash":"fixture-hash","zipped":false,"infected":false}]}}`))
+			require.NoError(t, err)
+		case "/v1/api/torrents/requestdl":
+			_, err := writer.Write([]byte(`{"success":true,"detail":"ok","data":"https://cdn.example.invalid/file"}`))
+			require.NoError(t, err)
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	t.Cleanup(api.Close)
+	cfg := testConfig(root, "")
+	cfg.StorageMode = domain.StorageModeRolling
+	cfg.CacheMaxBytes = 8
+	cfg.CacheChunkBytes = 4
+	cfg.RangeProvider = "torbox-torrent"
+	cfg.RangeObjectID = "17:3"
+	cfg.RangeTimeout = time.Second
+	cfg.TorBoxAPIURL = api.URL + "/v1/api/"
+	cfg.TorBoxAPIToken = "secret-token"
+	cfg.FilesystemMode = "nfs"
+	started := make(chan struct{})
+	nfs := &fakeNFSServer{address: fakeAddress("127.0.0.1:2049")}
+	deps := defaultDependencies()
+	deps.httpClient = api.Client()
+	deps.serveNFS = func(_ context.Context, _ string, catalog nfsCatalog) (nfsServer, error) {
+		items, err := catalog.List(context.Background())
+		require.NoError(t, err)
+		require.Len(t, items, 1)
+		require.Equal(t, int64(16), items[0].Size)
+		require.Equal(t, domain.BackingRef{Provider: "torbox-torrent", ObjectID: "17:3"}, items[0].Backing)
+		close(started)
+		return nfs, nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	result := make(chan error, 1)
+	go func() { result <- run(ctx, cfg, testLogger(), deps) }()
+
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("TorBox rolling service did not start NFS")
+	}
+	cancel()
+
+	require.NoError(t, <-result)
+	require.True(t, nfs.closed)
+	require.True(t, nfs.waited)
+}
+
 func TestRunValidatesModeAndDependenciesBeforeCreatingPaths(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
