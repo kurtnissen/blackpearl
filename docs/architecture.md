@@ -31,6 +31,13 @@ results, deduplicates stable identities, and ranks complete intent matches
 before provider-specific acquisition. Release locators are neither catalog
 backing references nor persisted setup state.
 
+Prowlarr may place its own HTTP download proxy in the response field named
+`magnetUrl`. The adapter does not reinterpret that HTTP value as a magnet: it
+discards only that mislabeled locator, retains the separately validated
+download URL and info hash, and leaves every non-HTTP magnet value subject to
+the normal strict magnet validator. This preserves live Prowlarr compatibility
+without weakening release or SSRF boundaries.
+
 The cached TorBox acquisition service consumes only ranked torrent releases
 with stable hashes. It performs a read-only cache lookup, then creates exactly
 one account object with TorBox's cached-only guard enabled. A bounded inspection

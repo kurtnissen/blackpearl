@@ -143,14 +143,24 @@ export. `/readyz` reports `setup_required` until a selection is active.
 Live discovery, Plex scanning, Direct Play, seeking, restart recovery, and
 bounded next-episode prefetch are
 separate acceptance evidence. They were observed on macOS on 2026-08-14 with a
-mixed four-video authorized manifest: Plex indexed two movies and matched two
+mixed five-video authorized manifest: Plex indexed three movies and matched two
 episodes in a separate TV library, an H.264/AAC MP4 remained Direct Play through
 a non-sequential seek, the first episode played with its original video stream,
 and BlackPearl restored both library roots after restart. Opening only episode
 one populated exactly the configured 16 MiB prefix of episode two and did not
 store its tail or complete object.
 
+The first live acquisition-console acceptance used Prowlarr's public Internet
+Archive indexer and Blender's Creative Commons-licensed *Big Buck Bunny (2008)*.
+The exact Internet Archive torrent was first made available in the authorized
+TorBox account because BlackPearl intentionally refuses uncached downloads.
+BlackPearl then performed its normal read-only search, cached check, account
+object inspection, atomic five-item manifest publication, and automatic Plex
+refresh. Plex indexed the 104,040,028-byte H.264/AAC MP4, Direct Played it, and
+remained active through forward and backward seeks. This proves the live
+cached-acquisition path; it does not change the cached-only product policy.
+
 The Watchlist gateway, durable queue, observe-only process wiring, and
 serialized cached-only worker are covered by mocked full-process tests. Live
-observe-only counts and a live Watchlist-triggered provider mutation remain
-separate acceptance gates.
+observe-only counts pass; a live Watchlist-triggered provider mutation remains
+a separate acceptance gate.
