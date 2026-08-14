@@ -28,6 +28,7 @@ func TestParseUsesIsolatedContainerDefaults(t *testing.T) {
 	require.Equal(t, "http-range", cfg.RangeProvider)
 	require.Equal(t, "https://api.torbox.app/v1/api/", cfg.TorBoxAPIURL)
 	require.Equal(t, 30*time.Second, cfg.RangeTimeout)
+	require.Equal(t, 2*time.Minute, cfg.AcquisitionOperationTimeout)
 	require.False(t, cfg.Plex.Enabled())
 	require.Equal(t, "fuse", cfg.FilesystemMode)
 	require.Equal(t, ":2049", cfg.NFSAddr)
@@ -44,6 +45,28 @@ func TestParseUsesIsolatedContainerDefaults(t *testing.T) {
 	require.Equal(t, 15*time.Minute, cfg.WatchlistRetryCooldown)
 	require.False(t, cfg.PlexRefreshEnabled)
 	require.Empty(t, cfg.PlexRefreshURL)
+}
+
+func TestParseValidatesBrowserAcquisitionOperationTimeout(t *testing.T) {
+	t.Parallel()
+
+	environment := browserSetupEnvironment()
+	environment["BLACKPEARL_ACQUISITION_OPERATION_TIMEOUT"] = "3m"
+	cfg, err := config.Parse(environment)
+	require.NoError(t, err)
+	require.Equal(t, 3*time.Minute, cfg.AcquisitionOperationTimeout)
+
+	for _, value := range []string{"9s", "11m"} {
+		t.Run(value, func(t *testing.T) {
+			t.Parallel()
+			invalid := browserSetupEnvironment()
+			invalid["BLACKPEARL_ACQUISITION_OPERATION_TIMEOUT"] = value
+
+			_, parseErr := config.Parse(invalid)
+
+			require.ErrorContains(t, parseErr, "BLACKPEARL_ACQUISITION_OPERATION_TIMEOUT")
+		})
+	}
 }
 
 func TestParseAcceptsAutomaticPlexRefreshWithReadOnlyCredentialSource(t *testing.T) {

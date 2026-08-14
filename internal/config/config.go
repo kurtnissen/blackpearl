@@ -46,6 +46,7 @@ type Config struct {
 	RangeOriginURL              string             `env:"BLACKPEARL_RANGE_ORIGIN_URL"`
 	RangeObjectID               string             `env:"BLACKPEARL_RANGE_OBJECT_ID"`
 	RangeTimeout                time.Duration      `env:"BLACKPEARL_RANGE_TIMEOUT" envDefault:"30s"`
+	AcquisitionOperationTimeout time.Duration      `env:"BLACKPEARL_ACQUISITION_OPERATION_TIMEOUT" envDefault:"2m"`
 	TorBoxAPIURL                string             `env:"BLACKPEARL_TORBOX_API_URL" envDefault:"https://api.torbox.app/v1/api/"`
 	TorBoxAPIToken              string             `env:"BLACKPEARL_TORBOX_API_TOKEN"`
 	TorBoxAPITokenFile          string             `env:"BLACKPEARL_TORBOX_API_TOKEN_FILE"`
@@ -116,6 +117,9 @@ func (c Config) validate() error {
 		decoded, err := hex.DecodeString(c.SetupBootstrapToken)
 		if err != nil || len(decoded) != 32 || c.SetupBootstrapToken != strings.ToLower(c.SetupBootstrapToken) {
 			return errors.New("BLACKPEARL_SETUP_BOOTSTRAP_TOKEN must be exactly 64 lowercase hexadecimal characters")
+		}
+		if c.AcquisitionOperationTimeout < 10*time.Second || c.AcquisitionOperationTimeout > 10*time.Minute {
+			return errors.New("BLACKPEARL_ACQUISITION_OPERATION_TIMEOUT must be between 10s and 10m")
 		}
 	} else if c.SetupBootstrapToken != "" {
 		return errors.New("BLACKPEARL_SETUP_BOOTSTRAP_TOKEN requires BLACKPEARL_SETUP_ENABLED=true")

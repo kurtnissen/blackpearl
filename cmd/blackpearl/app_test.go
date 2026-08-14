@@ -134,18 +134,19 @@ func TestSetupPublisherNotifiesOnlyAfterSuccessfulAtomicPublication(t *testing.T
 
 func testConfig(root string, source string) config.Config {
 	return config.Config{
-		DataDir:         filepath.Join(root, "data"),
-		DBPath:          filepath.Join(root, "data", "blackpearl.db"),
-		CacheDir:        filepath.Join(root, "data", "cache"),
-		MountPath:       filepath.Join(root, "mount"),
-		POCSource:       source,
-		HTTPAddr:        "127.0.0.1:0",
-		LogLevel:        "debug",
-		StorageMode:     domain.StorageModePersistent,
-		CacheChunkBytes: 262_144,
-		RangeTimeout:    30 * time.Second,
-		FilesystemMode:  "fuse",
-		NFSAddr:         "127.0.0.1:0",
+		DataDir:                     filepath.Join(root, "data"),
+		DBPath:                      filepath.Join(root, "data", "blackpearl.db"),
+		CacheDir:                    filepath.Join(root, "data", "cache"),
+		MountPath:                   filepath.Join(root, "mount"),
+		POCSource:                   source,
+		HTTPAddr:                    "127.0.0.1:0",
+		LogLevel:                    "debug",
+		StorageMode:                 domain.StorageModePersistent,
+		CacheChunkBytes:             262_144,
+		RangeTimeout:                30 * time.Second,
+		AcquisitionOperationTimeout: 2 * time.Minute,
+		FilesystemMode:              "fuse",
+		NFSAddr:                     "127.0.0.1:0",
 	}
 }
 

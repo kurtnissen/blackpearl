@@ -465,7 +465,7 @@ func runBrowserSetup(ctx context.Context, cfg config.Config, logger *slog.Logger
 			return nil, errors.New("unsupported acquisition search provider")
 		}
 		client := *deps.httpClient
-		client.Timeout = cfg.RangeTimeout
+		client.Timeout = cfg.AcquisitionOperationTimeout
 		return prowlarr.New(prowlarr.Options{BaseURL: settings.Endpoint(), APIKey: settings.Credential()}, &client)
 	}
 	cachedGatewayFactory := func(token string) (acquisitionservice.CachedGateway, error) {
@@ -497,7 +497,7 @@ func runBrowserSetup(ctx context.Context, cfg config.Config, logger *slog.Logger
 			return acquisitionjobservice.Providers{}, fmt.Errorf("load background account settings: %w", loadErr)
 		}
 		client := *deps.httpClient
-		client.Timeout = cfg.RangeTimeout
+		client.Timeout = cfg.AcquisitionOperationTimeout
 		searchGateway, gatewayErr := prowlarr.New(prowlarr.Options{BaseURL: settings.Endpoint(), APIKey: settings.Credential()}, &client)
 		if gatewayErr != nil {
 			return acquisitionjobservice.Providers{}, fmt.Errorf("configure background search gateway: %w", gatewayErr)
@@ -510,7 +510,7 @@ func runBrowserSetup(ctx context.Context, cfg config.Config, logger *slog.Logger
 			Searcher: resolver.NewSearcher(searchGateway), Materializer: searchGateway, Preparer: preparationGateway,
 		}, nil
 	}
-	jobOperationTimeout := min(cfg.RangeTimeout, 30*time.Second)
+	jobOperationTimeout := cfg.AcquisitionOperationTimeout
 	acquisitionJobWorker, err := acquisitionjobservice.NewWorker(
 		acquisitionJobRepository, jobProviderFactory, service,
 		acquisitionjobservice.WorkerOptions{
