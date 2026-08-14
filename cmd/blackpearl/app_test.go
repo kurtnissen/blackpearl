@@ -20,6 +20,7 @@ import (
 
 	acquisitiondomain "github.com/blackpearl-media/blackpearl/internal/acquisition"
 	"github.com/blackpearl-media/blackpearl/internal/config"
+	"github.com/blackpearl-media/blackpearl/internal/core"
 	"github.com/blackpearl-media/blackpearl/internal/domain"
 	"github.com/blackpearl-media/blackpearl/internal/pearlfs"
 	acquisitionrepo "github.com/blackpearl-media/blackpearl/internal/repository/acquisition"
@@ -90,6 +91,45 @@ func TestRunCleansDatabaseWhenMountFails(t *testing.T) {
 	repository, reopenErr := state.Open(context.Background(), cfg.DBPath)
 	require.NoError(t, reopenErr)
 	require.NoError(t, repository.Close())
+}
+
+func TestSetupPublisherNotifiesOnlyAfterSuccessfulAtomicPublication(t *testing.T) {
+	t.Parallel()
+	t.Run("success", func(t *testing.T) {
+		t.Parallel()
+		notifier := &fakePublicationNotifier{}
+		switcher := core.NewCatalogSwitch()
+		publisher := &setupPublisher{
+			switcher: switcher,
+			nfs:      &fakeNFSServer{address: fakeAddress("127.0.0.1:2049")},
+			notifier: notifier,
+		}
+		next := &fakeReadyCatalog{}
+
+		err := publisher.Publish(context.Background(), next)
+
+		require.NoError(t, err)
+		require.Equal(t, int32(1), notifier.calls.Load())
+		require.NoError(t, switcher.Ready(context.Background()))
+	})
+	t.Run("NFS replacement failure", func(t *testing.T) {
+		t.Parallel()
+		notifier := &fakePublicationNotifier{}
+		switcher := core.NewCatalogSwitch()
+		publisher := &setupPublisher{
+			switcher: switcher,
+			nfs: &fakeNFSServer{
+				address: fakeAddress("127.0.0.1:2049"), replaceErr: errors.New("NFS unavailable"),
+			},
+			notifier: notifier,
+		}
+
+		err := publisher.Publish(context.Background(), &fakeReadyCatalog{})
+
+		require.ErrorContains(t, err, "NFS unavailable")
+		require.Zero(t, notifier.calls.Load())
+		require.ErrorIs(t, switcher.Ready(context.Background()), domain.ErrNotConfigured)
+	})
 }
 
 func testConfig(root string, source string) config.Config {
@@ -1137,6 +1177,22 @@ type fakeReadyCatalog struct {
 	called bool
 }
 
+func (f *fakeReadyCatalog) List(context.Context) ([]domain.Media, error) {
+	return []domain.Media{}, nil
+}
+
+func (f *fakeReadyCatalog) Open(context.Context, string) (domain.ReadHandle, error) {
+	return nil, domain.ErrNotFound
+}
+
+type fakePublicationNotifier struct {
+	calls atomic.Int32
+}
+
+func (f *fakePublicationNotifier) Notify() {
+	f.calls.Add(1)
+}
+
 type fakeSetupRestorer struct {
 	mu      sync.Mutex
 	results []error
@@ -1156,9 +1212,10 @@ func (f *fakeSetupRestorer) Restore(context.Context) error {
 }
 
 type fakeNFSServer struct {
-	address net.Addr
-	closed  bool
-	waited  bool
+	address    net.Addr
+	closed     bool
+	waited     bool
+	replaceErr error
 }
 
 func (f *fakeNFSServer) Addr() net.Addr {
@@ -1170,7 +1227,7 @@ func (f *fakeNFSServer) Reload(context.Context) error {
 }
 
 func (f *fakeNFSServer) Replace(context.Context, nfsCatalog) (nfsCatalog, error) {
-	return nil, nil
+	return nil, f.replaceErr
 }
 
 func (f *fakeNFSServer) Close() error {

@@ -42,6 +42,69 @@ func TestParseUsesIsolatedContainerDefaults(t *testing.T) {
 	require.Equal(t, 30*time.Second, cfg.WatchlistWorkerIdleInterval)
 	require.Equal(t, 6*time.Hour, cfg.WatchlistNotCachedCooldown)
 	require.Equal(t, 15*time.Minute, cfg.WatchlistRetryCooldown)
+	require.False(t, cfg.PlexRefreshEnabled)
+	require.Empty(t, cfg.PlexRefreshURL)
+}
+
+func TestParseAcceptsAutomaticPlexRefreshWithReadOnlyCredentialSource(t *testing.T) {
+	t.Parallel()
+	environment := browserSetupEnvironment()
+	environment["BLACKPEARL_WATCHLIST_ENABLED"] = "true"
+	environment["BLACKPEARL_WATCHLIST_PREFERENCES_PATH"] = "/plex/Preferences.xml"
+	environment["BLACKPEARL_PLEX_REFRESH_ENABLED"] = "true"
+	environment["BLACKPEARL_PLEX_REFRESH_URL"] = "http://host.docker.internal:32402"
+
+	cfg, err := config.Parse(environment)
+
+	require.NoError(t, err)
+	require.True(t, cfg.PlexRefreshEnabled)
+	require.Equal(t, "http://host.docker.internal:32402", cfg.PlexRefreshURL)
+}
+
+func TestParseRejectsUnsafeAutomaticPlexRefreshConfiguration(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		mutate func(map[string]string)
+	}{
+		{name: "missing URL", mutate: func(environment map[string]string) {
+			environment["BLACKPEARL_PLEX_REFRESH_ENABLED"] = "true"
+		}},
+		{name: "URL while disabled", mutate: func(environment map[string]string) {
+			environment["BLACKPEARL_PLEX_REFRESH_URL"] = "http://host.docker.internal:32402"
+		}},
+		{name: "requires watchlist credential source", mutate: func(environment map[string]string) {
+			environment["BLACKPEARL_PLEX_REFRESH_ENABLED"] = "true"
+			environment["BLACKPEARL_PLEX_REFRESH_URL"] = "http://host.docker.internal:32402"
+			delete(environment, "BLACKPEARL_WATCHLIST_ENABLED")
+			delete(environment, "BLACKPEARL_WATCHLIST_PREFERENCES_PATH")
+		}},
+		{name: "relative URL", mutate: func(environment map[string]string) {
+			environment["BLACKPEARL_PLEX_REFRESH_ENABLED"] = "true"
+			environment["BLACKPEARL_PLEX_REFRESH_URL"] = "plex:32400"
+		}},
+		{name: "credentialed URL", mutate: func(environment map[string]string) {
+			environment["BLACKPEARL_PLEX_REFRESH_ENABLED"] = "true"
+			environment["BLACKPEARL_PLEX_REFRESH_URL"] = "http://user:pass@plex:32400"
+		}},
+		{name: "query URL", mutate: func(environment map[string]string) {
+			environment["BLACKPEARL_PLEX_REFRESH_ENABLED"] = "true"
+			environment["BLACKPEARL_PLEX_REFRESH_URL"] = "http://plex:32400?token=private"
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			environment := browserSetupEnvironment()
+			environment["BLACKPEARL_WATCHLIST_ENABLED"] = "true"
+			environment["BLACKPEARL_WATCHLIST_PREFERENCES_PATH"] = "/plex/Preferences.xml"
+			test.mutate(environment)
+
+			_, err := config.Parse(environment)
+
+			require.ErrorContains(t, err, "PLEX_REFRESH")
+		})
+	}
 }
 
 func TestParseAcceptsSerializedPlexWatchlistAcquisition(t *testing.T) {

@@ -63,6 +63,8 @@ type Config struct {
 	WatchlistWorkerIdleInterval time.Duration      `env:"BLACKPEARL_WATCHLIST_WORKER_IDLE_INTERVAL" envDefault:"30s"`
 	WatchlistNotCachedCooldown  time.Duration      `env:"BLACKPEARL_WATCHLIST_NOT_CACHED_COOLDOWN" envDefault:"6h"`
 	WatchlistRetryCooldown      time.Duration      `env:"BLACKPEARL_WATCHLIST_RETRY_COOLDOWN" envDefault:"15m"`
+	PlexRefreshEnabled          bool               `env:"BLACKPEARL_PLEX_REFRESH_ENABLED" envDefault:"false"`
+	PlexRefreshURL              string             `env:"BLACKPEARL_PLEX_REFRESH_URL"`
 	FilesystemMode              string             `env:"BLACKPEARL_FILESYSTEM_MODE" envDefault:"fuse"`
 	NFSAddr                     string             `env:"BLACKPEARL_NFS_ADDR" envDefault:":2049"`
 	Plex                        Plex
@@ -160,6 +162,17 @@ func (c Config) validate() error {
 		if c.WatchlistRetryCooldown < time.Minute || c.WatchlistRetryCooldown > 24*time.Hour {
 			return errors.New("BLACKPEARL_WATCHLIST_RETRY_COOLDOWN must be between 1m and 24h")
 		}
+	}
+	if c.PlexRefreshEnabled {
+		if !c.WatchlistEnabled {
+			return errors.New("BLACKPEARL_PLEX_REFRESH_ENABLED requires BLACKPEARL_WATCHLIST_ENABLED for its read-only credential source")
+		}
+		plexURL, err := url.Parse(c.PlexRefreshURL)
+		if err != nil || (plexURL.Scheme != "http" && plexURL.Scheme != "https") || plexURL.Host == "" || plexURL.User != nil || plexURL.RawQuery != "" || plexURL.Fragment != "" {
+			return errors.New("BLACKPEARL_PLEX_REFRESH_URL must be an absolute HTTP(S) URL without credentials, query, or fragment")
+		}
+	} else if c.PlexRefreshURL != "" {
+		return errors.New("BLACKPEARL_PLEX_REFRESH_URL requires BLACKPEARL_PLEX_REFRESH_ENABLED=true")
 	}
 	switch c.StorageMode {
 	case domain.StorageModePersistent:

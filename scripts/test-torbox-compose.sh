@@ -30,6 +30,8 @@ assert environment["BLACKPEARL_SETUP_BOOTSTRAP_TOKEN"] == "0123456789abcdef01234
 assert environment["BLACKPEARL_WATCHLIST_ENABLED"] == "true"
 assert environment["BLACKPEARL_WATCHLIST_PREFERENCES_PATH"] == "/plex-config/Library/Application Support/Plex Media Server/Preferences.xml"
 assert environment["BLACKPEARL_WATCHLIST_ACQUISITION_ENABLED"] == "false"
+assert environment["BLACKPEARL_PLEX_REFRESH_ENABLED"] == "true"
+assert environment["BLACKPEARL_PLEX_REFRESH_URL"] == "http://host.docker.internal:32402"
 assert "BLACKPEARL_RANGE_OBJECT_ID" not in environment
 assert "BLACKPEARL_TORBOX_API_TOKEN_FILE" not in environment
 assert "BLACKPEARL_TORBOX_API_TOKEN" not in environment
@@ -40,6 +42,7 @@ assert all(volume.get("type") == "volume" for volume in blackpearl.get("volumes"
 assert not blackpearl.get("devices")
 assert not blackpearl.get("cap_add")
 assert set(blackpearl["networks"]) == {"blackpearl-control"}
+assert any(str(host).startswith("host.docker.internal") for host in blackpearl.get("extra_hosts", []))
 assert set(prowlarr["networks"]) == {"blackpearl-control"}
 assert set(plex["networks"]) == {"plex-runtime"}
 assert set(blackpearl["networks"]).isdisjoint(plex["networks"])

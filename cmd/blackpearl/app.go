@@ -32,6 +32,7 @@ import (
 	setuprepo "github.com/blackpearl-media/blackpearl/internal/repository/setup"
 	watchlistrepo "github.com/blackpearl-media/blackpearl/internal/repository/watchlist"
 	acquisitionservice "github.com/blackpearl-media/blackpearl/internal/service/acquisition"
+	plexrefreshservice "github.com/blackpearl-media/blackpearl/internal/service/plexrefresh"
 	setupservice "github.com/blackpearl-media/blackpearl/internal/service/setup"
 	watchlistservice "github.com/blackpearl-media/blackpearl/internal/service/watchlist"
 	"github.com/blackpearl-media/blackpearl/internal/state"
@@ -55,9 +56,14 @@ type nfsServer interface {
 	Wait() error
 }
 
+type publicationNotifier interface {
+	Notify()
+}
+
 type setupPublisher struct {
 	switcher *core.CatalogSwitch
 	nfs      nfsServer
+	notifier publicationNotifier
 }
 
 func (p *setupPublisher) Publish(ctx context.Context, next core.CatalogService) error {
@@ -65,6 +71,9 @@ func (p *setupPublisher) Publish(ctx context.Context, next core.CatalogService) 
 		return err
 	}
 	p.switcher.Activate(next)
+	if p.notifier != nil {
+		p.notifier.Notify()
+	}
 	return nil
 }
 
@@ -335,6 +344,17 @@ func runBrowserSetup(ctx context.Context, cfg config.Config, logger *slog.Logger
 	if err != nil {
 		return fmt.Errorf("open browser acquisition repository: %w", err)
 	}
+	var plexTokenSource plexwatchlist.TokenSource
+	if cfg.WatchlistEnabled {
+		if cfg.WatchlistPreferencesPath != "" {
+			plexTokenSource, err = plexwatchlist.NewPreferencesTokenSource(cfg.WatchlistPreferencesPath)
+		} else {
+			plexTokenSource, err = plexwatchlist.NewTokenFileSource(cfg.WatchlistTokenFile)
+		}
+		if err != nil {
+			return fmt.Errorf("configure Plex credential source: %w", err)
+		}
+	}
 	rollingPool, err := cache.NewRollingPool(ctx, cache.RollingOptions{
 		Root: cfg.CacheDir, MaxBytes: cfg.CacheMaxBytes,
 		ChunkBytes: cfg.CacheChunkBytes, ReadAheadChunks: cfg.CacheReadAheadChunks,
@@ -400,6 +420,29 @@ func runBrowserSetup(ctx context.Context, cfg config.Config, logger *slog.Logger
 		return catalog, nil
 	}
 	publisher := &setupPublisher{switcher: switcher, nfs: nfs}
+	var plexRefreshWorker *plexrefreshservice.Worker
+	if cfg.PlexRefreshEnabled {
+		client := *deps.httpClient
+		client.Timeout = min(cfg.RangeTimeout, 5*time.Second)
+		refresher, refreshErr := plex.NewLibraryRefresher(
+			cfg.PlexRefreshURL, plexTokenSource,
+			[]string{"/blackpearl/Movies", "/blackpearl/TV Shows"},
+			&client,
+		)
+		if refreshErr != nil {
+			return fmt.Errorf("configure Plex library refresher: %w", refreshErr)
+		}
+		plexRefreshWorker, err = plexrefreshservice.New(refresher, plexrefreshservice.Options{
+			Debounce: time.Second, RetryInterval: 5 * time.Second,
+			OnError: func(refreshErr error) {
+				logger.WarnContext(ctx, "Plex library refresh failed; retrying", "error", refreshErr)
+			},
+		})
+		if err != nil {
+			return fmt.Errorf("configure Plex library refresh worker: %w", err)
+		}
+		publisher.notifier = plexRefreshWorker
+	}
 	service := setupservice.New(setupRepository, gatewayFactory, runtimeFactory, publisher, cfg.SetupBootstrapToken)
 	searchFactory := func(settings acquisitiondomain.SearchProviderSettings) (acquisitionservice.ReadySearchProvider, error) {
 		if settings.Provider() != "prowlarr" {
@@ -423,16 +466,7 @@ func runBrowserSetup(ctx context.Context, cfg config.Config, logger *slog.Logger
 	var watchlistWorker *watchlistservice.Worker
 	var watchlistRepository *watchlistrepo.Repository
 	if cfg.WatchlistEnabled {
-		var tokenSource plexwatchlist.TokenSource
-		if cfg.WatchlistPreferencesPath != "" {
-			tokenSource, err = plexwatchlist.NewPreferencesTokenSource(cfg.WatchlistPreferencesPath)
-		} else {
-			tokenSource, err = plexwatchlist.NewTokenFileSource(cfg.WatchlistTokenFile)
-		}
-		if err != nil {
-			return fmt.Errorf("configure Plex watchlist credential: %w", err)
-		}
-		watchlistGateway, gatewayErr := plexwatchlist.New(plexwatchlist.Options{BaseURL: cfg.WatchlistBaseURL}, tokenSource, deps.httpClient)
+		watchlistGateway, gatewayErr := plexwatchlist.New(plexwatchlist.Options{BaseURL: cfg.WatchlistBaseURL}, plexTokenSource, deps.httpClient)
 		if gatewayErr != nil {
 			return fmt.Errorf("configure Plex watchlist gateway: %w", gatewayErr)
 		}
@@ -464,22 +498,34 @@ func runBrowserSetup(ctx context.Context, cfg config.Config, logger *slog.Logger
 		}
 	}
 	startSetupRestore(ctx, service, logger, 2*time.Second)
-	if watchlistObserver != nil {
-		watchlistContext, stopWatchlist := context.WithCancel(ctx)
-		var watchlistGroup errgroup.Group
-		watchlistGroup.Go(func() error {
-			watchlistObserver.Run(watchlistContext)
-			return nil
-		})
+	if watchlistObserver != nil || plexRefreshWorker != nil {
+		backgroundContext, stopBackground := context.WithCancel(ctx)
+		var backgroundGroup errgroup.Group
+		if plexRefreshWorker != nil {
+			backgroundGroup.Go(func() error {
+				plexRefreshWorker.Run(backgroundContext)
+				return nil
+			})
+		}
+		if watchlistObserver != nil {
+			backgroundGroup.Go(func() error {
+				watchlistObserver.Run(backgroundContext)
+				return nil
+			})
+		}
 		if watchlistWorker != nil {
-			watchlistGroup.Go(func() error {
-				watchlistWorker.Run(watchlistContext)
+			backgroundGroup.Go(func() error {
+				watchlistWorker.Run(backgroundContext)
 				return nil
 			})
 		}
 		defer func() {
-			stopWatchlist()
-			runErr = errors.Join(runErr, watchlistGroup.Wait(), watchlistRepository.Close())
+			stopBackground()
+			backgroundErr := backgroundGroup.Wait()
+			if watchlistRepository != nil {
+				backgroundErr = errors.Join(backgroundErr, watchlistRepository.Close())
+			}
+			runErr = errors.Join(runErr, backgroundErr)
 		}()
 	}
 	var apiHandler http.Handler
