@@ -62,13 +62,20 @@ func New(searcher Searcher, gateway CachedGateway, publisher Publisher, options 
 	if searcher == nil || gateway == nil || publisher == nil {
 		return nil, errors.New("cached acquisition dependencies are required")
 	}
-	if options.InspectionAttempts < 1 || options.InspectionAttempts > 100 {
-		return nil, errors.New("inspection attempts must be between 1 and 100")
-	}
-	if options.InspectionInterval <= 0 {
-		return nil, errors.New("inspection interval must be positive")
+	if err := validateOptions(options); err != nil {
+		return nil, err
 	}
 	return &Service{searcher: searcher, gateway: gateway, publisher: publisher, options: options}, nil
+}
+
+func validateOptions(options Options) error {
+	if options.InspectionAttempts < 1 || options.InspectionAttempts > 100 {
+		return errors.New("inspection attempts must be between 1 and 100")
+	}
+	if options.InspectionInterval <= 0 {
+		return errors.New("inspection interval must be positive")
+	}
+	return nil
 }
 
 // Acquire searches, creates exactly one cached account object, waits for
