@@ -1,0 +1,47 @@
+name: Disposable Ubuntu Plex acceptance
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  ubuntu-plex:
+    if: github.head_ref == 'acceptance/ubuntu-fuse-plex'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      COMPOSE_PROJECT_NAME: blackpearl-ubuntu-acceptance
+      PLEX_ADVERTISE_IP: http://localhost:32400/
+      TZ: Etc/UTC
+    steps:
+      - uses: actions/checkout@v6
+      - name: Prepare kernel FUSE propagation
+        run: |
+          sudo modprobe fuse || true
+          if [[ ! -c /dev/fuse ]]; then
+            sudo mknod -m 666 /dev/fuse c 10 229
+          fi
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libxml2-utils
+          ./scripts/prepare-ubuntu-poc.sh
+      - name: Start isolated BlackPearl and Plex
+        run: >-
+          docker compose
+          -f compose.yaml
+          -f compose.poc.yaml
+          -f .github/acceptance/compose.ubuntu-plex.yaml
+          up --build --detach
+      - name: Verify FUSE, Plex scan, ranges, and Direct Play decision
+        run: ./.github/acceptance/verify-ubuntu-plex.sh
+      - name: Capture diagnostics
+        if: always()
+        run: |
+          findmnt -no TARGET,PROPAGATION --target runtime/mount || true
+          docker compose -f compose.yaml -f compose.poc.yaml -f .github/acceptance/compose.ubuntu-plex.yaml ps || true
+          docker compose -f compose.yaml -f compose.poc.yaml -f .github/acceptance/compose.ubuntu-plex.yaml logs --no-color --tail=300 || true
+      - name: Stop isolated stack and unmount PearlFS
+        if: always()
+        run: ./scripts/cleanup-poc.sh
+

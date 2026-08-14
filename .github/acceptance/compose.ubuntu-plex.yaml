@@ -1,0 +1,5 @@
+services:
+  plex:
+    environment:
+      ALLOWED_NETWORKS: 0.0.0.0/0
+
