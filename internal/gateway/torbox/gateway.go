@@ -195,7 +195,7 @@ func (g *Gateway) loadMetadata(ctx context.Context, identifier objectID) (fileMe
 		return fileMetadata{}, fmt.Errorf("request TorBox metadata: %w", err)
 	}
 	if !envelope.Success {
-		return fileMetadata{}, fmt.Errorf("TorBox metadata rejected: %s", sanitizeDetail(envelope.Detail))
+		return fileMetadata{}, fmt.Errorf("TorBox metadata rejected: %s", g.sanitizeDetail(envelope.Detail))
 	}
 	var torrent torrentRecord
 	if err := json.Unmarshal(envelope.Data, &torrent); err != nil {
@@ -302,7 +302,7 @@ func (g *Gateway) requestDownloadURL(ctx context.Context, identifier objectID) (
 		return nil, fmt.Errorf("request TorBox download link: %w", err)
 	}
 	if !envelope.Success {
-		return nil, fmt.Errorf("TorBox download link rejected: %s", sanitizeDetail(envelope.Detail))
+		return nil, fmt.Errorf("TorBox download link rejected: %s", g.sanitizeDetail(envelope.Detail))
 	}
 	parsed, err := url.Parse(envelope.Data)
 	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.Fragment != "" {
@@ -331,7 +331,7 @@ func (g *Gateway) doJSON(request *http.Request, destination any) (resultErr erro
 	return nil
 }
 
-func sanitizeDetail(value string) string {
+func (g *Gateway) sanitizeDetail(value string) string {
 	var builder strings.Builder
 	for _, character := range value {
 		if unicode.IsControl(character) {
@@ -342,7 +342,7 @@ func sanitizeDetail(value string) string {
 			break
 		}
 	}
-	result := strings.ReplaceAll(builder.String(), "test-token", "[redacted]")
+	result := strings.ReplaceAll(builder.String(), g.token, "[redacted]")
 	if strings.TrimSpace(result) == "" {
 		return "request failed"
 	}

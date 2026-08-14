@@ -159,6 +159,47 @@ func TestSourceReadAtRefreshesExpiredLinkOnce(t *testing.T) {
 	require.Equal(t, int64(2), linkCalls.Load())
 }
 
+func TestSourceReadAtRejectsRefreshedLinkWithWrongSize(t *testing.T) {
+	t.Parallel()
+	content := []byte("0123456789abcdef")
+	expired := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method == http.MethodHead {
+			writer.Header().Set("Content-Length", "16")
+			writer.Header().Set("Accept-Ranges", "bytes")
+			writer.WriteHeader(http.StatusOK)
+			return
+		}
+		http.Error(writer, "expired", http.StatusGone)
+	}))
+	t.Cleanup(expired.Close)
+	wrong := newTestCDN(t, []byte("short"), nil)
+	var linkCalls atomic.Int64
+	api := newTestAPI(t, func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/v1/api/torrents/mylist":
+			writeTorrentMetadata(writer, 17, 3, int64(len(content)))
+		case "/v1/api/torrents/requestdl":
+			value := expired.URL
+			if linkCalls.Add(1) > 1 {
+				value = wrong.URL
+			}
+			writeEnvelope(writer, true, "ok", fmt.Sprintf("%q", value))
+		default:
+			http.NotFound(writer, request)
+		}
+	})
+	client := wrong.Client()
+	client.Transport = expired.Client().Transport
+	gateway := newTestGateway(t, api.URL+"/v1/api/", client)
+	opened, err := gateway.Open(context.Background(), domainBacking("17:3"))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, opened.Close()) })
+
+	_, err = opened.ReadAt(context.Background(), make([]byte, 4), 0)
+
+	require.ErrorContains(t, err, "size mismatch")
+}
+
 func TestSourceReadAtHonorsContextAndClose(t *testing.T) {
 	t.Parallel()
 	cdn := newTestCDN(t, []byte("0123456789abcdef"), nil)

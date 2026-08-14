@@ -119,6 +119,28 @@ func TestGatewayOpenRejectsCDNSizeMismatchWithoutLeakingURL(t *testing.T) {
 	require.NotContains(t, err.Error(), cdn.URL)
 }
 
+func TestGatewayErrorsNeverExposeConfiguredToken(t *testing.T) {
+	t.Parallel()
+	secret := "real-secret-value"
+	api := newTestAPI(t, func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		_, err := fmt.Fprintf(writer, `{"success":false,"detail":%q,"data":null}`, "denied "+secret)
+		require.NoError(t, err)
+	})
+	gateway, err := New(Options{
+		APIBaseURL:  api.URL + "/v1/api/",
+		APIToken:    secret,
+		MetadataTTL: time.Minute,
+		LinkTTL:     2 * time.Hour,
+	}, api.Client())
+	require.NoError(t, err)
+
+	_, err = gateway.Open(context.Background(), domainBacking("17:3"))
+
+	require.ErrorContains(t, err, "denied")
+	require.NotContains(t, err.Error(), secret)
+}
+
 func TestGatewayOpenCachesMetadataAndLinkWithinTTL(t *testing.T) {
 	t.Parallel()
 	cdn := newTestCDN(t, []byte("0123456789abcdef"), nil)

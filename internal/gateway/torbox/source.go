@@ -56,6 +56,9 @@ func (s *source) ReadAt(ctx context.Context, destination []byte, offset int64) (
 		if refreshErr != nil {
 			return 0, fmt.Errorf("refresh TorBox download link: %w", refreshErr)
 		}
+		if validateErr := s.gateway.validateDownload(ctx, refreshed, s.metadata.size); validateErr != nil {
+			return 0, fmt.Errorf("validate refreshed TorBox download link: %w", validateErr)
+		}
 		s.download.Store(refreshed)
 		count, _, err = s.readRange(ctx, refreshed, destination[:wanted], offset, wanted)
 	}
