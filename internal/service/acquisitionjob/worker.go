@@ -42,6 +42,7 @@ type Preparer interface {
 	FindTorrentByHash(ctx context.Context, infoHash string) (acquisition.CreatedObject, error)
 	CreateTorrent(ctx context.Context, input acquisition.TorrentInput, allowDownload bool) (acquisition.CreatedObject, error)
 	InspectCreatedTorrent(ctx context.Context, created acquisition.CreatedObject) ([]domain.MediaCandidate, error)
+	DeleteCreatedTorrent(ctx context.Context, created acquisition.CreatedObject) error
 }
 
 // Publisher atomically exposes one completed media item to Plex's filesystem.
@@ -222,7 +223,7 @@ func (w *Worker) prepare(ctx context.Context, operationContext context.Context, 
 	created, err := providers.Preparer.FindTorrentByHash(operationContext, selection.InfoHash())
 	switch {
 	case err == nil:
-		return w.attach(ctx, claim, created)
+		return w.attach(ctx, claim, created, false)
 	case errors.Is(err, acquisition.ErrAmbiguousProviderObjects):
 		return w.fail(ctx, claim, acquisition.JobErrorAmbiguousMutation, true)
 	case errors.Is(err, domain.ErrUnauthorized):
@@ -242,6 +243,9 @@ func (w *Worker) prepare(ctx context.Context, operationContext context.Context, 
 		}
 	}
 	if ephemeral.InfoHash() == "" {
+		if _, planned := claim.Job().SelectedCandidateOrdinal(); planned {
+			return w.abandonCandidate(ctx, operationContext, claim, providers.Preparer, acquisition.CandidateOutcomeMissing, acquisition.JobErrorMaterialization, true)
+		}
 		return w.fail(ctx, claim, acquisition.JobErrorMaterialization, false)
 	}
 	material, err := providers.Materializer.Materialize(operationContext, ephemeral)
@@ -250,7 +254,7 @@ func (w *Worker) prepare(ctx context.Context, operationContext context.Context, 
 	}
 	created, createErr := providers.Preparer.CreateTorrent(operationContext, material, true)
 	if createErr == nil {
-		return w.attach(ctx, claim, created)
+		return w.attach(ctx, claim, created, true)
 	}
 	if errors.Is(createErr, domain.ErrUnauthorized) {
 		return w.deferProviderFailure(ctx, claim, createErr)
@@ -259,7 +263,7 @@ func (w *Worker) prepare(ctx context.Context, operationContext context.Context, 
 	defer cancel()
 	reconciled, reconcileErr := providers.Preparer.FindTorrentByHash(reconcileContext, selection.InfoHash())
 	if reconcileErr == nil {
-		return w.attach(ctx, claim, reconciled)
+		return w.attach(ctx, claim, reconciled, true)
 	}
 	return w.fail(ctx, claim, acquisition.JobErrorAmbiguousMutation, true)
 }
@@ -267,12 +271,21 @@ func (w *Worker) prepare(ctx context.Context, operationContext context.Context, 
 func (w *Worker) publish(ctx context.Context, operationContext context.Context, claim acquisition.AcquisitionJobClaim, providers Providers) (acquisition.JobState, error) {
 	candidates, err := providers.Preparer.InspectCreatedTorrent(operationContext, claim.Job().CreatedObject())
 	if errors.Is(err, acquisition.ErrStalled) {
+		if _, planned := claim.Job().SelectedCandidateOrdinal(); planned {
+			return w.abandonCandidate(ctx, operationContext, claim, providers.Preparer, acquisition.CandidateOutcomeStalled, acquisition.JobErrorStalled, false)
+		}
 		return w.fail(ctx, claim, acquisition.JobErrorStalled, false)
 	}
 	if errors.Is(err, acquisition.ErrNotReady) {
 		return w.deferJob(ctx, claim, acquisition.JobErrorNone, w.options.PreparingPollInterval)
 	}
-	if errors.Is(err, domain.ErrNotFound) || errors.Is(err, acquisition.ErrAmbiguousProviderObjects) {
+	if errors.Is(err, domain.ErrNotFound) {
+		if _, planned := claim.Job().SelectedCandidateOrdinal(); planned {
+			return w.abandonCandidate(ctx, operationContext, claim, providers.Preparer, acquisition.CandidateOutcomeMissing, acquisition.JobErrorNoPlayableMedia, true)
+		}
+		return w.fail(ctx, claim, acquisition.JobErrorAmbiguousMutation, true)
+	}
+	if errors.Is(err, acquisition.ErrAmbiguousProviderObjects) {
 		return w.fail(ctx, claim, acquisition.JobErrorAmbiguousMutation, true)
 	}
 	if err != nil {
@@ -280,10 +293,16 @@ func (w *Worker) publish(ctx context.Context, operationContext context.Context, 
 	}
 	selected, err := acquisitionservice.SelectCandidate(claim.Job().Request(), candidates)
 	if err != nil {
+		if _, planned := claim.Job().SelectedCandidateOrdinal(); planned {
+			return w.abandonCandidate(ctx, operationContext, claim, providers.Preparer, acquisition.CandidateOutcomeUnplayable, acquisition.JobErrorNoPlayableMedia, false)
+		}
 		return w.fail(ctx, claim, acquisition.JobErrorNoPlayableMedia, false)
 	}
 	media, err := acquisition.NewAcquiredMedia(claim.Job().Request(), claim.Job().Selection().Release(), selected)
 	if err != nil {
+		if _, planned := claim.Job().SelectedCandidateOrdinal(); planned {
+			return w.abandonCandidate(ctx, operationContext, claim, providers.Preparer, acquisition.CandidateOutcomeUnplayable, acquisition.JobErrorNoPlayableMedia, false)
+		}
 		return w.fail(ctx, claim, acquisition.JobErrorNoPlayableMedia, false)
 	}
 	if err := w.publisher.PublishAcquired(operationContext, media); err != nil {
@@ -297,13 +316,41 @@ func (w *Worker) publish(ctx context.Context, operationContext context.Context, 
 	return acquisition.JobStateSucceeded, nil
 }
 
-func (w *Worker) attach(ctx context.Context, claim acquisition.AcquisitionJobClaim, created acquisition.CreatedObject) (acquisition.JobState, error) {
+func (w *Worker) attach(ctx context.Context, claim acquisition.AcquisitionJobClaim, created acquisition.CreatedObject, createdByJob bool) (acquisition.JobState, error) {
 	if err := w.commit(ctx, func(commitContext context.Context) error {
-		return w.queue.AttachPrepared(commitContext, claim, created, false, w.now().UTC())
+		return w.queue.AttachPrepared(commitContext, claim, created, createdByJob, w.now().UTC())
 	}); err != nil {
 		return "", err
 	}
 	return acquisition.JobStatePreparing, nil
+}
+
+func (w *Worker) abandonCandidate(
+	ctx context.Context,
+	operationContext context.Context,
+	claim acquisition.AcquisitionJobClaim,
+	preparer Preparer,
+	outcome acquisition.CandidateOutcome,
+	terminalCode acquisition.JobErrorCode,
+	alreadyMissing bool,
+) (acquisition.JobState, error) {
+	if claim.Job().CreatedByJob() && !alreadyMissing {
+		if err := preparer.DeleteCreatedTorrent(operationContext, claim.Job().CreatedObject()); err != nil {
+			return w.fail(ctx, claim, acquisition.JobErrorAmbiguousMutation, true)
+		}
+	}
+	advanced := false
+	if err := w.commit(ctx, func(commitContext context.Context) error {
+		var advanceErr error
+		advanced, advanceErr = w.queue.Advance(commitContext, claim, outcome, terminalCode, w.now().UTC())
+		return advanceErr
+	}); err != nil {
+		return "", err
+	}
+	if advanced {
+		return acquisition.JobStateSelected, nil
+	}
+	return acquisition.JobStateFailed, nil
 }
 
 func (w *Worker) fail(ctx context.Context, claim acquisition.AcquisitionJobClaim, code acquisition.JobErrorCode, manualReview bool) (acquisition.JobState, error) {

@@ -271,6 +271,37 @@ func TestRepositoryAdvancesCandidatesAndFailsAtomicallyWhenExhausted(t *testing.
 	require.Equal(t, acquisition.CandidateOutcomeUnplayable, actual[2].Outcome())
 }
 
+func TestRepositoryAdvancesSelectedCandidateThatDisappearedBeforePreparation(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	repository := openRepository(t, ctx)
+	at := time.Date(2026, time.August, 14, 12, 0, 0, 0, time.UTC)
+	job, _, err := repository.Submit(ctx, "0123456789abcdef0123456789abcdef", mustMovieRequest(t), at)
+	require.NoError(t, err)
+	claim, err := repository.Claim(ctx, at, time.Minute)
+	require.NoError(t, err)
+	candidates := mustCandidates(t, 2)
+	require.NoError(t, repository.Plan(ctx, claim, candidates, at.Add(time.Second)))
+	selectedClaim, err := repository.Claim(ctx, at.Add(2*time.Second), time.Minute)
+	require.NoError(t, err)
+
+	advanced, err := repository.Advance(
+		ctx, selectedClaim, acquisition.CandidateOutcomeMissing,
+		acquisition.JobErrorMaterialization, at.Add(3*time.Second),
+	)
+
+	require.NoError(t, err)
+	require.True(t, advanced)
+	next, err := repository.Get(ctx, job.ID())
+	require.NoError(t, err)
+	require.Equal(t, acquisition.JobStateSelected, next.State())
+	require.Equal(t, candidates[1].Selection().InfoHash(), next.Selection().InfoHash())
+	actual, err := repository.Candidates(ctx, job.ID())
+	require.NoError(t, err)
+	require.Equal(t, acquisition.CandidateOutcomeMissing, actual[0].Outcome())
+	require.Equal(t, acquisition.CandidateOutcomeSelected, actual[1].Outcome())
+}
+
 func TestRepositoryLegacySelectionDoesNotInferCandidatePlanOrOwnership(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

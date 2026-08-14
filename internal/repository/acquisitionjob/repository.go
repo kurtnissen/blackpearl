@@ -325,8 +325,9 @@ func (r *Repository) Advance(
 	now time.Time,
 ) (bool, error) {
 	ordinal, hasPlan := claim.Job().SelectedCandidateOrdinal()
-	if !hasPlan || claim.Job().State() != acquisition.JobStatePreparing {
-		return false, errors.New("candidate advancement requires a planned preparing job")
+	state := claim.Job().State()
+	if !hasPlan || (state != acquisition.JobStateSelected && state != acquisition.JobStatePreparing) {
+		return false, errors.New("candidate advancement requires a planned selected or preparing job")
 	}
 	if _, err := acquisition.NewJobCandidate(claim.Job().Selection(), ordinal, outcome); err != nil {
 		return false, fmt.Errorf("validate failed acquisition candidate: %w", err)
@@ -335,6 +336,9 @@ func (r *Repository) Advance(
 		outcome != acquisition.CandidateOutcomeMissing &&
 		outcome != acquisition.CandidateOutcomeUnplayable {
 		return false, errors.New("candidate advancement requires a terminal candidate outcome")
+	}
+	if state == acquisition.JobStateSelected && outcome != acquisition.CandidateOutcomeMissing {
+		return false, errors.New("unprepared candidate advancement requires a missing outcome")
 	}
 	if err := validateTerminalCode(terminalCode, claim.Job(), now); err != nil {
 		return false, err
@@ -385,10 +389,10 @@ func (r *Repository) Advance(
 				selected_candidate_ordinal = ?, created_provider = '', created_object_id = '', created_by_job = 0,
 				error_code = '', progress = 0, next_attempt_unix_ms = 0,
 				lease_until_unix_ms = 0, updated_unix_ms = ?
-			WHERE id = ? AND lease_version = ? AND lease_until_unix_ms > ? AND state = 'preparing'
+			WHERE id = ? AND lease_version = ? AND lease_until_unix_ms > ? AND state = ?
 		`, selection.Provider(), selection.Title(), selection.Size(), selection.Indexer(), selection.InfoHash(),
 			seeders, hasSeeders, next.Ordinal(), now.UTC().UnixMilli(), claim.Job().ID(),
-			claim.LeaseVersion(), now.UTC().UnixMilli())
+			claim.LeaseVersion(), now.UTC().UnixMilli(), state)
 		if err != nil {
 			return false, errors.Join(fmt.Errorf("advance acquisition job selection: %w", err), transaction.Rollback())
 		}
@@ -400,8 +404,8 @@ func (r *Repository) Advance(
 				selected_candidate_ordinal = -1, created_provider = '', created_object_id = '', created_by_job = 0,
 				error_code = ?, progress = 0, next_attempt_unix_ms = 0,
 				lease_until_unix_ms = 0, updated_unix_ms = ?
-			WHERE id = ? AND lease_version = ? AND lease_until_unix_ms > ? AND state = 'preparing'
-		`, terminalCode, now.UTC().UnixMilli(), claim.Job().ID(), claim.LeaseVersion(), now.UTC().UnixMilli())
+			WHERE id = ? AND lease_version = ? AND lease_until_unix_ms > ? AND state = ?
+		`, terminalCode, now.UTC().UnixMilli(), claim.Job().ID(), claim.LeaseVersion(), now.UTC().UnixMilli(), state)
 		if err != nil {
 			return false, errors.Join(fmt.Errorf("fail exhausted acquisition candidate plan: %w", err), transaction.Rollback())
 		}

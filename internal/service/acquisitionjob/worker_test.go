@@ -113,12 +113,13 @@ func TestWorkerReconcilesSelectedHashBeforeCreate(t *testing.T) {
 	job, err := repository.Get(ctx, jobID)
 	require.NoError(t, err)
 	require.Equal(t, "17", job.CreatedObject().ObjectID())
+	require.False(t, job.CreatedByJob())
 }
 
 func TestWorkerCreatesMissingSelectedReleaseThenAttachesObject(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	repository, now, _ := selectedJob(t, ctx)
+	repository, now, jobID := selectedJob(t, ctx)
 	created, err := acquisition.NewCreatedObject("torbox-torrent", "18")
 	require.NoError(t, err)
 	provider := &fakeJobProvider{
@@ -134,12 +135,15 @@ func TestWorkerCreatesMissingSelectedReleaseThenAttachesObject(t *testing.T) {
 	require.Equal(t, 1, provider.materializeCalls)
 	require.Equal(t, 1, provider.createCalls)
 	require.True(t, provider.allowDownload)
+	job, err := repository.Get(ctx, jobID)
+	require.NoError(t, err)
+	require.True(t, job.CreatedByJob())
 }
 
 func TestWorkerReconcilesAmbiguousCreateResponseWithoutSecondCreate(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	repository, now, _ := selectedJob(t, ctx)
+	repository, now, jobID := selectedJob(t, ctx)
 	created, err := acquisition.NewCreatedObject("torbox-torrent", "19")
 	require.NoError(t, err)
 	provider := &fakeJobProvider{
@@ -155,6 +159,9 @@ func TestWorkerReconcilesAmbiguousCreateResponseWithoutSecondCreate(t *testing.T
 	require.Equal(t, acquisition.JobStatePreparing, state)
 	require.Equal(t, 2, provider.findCalls)
 	require.Equal(t, 1, provider.createCalls)
+	job, err := repository.Get(ctx, jobID)
+	require.NoError(t, err)
+	require.True(t, job.CreatedByJob())
 }
 
 func TestWorkerStopsAutomaticRetryWhenCreateCannotBeReconciled(t *testing.T) {
@@ -245,6 +252,183 @@ func TestWorkerClassifiesNoReleaseAndNoPlayableMediaAsTerminal(t *testing.T) {
 	})
 }
 
+func TestWorkerFallsBackWithoutDeletingExistingAccountObject(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	repository, now, jobID := plannedPreparingJob(t, ctx, 2, false)
+	provider := &fakeJobProvider{inspectionErrs: []error{acquisition.ErrStalled}}
+	worker := newJobWorker(t, repository, provider, &fakeJobPublisher{}, now.Add(4*time.Second))
+
+	state, err := worker.ProcessOne(ctx)
+
+	require.NoError(t, err)
+	require.Equal(t, acquisition.JobStateSelected, state)
+	require.Zero(t, provider.deleteCalls)
+	job, err := repository.Get(ctx, jobID)
+	require.NoError(t, err)
+	require.Equal(t, mustJobReleaseAt(t, 1).InfoHash(), job.Selection().InfoHash())
+	require.False(t, job.HasCreatedObject())
+}
+
+func TestWorkerCleansOwnedObjectBeforeFallingBack(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	repository, now, jobID := plannedPreparingJob(t, ctx, 2, true)
+	provider := &fakeJobProvider{inspectionErrs: []error{acquisition.ErrStalled}}
+	worker := newJobWorker(t, repository, provider, &fakeJobPublisher{}, now.Add(4*time.Second))
+
+	state, err := worker.ProcessOne(ctx)
+
+	require.NoError(t, err)
+	require.Equal(t, acquisition.JobStateSelected, state)
+	require.Equal(t, 1, provider.deleteCalls)
+	require.Equal(t, "17", provider.deleted.ObjectID())
+	job, err := repository.Get(ctx, jobID)
+	require.NoError(t, err)
+	require.Equal(t, mustJobReleaseAt(t, 1).InfoHash(), job.Selection().InfoHash())
+	require.False(t, job.CreatedByJob())
+}
+
+func TestWorkerAdvancesMissingOwnedObjectWithoutDeletingAgain(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	repository, now, _ := plannedPreparingJob(t, ctx, 2, true)
+	provider := &fakeJobProvider{inspectionErrs: []error{domain.ErrNotFound}}
+	worker := newJobWorker(t, repository, provider, &fakeJobPublisher{}, now.Add(4*time.Second))
+
+	state, err := worker.ProcessOne(ctx)
+
+	require.NoError(t, err)
+	require.Equal(t, acquisition.JobStateSelected, state)
+	require.Zero(t, provider.deleteCalls)
+}
+
+func TestWorkerFallsBackWhenSelectedReleaseDisappearsBeforeMaterialization(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	repository, now, jobID := plannedSelectedJob(t, ctx, 2)
+	provider := &fakeJobProvider{
+		releases: []acquisition.Release{mustJobReleaseAt(t, 1)},
+		findErrs: []error{domain.ErrNotFound},
+	}
+	worker := newJobWorker(t, repository, provider, &fakeJobPublisher{}, now.Add(2*time.Second))
+
+	state, err := worker.ProcessOne(ctx)
+
+	require.NoError(t, err)
+	require.Equal(t, acquisition.JobStateSelected, state)
+	require.Zero(t, provider.createCalls)
+	require.Zero(t, provider.deleteCalls)
+	job, err := repository.Get(ctx, jobID)
+	require.NoError(t, err)
+	require.Equal(t, mustJobReleaseAt(t, 1).InfoHash(), job.Selection().InfoHash())
+}
+
+func TestWorkerCleansUnplayableOwnedObjectBeforeFallingBack(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	repository, now, _ := plannedPreparingJob(t, ctx, 2, true)
+	provider := &fakeJobProvider{}
+	worker := newJobWorker(t, repository, provider, &fakeJobPublisher{}, now.Add(4*time.Second))
+
+	state, err := worker.ProcessOne(ctx)
+
+	require.NoError(t, err)
+	require.Equal(t, acquisition.JobStateSelected, state)
+	require.Equal(t, 1, provider.deleteCalls)
+}
+
+func TestWorkerFallsBackThenPublishesSecondCandidate(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	repository, now, jobID := plannedPreparingJob(t, ctx, 2, true)
+	secondObject, err := acquisition.NewCreatedObject("torbox-torrent", "19")
+	require.NoError(t, err)
+	media, err := domain.NewMediaCandidate("19:3", "Example.Movie.2026.mp4", 100)
+	require.NoError(t, err)
+	provider := &fakeJobProvider{
+		inspectionErrs: []error{acquisition.ErrStalled},
+		found:          secondObject,
+		candidates:     []domain.MediaCandidate{media},
+	}
+	publisher := &fakeJobPublisher{}
+
+	state, err := newJobWorker(t, repository, provider, publisher, now.Add(4*time.Second)).ProcessOne(ctx)
+	require.NoError(t, err)
+	require.Equal(t, acquisition.JobStateSelected, state)
+	state, err = newJobWorker(t, repository, provider, publisher, now.Add(5*time.Second)).ProcessOne(ctx)
+	require.NoError(t, err)
+	require.Equal(t, acquisition.JobStatePreparing, state)
+	state, err = newJobWorker(t, repository, provider, publisher, now.Add(6*time.Second)).ProcessOne(ctx)
+
+	require.NoError(t, err)
+	require.Equal(t, acquisition.JobStateSucceeded, state)
+	require.Len(t, publisher.published, 1)
+	job, err := repository.Get(ctx, jobID)
+	require.NoError(t, err)
+	require.Equal(t, "19:3", job.PublishedObjectID())
+	require.Equal(t, 1, provider.deleteCalls)
+}
+
+func TestWorkerFailsExhaustedCandidatePlanAfterOwnedCleanup(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	repository, now, jobID := plannedPreparingJob(t, ctx, 1, true)
+	provider := &fakeJobProvider{inspectionErrs: []error{acquisition.ErrStalled}}
+	worker := newJobWorker(t, repository, provider, &fakeJobPublisher{}, now.Add(4*time.Second))
+
+	state, err := worker.ProcessOne(ctx)
+
+	require.NoError(t, err)
+	require.Equal(t, acquisition.JobStateFailed, state)
+	require.Equal(t, 1, provider.deleteCalls)
+	job, err := repository.Get(ctx, jobID)
+	require.NoError(t, err)
+	require.Equal(t, acquisition.JobErrorStalled, job.ErrorCode())
+	candidates, err := repository.Candidates(ctx, jobID)
+	require.NoError(t, err)
+	require.Equal(t, acquisition.CandidateOutcomeStalled, candidates[0].Outcome())
+}
+
+func TestWorkerStopsInManualReviewWhenOwnedCleanupIsUncertain(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	repository, now, jobID := plannedPreparingJob(t, ctx, 2, true)
+	provider := &fakeJobProvider{
+		inspectionErrs: []error{acquisition.ErrStalled},
+		deleteErr:      errors.New("ambiguous cleanup response"),
+	}
+	worker := newJobWorker(t, repository, provider, &fakeJobPublisher{}, now.Add(4*time.Second))
+
+	state, err := worker.ProcessOne(ctx)
+
+	require.NoError(t, err)
+	require.Equal(t, acquisition.JobStateManualReview, state)
+	require.Equal(t, 1, provider.deleteCalls)
+	job, err := repository.Get(ctx, jobID)
+	require.NoError(t, err)
+	require.True(t, job.CreatedByJob())
+	require.Equal(t, acquisition.JobErrorAmbiguousMutation, job.ErrorCode())
+}
+
+func TestWorkerPreservesLegacyTerminalBehaviorWithoutCleanup(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	repository, now, jobID := preparingJob(t, ctx)
+	provider := &fakeJobProvider{inspectionErrs: []error{acquisition.ErrStalled}}
+	worker := newJobWorker(t, repository, provider, &fakeJobPublisher{}, now.Add(4*time.Second))
+
+	state, err := worker.ProcessOne(ctx)
+
+	require.NoError(t, err)
+	require.Equal(t, acquisition.JobStateFailed, state)
+	require.Zero(t, provider.deleteCalls)
+	job, err := repository.Get(ctx, jobID)
+	require.NoError(t, err)
+	_, hasPlan := job.SelectedCandidateOrdinal()
+	require.False(t, hasPlan)
+}
+
 func queuedJob(t *testing.T, ctx context.Context) (*acquisitionjobrepo.Repository, time.Time, string) {
 	t.Helper()
 	repository, err := acquisitionjobrepo.Open(ctx, filepath.Join(t.TempDir(), "jobs.db"))
@@ -273,6 +457,38 @@ func preparingJob(t *testing.T, ctx context.Context) (*acquisitionjobrepo.Reposi
 	created, err := acquisition.NewCreatedObject("torbox-torrent", "17")
 	require.NoError(t, err)
 	require.NoError(t, repository.Attach(ctx, claim, created, now.Add(3*time.Second)))
+	return repository, now, jobID
+}
+
+func plannedPreparingJob(t *testing.T, ctx context.Context, count int, owned bool) (*acquisitionjobrepo.Repository, time.Time, string) {
+	t.Helper()
+	repository, now, jobID := plannedSelectedJob(t, ctx, count)
+	claim, err := repository.Claim(ctx, now.Add(2*time.Second), time.Minute)
+	require.NoError(t, err)
+	created, err := acquisition.NewCreatedObject("torbox-torrent", "17")
+	require.NoError(t, err)
+	require.NoError(t, repository.AttachPrepared(ctx, claim, created, owned, now.Add(3*time.Second)))
+	return repository, now, jobID
+}
+
+func plannedSelectedJob(t *testing.T, ctx context.Context, count int) (*acquisitionjobrepo.Repository, time.Time, string) {
+	t.Helper()
+	repository, now, jobID := queuedJob(t, ctx)
+	claim, err := repository.Claim(ctx, now, time.Minute)
+	require.NoError(t, err)
+	candidates := make([]acquisition.JobCandidate, 0, count)
+	for ordinal := 0; ordinal < count; ordinal++ {
+		selection, selectionErr := acquisition.NewJobSelection(mustJobReleaseAt(t, ordinal))
+		require.NoError(t, selectionErr)
+		outcome := acquisition.CandidateOutcomePending
+		if ordinal == 0 {
+			outcome = acquisition.CandidateOutcomeSelected
+		}
+		candidate, candidateErr := acquisition.NewJobCandidate(selection, ordinal, outcome)
+		require.NoError(t, candidateErr)
+		candidates = append(candidates, candidate)
+	}
+	require.NoError(t, repository.Plan(ctx, claim, candidates, now.Add(time.Second)))
 	return repository, now, jobID
 }
 
@@ -318,6 +534,9 @@ type fakeJobProvider struct {
 	candidates       []domain.MediaCandidate
 	inspectionErrs   []error
 	inspectionCalls  int
+	deleted          acquisition.CreatedObject
+	deleteErr        error
+	deleteCalls      int
 }
 
 func (f *fakeJobProvider) Search(context.Context, acquisition.SearchRequest) ([]acquisition.Release, error) {
@@ -363,6 +582,12 @@ func (f *fakeJobProvider) InspectCreatedTorrent(context.Context, acquisition.Cre
 		return nil, f.inspectionErrs[index]
 	}
 	return append([]domain.MediaCandidate(nil), f.candidates...), nil
+}
+
+func (f *fakeJobProvider) DeleteCreatedTorrent(_ context.Context, created acquisition.CreatedObject) error {
+	f.deleteCalls++
+	f.deleted = created
+	return f.deleteErr
 }
 
 type fakeJobPublisher struct {
