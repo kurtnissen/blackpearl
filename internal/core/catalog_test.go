@@ -113,6 +113,27 @@ func TestRegisterPOCRejectsInvalidRemoteMetadataWithoutPersisting(t *testing.T) 
 	}
 }
 
+func TestRegisterRemoteMoviePreservesSelectedExtensionAndLogicalSize(t *testing.T) {
+	t.Parallel()
+	repository := &fakeRepository{}
+	catalog := core.NewCatalog(repository, nil, &fakeCache{})
+	candidate, err := domain.NewMediaCandidate("17:3", "Films/Example.MKV", 8_765_432)
+	require.NoError(t, err)
+	configuration, err := domain.NewSetupConfiguration(candidate, "The Example", 2024)
+	require.NoError(t, err)
+	backing, err := domain.NewBackingRef("torbox-torrent", "17:3")
+	require.NoError(t, err)
+
+	media, err := catalog.RegisterRemoteMovie(context.Background(), configuration, backing)
+
+	require.NoError(t, err)
+	require.Equal(t, domain.MediaID("blackpearl-selected-media"), media.ID)
+	require.Equal(t, "Movies/The Example (2024)/The Example (2024).mkv", media.VirtualPath)
+	require.Equal(t, int64(8_765_432), media.Size)
+	require.Equal(t, backing, media.Backing)
+	require.Equal(t, media, repository.upserted)
+}
+
 func TestListWrapsRepositoryFailure(t *testing.T) {
 	t.Parallel()
 	catalog := core.NewCatalog(&fakeRepository{listErr: errors.New("database unavailable")}, &fakeCache{}, &fakeCache{})

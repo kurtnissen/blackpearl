@@ -15,6 +15,7 @@ const (
 	pocTitle     string         = "BlackPearl POC"
 	pocYear      int            = 2026
 	pocExtension string         = ".mp4"
+	selectedID   domain.MediaID = "blackpearl-selected-media"
 )
 
 // Repository is the catalog persistence required by Catalog.
@@ -23,6 +24,28 @@ type Repository interface {
 	GetByVirtualPath(ctx context.Context, virtualPath string) (domain.Media, error)
 	List(ctx context.Context) ([]domain.Media, error)
 	Ping(ctx context.Context) error
+}
+
+// RegisterRemoteMovie persists one provider-backed logical movie without importing bytes.
+func (c *Catalog) RegisterRemoteMovie(ctx context.Context, configuration domain.SetupConfiguration, backing domain.BackingRef) (domain.Media, error) {
+	ctx, span := otel.Tracer("blackpearl/core").Start(ctx, "catalog.register_remote_movie")
+	defer span.End()
+	validated, err := domain.NewSetupConfiguration(configuration.Candidate(), configuration.Title, configuration.Year)
+	if err != nil {
+		return domain.Media{}, fmt.Errorf("validate selected movie: %w", err)
+	}
+	validatedBacking, err := domain.NewBackingRef(backing.Provider, backing.ObjectID)
+	if err != nil {
+		return domain.Media{}, fmt.Errorf("validate selected movie backing: %w", err)
+	}
+	media, err := domain.NewMovie(selectedID, validated.Title, validated.Year, validated.Extension, validated.Size, validatedBacking)
+	if err != nil {
+		return domain.Media{}, fmt.Errorf("construct selected movie: %w", err)
+	}
+	if err := c.repository.Upsert(ctx, media); err != nil {
+		return domain.Media{}, fmt.Errorf("persist selected movie: %w", err)
+	}
+	return media, nil
 }
 
 // POCImporter imports the legal Milestone 1 fixture without exposing a path to consumers.
