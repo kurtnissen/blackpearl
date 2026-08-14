@@ -127,11 +127,39 @@ func TestRegisterRemoteMoviePreservesSelectedExtensionAndLogicalSize(t *testing.
 	media, err := catalog.RegisterRemoteMovie(context.Background(), configuration, backing)
 
 	require.NoError(t, err)
-	require.Equal(t, domain.MediaID("blackpearl-selected-media"), media.ID)
+	require.NotEmpty(t, media.ID)
 	require.Equal(t, "Movies/The Example (2024)/The Example (2024).mkv", media.VirtualPath)
 	require.Equal(t, int64(8_765_432), media.Size)
 	require.Equal(t, backing, media.Backing)
 	require.Equal(t, media, repository.upserted)
+}
+
+func TestRegisterRemoteMovieUsesStableDistinctIDsForMultipleObjects(t *testing.T) {
+	t.Parallel()
+	repository := &fakeRepository{}
+	catalog := core.NewCatalog(repository, nil, &fakeCache{})
+	firstCandidate, err := domain.NewMediaCandidate("17:3", "First.mp4", 100)
+	require.NoError(t, err)
+	secondCandidate, err := domain.NewMediaCandidate("17:4", "Second.mp4", 200)
+	require.NoError(t, err)
+	first, err := domain.NewSetupConfiguration(firstCandidate, "First", 2024)
+	require.NoError(t, err)
+	second, err := domain.NewSetupConfiguration(secondCandidate, "Second", 2025)
+	require.NoError(t, err)
+	firstBacking, err := domain.NewBackingRef("torbox-torrent", first.ObjectID)
+	require.NoError(t, err)
+	secondBacking, err := domain.NewBackingRef("torbox-torrent", second.ObjectID)
+	require.NoError(t, err)
+
+	firstMedia, err := catalog.RegisterRemoteMovie(context.Background(), first, firstBacking)
+	require.NoError(t, err)
+	secondMedia, err := catalog.RegisterRemoteMovie(context.Background(), second, secondBacking)
+	require.NoError(t, err)
+	firstAgain, err := catalog.RegisterRemoteMovie(context.Background(), first, firstBacking)
+	require.NoError(t, err)
+
+	require.NotEqual(t, firstMedia.ID, secondMedia.ID)
+	require.Equal(t, firstMedia.ID, firstAgain.ID)
 }
 
 func TestListWrapsRepositoryFailure(t *testing.T) {

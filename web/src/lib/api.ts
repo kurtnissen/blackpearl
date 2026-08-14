@@ -19,13 +19,18 @@ export type SetupStatus = {
   tokenConfigured: boolean;
   csrfToken: string;
   selected?: SetupConfiguration;
+	selectedItems?: SetupConfiguration[];
+};
+
+export type ApplyItemInput = {
+	objectId: string;
+	title: string;
+	year: number;
 };
 
 export type ApplyInput = {
   token?: string;
-  objectId: string;
-  title: string;
-  year: number;
+	items: ApplyItemInput[];
 };
 
 export type SetupAuthorization = {
@@ -40,6 +45,7 @@ export type DiscoveryResult = {
 
 export type ApplyResult = {
   selected: SetupConfiguration;
+	selectedItems: SetupConfiguration[];
   session: string;
 };
 
@@ -77,7 +83,7 @@ export async function applyConfiguration(input: ApplyInput, csrfToken: string, a
     body: JSON.stringify(input),
   });
   const envelope = await readJSON(response, isSelectionEnvelope, "invalid_configuration");
-  return { selected: envelope.selected, session: readSession(response) };
+	return { selected: envelope.selected, selectedItems: envelope.selectedItems, session: readSession(response) };
 }
 
 function mutationHeaders(csrfToken: string, authorization: SetupAuthorization): Record<string, string> {
@@ -143,13 +149,18 @@ function isSetupStatus(value: unknown): value is SetupStatus {
     && typeof value.setupRequired === "boolean"
     && typeof value.tokenConfigured === "boolean"
     && typeof value.csrfToken === "string"
-    && (value.selected === undefined || isConfiguration(value.selected));
+		&& (value.selected === undefined || isConfiguration(value.selected))
+		&& (value.selectedItems === undefined || (Array.isArray(value.selectedItems) && value.selectedItems.every(isConfiguration)));
 }
 
 function isCandidateEnvelope(value: unknown): value is { candidates: MediaCandidate[] } {
   return isRecord(value) && Array.isArray(value.candidates) && value.candidates.every(isCandidate);
 }
 
-function isSelectionEnvelope(value: unknown): value is { selected: SetupConfiguration } {
-  return isRecord(value) && isConfiguration(value.selected);
+function isSelectionEnvelope(value: unknown): value is { selected: SetupConfiguration; selectedItems: SetupConfiguration[] } {
+	return isRecord(value)
+		&& isConfiguration(value.selected)
+		&& Array.isArray(value.selectedItems)
+		&& value.selectedItems.length > 0
+		&& value.selectedItems.every(isConfiguration);
 }

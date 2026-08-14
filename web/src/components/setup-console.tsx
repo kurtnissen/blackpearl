@@ -12,8 +12,11 @@ import {
 } from "../lib/api";
 
 type Phase = "loading" | "credentials" | "select" | "ready";
+type SelectionDraft = { objectId: string; title: string; year: number };
 const setupSessionStorageKey = "blackpearl.setup.session";
 const setupBootstrapStorageKey = "blackpearl.setup.bootstrap";
+const maximumManifestItems = 100;
+const maximumVisibleCandidates = 100;
 
 export function SetupConsole(): React.JSX.Element {
   const [phase, setPhase] = useState<Phase>("loading");
@@ -24,17 +27,21 @@ export function SetupConsole(): React.JSX.Element {
   const [session, setSession] = useState("");
   const [bootstrap, setBootstrap] = useState("");
   const [candidates, setCandidates] = useState<MediaCandidate[]>([]);
-  const [selectedID, setSelectedID] = useState("");
-  const [title, setTitle] = useState("");
-  const [year, setYear] = useState(new Date().getFullYear());
-  const [selected, setSelected] = useState<SetupConfiguration>();
+	const [query, setQuery] = useState("");
+	const [drafts, setDrafts] = useState<SelectionDraft[]>([]);
+	const [selectedItems, setSelectedItems] = useState<SetupConfiguration[]>([]);
   const [pending, setPending] = useState(false);
   const [message, setMessage] = useState("Loading BlackPearl setup…");
 
-  const selectedCandidate = useMemo(
-    () => candidates.find((candidate) => candidate.objectId === selectedID),
-    [candidates, selectedID],
-  );
+	const matchingCandidates = useMemo(() => {
+		const normalized = query.trim().toLocaleLowerCase();
+		return candidates
+			.filter((candidate) => normalized === "" || candidate.name.toLocaleLowerCase().includes(normalized));
+	}, [candidates, query]);
+	const visibleCandidates = useMemo(
+		() => matchingCandidates.slice(0, maximumVisibleCandidates),
+		[matchingCandidates],
+	);
   const authorization: SetupAuthorization = { session, bootstrap };
   const canUseSavedToken = tokenConfigured && (session !== "" || bootstrap !== "");
 
@@ -48,8 +55,9 @@ export function SetupConsole(): React.JSX.Element {
         setBootstrap(storedAuthorization.bootstrap ?? "");
         setCSRF(status.csrfToken);
         setTokenConfigured(status.tokenConfigured);
-        if (!status.setupRequired && status.selected) {
-          setSelected(status.selected);
+				const restoredItems = status.selectedItems ?? (status.selected ? [status.selected] : []);
+				if (!status.setupRequired && restoredItems.length > 0) {
+					setSelectedItems(restoredItems);
           setPhase("ready");
           setMessage("BlackPearl is ready for Plex.");
         } else {
@@ -78,7 +86,13 @@ export function SetupConsole(): React.JSX.Element {
       setSession(result.session);
       setShowToken(false);
       setCandidates(result.candidates);
-      setSelectedID("");
+			setQuery("");
+			const discoveredIDs = new Set(result.candidates.map((candidate) => candidate.objectId));
+			setDrafts(useSavedToken
+				? selectedItems
+					.filter((item) => discoveredIDs.has(item.objectId))
+					.map((item) => ({ objectId: item.objectId, title: item.title, year: item.year }))
+				: []);
       if (result.candidates.length === 0) {
         setMessage("No ready MP4 or MKV files found");
         return;
@@ -92,28 +106,34 @@ export function SetupConsole(): React.JSX.Element {
     }
   }
 
-  function choose(candidate: MediaCandidate): void {
-    setSelectedID(candidate.objectId);
-    setTitle(suggestTitle(candidate.name));
-    setYear(new Date().getFullYear());
+  function toggle(candidate: MediaCandidate): void {
+		setDrafts((current) => {
+			if (current.some((draft) => draft.objectId === candidate.objectId)) {
+				return current.filter((draft) => draft.objectId !== candidate.objectId);
+			}
+			if (current.length >= maximumManifestItems) return current;
+			return [...current, { objectId: candidate.objectId, title: suggestTitle(candidate.name), year: new Date().getFullYear() }];
+		});
   }
 
+	function updateDraft(objectId: string, update: Partial<Pick<SelectionDraft, "title" | "year">>): void {
+		setDrafts((current) => current.map((draft) => draft.objectId === objectId ? { ...draft, ...update } : draft));
+	}
+
   async function apply(): Promise<void> {
-    if (!selectedCandidate) return;
+		if (drafts.length === 0) return;
     setPending(true);
     setMessage("Preparing the rolling stream for Plex…");
     try {
       const result = await applyConfiguration({
         token: token === "" ? undefined : token,
-        objectId: selectedCandidate.objectId,
-        title,
-        year,
+				items: drafts,
       }, csrf, authorization);
       storeSession(result.session);
       setSession(result.session);
       setToken("");
       setTokenConfigured(true);
-      setSelected(result.selected);
+			setSelectedItems(result.selectedItems);
       setPhase("ready");
       setMessage("BlackPearl is ready for Plex.");
     } catch (error: unknown) {
@@ -180,38 +200,49 @@ export function SetupConsole(): React.JSX.Element {
         {phase === "select" && (
           <div className="selection">
             <fieldset>
-              <legend>Eligible account files</legend>
+						<div className="selection-tools">
+							<div><legend>Eligible account files</legend><p>{drafts.length} of {maximumManifestItems} selected</p></div>
+							<label className="search-field">Search videos<input type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Title or filename" /></label>
+						</div>
               <div className="candidate-list">
-                {candidates.map((candidate) => (
+						{visibleCandidates.map((candidate) => (
                   <label className="candidate" key={candidate.objectId}>
-                    <input type="radio" name="candidate" checked={selectedID === candidate.objectId} onChange={() => choose(candidate)} />
+								<input type="checkbox" checked={drafts.some((draft) => draft.objectId === candidate.objectId)} onChange={() => toggle(candidate)} />
                     <span className="candidate__name">{candidate.name}</span>
                     <span className="candidate__meta">{candidate.extension.slice(1).toUpperCase()} · {formatBytes(candidate.size)}</span>
                   </label>
                 ))}
               </div>
+						{matchingCandidates.length > visibleCandidates.length && <p className="result-note">Showing the first {visibleCandidates.length} matches. Search to narrow the list.</p>}
             </fieldset>
-            {selectedCandidate && (
-              <div className="plex-fields">
-                <label>Plex title<input value={title} maxLength={200} onChange={(event) => setTitle(event.target.value)} /></label>
-                <label>Year<input type="number" min="1888" max="2100" value={year} onChange={(event) => setYear(event.target.valueAsNumber)} /></label>
-              </div>
-            )}
+					{drafts.length > 0 && (
+						<div className="selected-editor">
+							<h3>Plex manifest</h3>
+							{drafts.map((draft, index) => (
+								<div className="plex-fields" key={draft.objectId}>
+									<span className="selection-number">{String(index + 1).padStart(2, "0")}</span>
+									<label>Plex title<input value={draft.title} maxLength={200} onChange={(event) => updateDraft(draft.objectId, { title: event.target.value })} /></label>
+									<label>Year<input type="number" min="1888" max="2100" value={draft.year} onChange={(event) => updateDraft(draft.objectId, { year: event.target.valueAsNumber })} /></label>
+									<button type="button" onClick={() => setDrafts((current) => current.filter((item) => item.objectId !== draft.objectId))}>Remove</button>
+								</div>
+							))}
+						</div>
+					)}
             <div className="actions">
-              <button className="primary" type="button" onClick={() => void apply()} disabled={pending || !selectedCandidate || title.trim() === ""}>Use with Plex</button>
+						<button className="primary" type="button" onClick={() => void apply()} disabled={pending || drafts.length === 0 || drafts.some((draft) => draft.title.trim() === "" || !Number.isInteger(draft.year))}>Use {drafts.length || "selected"} with Plex</button>
               <button type="button" onClick={() => setPhase("credentials")} disabled={pending}>Back</button>
             </div>
           </div>
         )}
 
-        {phase === "ready" && selected && (
+				{phase === "ready" && selectedItems.length > 0 && (
           <div className="ready-card">
             <p className="ready-kicker">ASSIGNED MEDIA</p>
             <h3>BlackPearl is ready</h3>
             <dl>
-              <div><dt>Plex title</dt><dd>{selected.title} ({selected.year})</dd></div>
-              <div><dt>Source file</dt><dd>{selected.name}</dd></div>
-              <div><dt>Logical size</dt><dd>{formatBytes(selected.size)}</dd></div>
+						<div><dt>Plex library</dt><dd>{selectedItems.length} {selectedItems.length === 1 ? "video" : "videos"}</dd></div>
+						<div><dt>Manifest</dt><dd>{selectedItems.map((item) => `${item.title} (${item.year})`).join(" · ")}</dd></div>
+						<div><dt>Logical size</dt><dd>{formatBytes(selectedItems.reduce((total, item) => total + item.size, 0))}</dd></div>
               <div><dt>Storage</dt><dd>Rolling range cache</dd></div>
             </dl>
             <div className="actions">

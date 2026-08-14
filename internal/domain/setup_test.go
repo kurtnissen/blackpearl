@@ -96,3 +96,63 @@ func TestNewSetupConfigurationEnforcesPlexTitleByteLimit(t *testing.T) {
 	_, err = domain.NewSetupConfiguration(candidate, strings.Repeat("é", 101), 2026)
 	require.ErrorContains(t, err, "200 bytes")
 }
+
+func TestNewSetupManifestValidatesMultipleUniqueMovies(t *testing.T) {
+	t.Parallel()
+	firstCandidate, err := domain.NewMediaCandidate("17:3", "Films/First.mp4", 1024)
+	require.NoError(t, err)
+	secondCandidate, err := domain.NewMediaCandidate("17:4", "Films/Second.mkv", 2048)
+	require.NoError(t, err)
+	first, err := domain.NewSetupConfiguration(firstCandidate, "First", 2024)
+	require.NoError(t, err)
+	second, err := domain.NewSetupConfiguration(secondCandidate, "Second", 2025)
+	require.NoError(t, err)
+
+	manifest, err := domain.NewSetupManifest([]domain.SetupConfiguration{first, second})
+
+	require.NoError(t, err)
+	require.Equal(t, []domain.SetupConfiguration{first, second}, manifest.Items)
+	manifest.Items[0].Title = "changed"
+	require.Equal(t, "First", first.Title)
+}
+
+func TestNewSetupManifestRejectsEmptyOversizedAndDuplicateSelections(t *testing.T) {
+	t.Parallel()
+	candidate, err := domain.NewMediaCandidate("17:3", "Films/Example.mp4", 1024)
+	require.NoError(t, err)
+	configuration, err := domain.NewSetupConfiguration(candidate, "Example", 2024)
+	require.NoError(t, err)
+
+	tests := []struct {
+		name  string
+		items []domain.SetupConfiguration
+		want  string
+	}{
+		{name: "empty", want: "at least one"},
+		{name: "too many", items: make([]domain.SetupConfiguration, domain.MaximumSetupManifestItems+1), want: "at most"},
+		{name: "duplicate object", items: []domain.SetupConfiguration{configuration, configuration}, want: "duplicate object"},
+		{name: "duplicate path", items: []domain.SetupConfiguration{configuration, withObjectID(t, configuration, "17:4")}, want: "duplicate Plex path"},
+	}
+	for index := range tests {
+		test := tests[index]
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			if test.name == "too many" {
+				for itemIndex := range test.items {
+					test.items[itemIndex] = configuration
+				}
+			}
+			_, manifestErr := domain.NewSetupManifest(test.items)
+			require.ErrorContains(t, manifestErr, test.want)
+		})
+	}
+}
+
+func withObjectID(t *testing.T, configuration domain.SetupConfiguration, objectID string) domain.SetupConfiguration {
+	t.Helper()
+	candidate, err := domain.NewMediaCandidate(objectID, configuration.Name, configuration.Size)
+	require.NoError(t, err)
+	result, err := domain.NewSetupConfiguration(candidate, configuration.Title, configuration.Year)
+	require.NoError(t, err)
+	return result
+}

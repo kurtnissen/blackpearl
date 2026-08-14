@@ -20,10 +20,12 @@ import (
 const (
 	tokenFilename         = "torbox.token"
 	configurationFilename = "configuration.json"
+	manifestFilename      = "manifest.json"
 	currentFilename       = "current"
 	generationsDirectory  = "generations"
 	maxTokenBytes         = 4096
 	maxConfigurationBytes = 64 * 1024
+	maxManifestBytes      = 512 * 1024
 )
 
 // Repository stores setup state beneath one private directory.
@@ -102,6 +104,61 @@ func (r *Repository) Load(ctx context.Context) (string, domain.SetupConfiguratio
 	return tokenValue, validated, nil
 }
 
+// LoadManifest reads the saved token and validated manifest. Legacy
+// single-selection generations are returned as a one-item manifest.
+func (r *Repository) LoadManifest(ctx context.Context) (string, domain.SetupManifest, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	if err := ctx.Err(); err != nil {
+		return "", domain.SetupManifest{}, fmt.Errorf("load setup manifest: %w", err)
+	}
+	generation, generationErr := readCurrentGeneration(r.root)
+	if errors.Is(generationErr, os.ErrNotExist) {
+		return "", domain.SetupManifest{}, domain.ErrNotFound
+	}
+	if generationErr != nil {
+		return "", domain.SetupManifest{}, errors.New("read saved setup generation")
+	}
+	generationRoot := filepath.Join(r.root, generationsDirectory, generation)
+	token, tokenErr := readBounded(filepath.Join(generationRoot, tokenFilename), maxTokenBytes)
+	if tokenErr != nil {
+		return "", domain.SetupManifest{}, errors.New("read saved setup token")
+	}
+	tokenValue := strings.TrimSuffix(string(token), "\n")
+	if err := validateToken(tokenValue); err != nil {
+		return "", domain.SetupManifest{}, err
+	}
+	manifestJSON, manifestErr := readBounded(filepath.Join(generationRoot, manifestFilename), maxManifestBytes)
+	if manifestErr == nil {
+		var decoded domain.SetupManifest
+		if err := json.Unmarshal(manifestJSON, &decoded); err != nil {
+			return "", domain.SetupManifest{}, errors.New("decode saved setup manifest")
+		}
+		validated, err := domain.NewSetupManifest(decoded.Items)
+		if err != nil {
+			return "", domain.SetupManifest{}, fmt.Errorf("validate saved setup manifest: %w", err)
+		}
+		return tokenValue, validated, nil
+	}
+	if !errors.Is(manifestErr, os.ErrNotExist) {
+		return "", domain.SetupManifest{}, errors.New("read saved setup manifest")
+	}
+	configurationJSON, configurationErr := readBounded(filepath.Join(generationRoot, configurationFilename), maxConfigurationBytes)
+	if configurationErr != nil {
+		return "", domain.SetupManifest{}, errors.New("read saved setup configuration")
+	}
+	var decoded domain.SetupConfiguration
+	if err := json.Unmarshal(configurationJSON, &decoded); err != nil {
+		return "", domain.SetupManifest{}, errors.New("decode saved setup configuration")
+	}
+	validated, err := domain.NewSetupManifest([]domain.SetupConfiguration{decoded})
+	if err != nil {
+		return "", domain.SetupManifest{}, fmt.Errorf("validate saved setup configuration: %w", err)
+	}
+	return tokenValue, validated, nil
+}
+
 // Save atomically commits a pointer to one fully synchronized token and
 // configuration generation, so readers can never observe a mixed pair.
 func (r *Repository) Save(ctx context.Context, token string, configuration domain.SetupConfiguration) (resultErr error) {
@@ -148,6 +205,74 @@ func (r *Repository) Save(ctx context.Context, token string, configuration domai
 	}
 	if err := writeAtomic(filepath.Join(generationRoot, configurationFilename), content); err != nil {
 		return errors.New("write setup configuration")
+	}
+	if err := syncDirectory(generationRoot); err != nil {
+		return errors.New("sync setup generation")
+	}
+	if err := syncDirectory(filepath.Join(r.root, generationsDirectory)); err != nil {
+		return errors.New("sync setup generations directory")
+	}
+	if err := writeAtomic(filepath.Join(r.root, currentFilename), []byte(generation+"\n")); err != nil {
+		return errors.New("commit setup generation")
+	}
+	committed = true
+	if err := syncDirectory(r.root); err != nil {
+		return err
+	}
+	if err := r.cleanupInactiveGenerations(generation); err != nil {
+		return errors.Join(domain.ErrCleanupDeferred, fmt.Errorf("clean inactive setup generations: %w", err))
+	}
+	return nil
+}
+
+// SaveManifest atomically commits one token and validated multi-item manifest.
+func (r *Repository) SaveManifest(ctx context.Context, token string, manifest domain.SetupManifest) error {
+	validated, err := domain.NewSetupManifest(manifest.Items)
+	if err != nil {
+		return fmt.Errorf("validate setup manifest: %w", err)
+	}
+	content, err := json.Marshal(validated)
+	if err != nil {
+		return errors.New("encode setup manifest")
+	}
+	return r.saveGeneration(ctx, token, manifestFilename, append(content, '\n'))
+}
+
+func (r *Repository) saveGeneration(ctx context.Context, token string, stateFilename string, content []byte) (resultErr error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("save setup: %w", err)
+	}
+	if err := validateToken(token); err != nil {
+		return err
+	}
+	generation, err := newGenerationID()
+	if err != nil {
+		return errors.New("create setup generation identifier")
+	}
+	generationRoot := filepath.Join(r.root, generationsDirectory, generation)
+	if err := os.Mkdir(generationRoot, 0o700); err != nil {
+		return errors.New("create setup generation")
+	}
+	committed := false
+	defer func() {
+		if committed {
+			return
+		}
+		if err := os.RemoveAll(generationRoot); err != nil {
+			resultErr = errors.Join(resultErr, errors.New("remove incomplete setup generation"))
+		}
+		if err := syncDirectory(filepath.Join(r.root, generationsDirectory)); err != nil {
+			resultErr = errors.Join(resultErr, errors.New("sync removal of incomplete setup generation"))
+		}
+	}()
+	if err := writeAtomic(filepath.Join(generationRoot, tokenFilename), []byte(token+"\n")); err != nil {
+		return errors.New("write setup token")
+	}
+	if err := writeAtomic(filepath.Join(generationRoot, stateFilename), content); err != nil {
+		return errors.New("write setup state")
 	}
 	if err := syncDirectory(generationRoot); err != nil {
 		return errors.New("sync setup generation")

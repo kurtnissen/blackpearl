@@ -31,10 +31,10 @@ var (
 	ErrInvalidSelection = errors.New("selected media is not available")
 )
 
-// Repository stores one token and one selected configuration.
+// Repository stores one token and one selected manifest.
 type Repository interface {
-	Load(ctx context.Context) (string, domain.SetupConfiguration, error)
-	Save(ctx context.Context, token string, configuration domain.SetupConfiguration) error
+	LoadManifest(ctx context.Context) (string, domain.SetupManifest, error)
+	SaveManifest(ctx context.Context, token string, manifest domain.SetupManifest) error
 	Clear(ctx context.Context) error
 }
 
@@ -47,7 +47,7 @@ type Discoverer interface {
 type GatewayFactory func(token string) (Discoverer, error)
 
 // RuntimeFactory prepares and validates a range-backed catalog without activating it.
-type RuntimeFactory func(ctx context.Context, token string, configuration domain.SetupConfiguration) (core.CatalogService, error)
+type RuntimeFactory func(ctx context.Context, token string, manifest domain.SetupManifest) (core.CatalogService, error)
 
 // Publisher atomically publishes one namespace-and-catalog runtime snapshot.
 type Publisher interface {
@@ -56,7 +56,15 @@ type Publisher interface {
 
 // ApplyRequest contains write-only credentials and public Plex metadata.
 type ApplyRequest struct {
-	Token    string `json:"token,omitempty"`
+	Token    string             `json:"token,omitempty"`
+	Items    []ApplyItemRequest `json:"items,omitempty"`
+	ObjectID string             `json:"objectId,omitempty"`
+	Title    string             `json:"title,omitempty"`
+	Year     int                `json:"year,omitempty"`
+}
+
+// ApplyItemRequest identifies one discovered item and its Plex movie metadata.
+type ApplyItemRequest struct {
 	ObjectID string `json:"objectId"`
 	Title    string `json:"title"`
 	Year     int    `json:"year"`
@@ -64,9 +72,10 @@ type ApplyRequest struct {
 
 // Status is safe to return to an untrusted browser.
 type Status struct {
-	SetupRequired   bool                       `json:"setupRequired"`
-	TokenConfigured bool                       `json:"tokenConfigured"`
-	Selected        *domain.SetupConfiguration `json:"selected,omitempty"`
+	SetupRequired   bool                        `json:"setupRequired"`
+	TokenConfigured bool                        `json:"tokenConfigured"`
+	Selected        *domain.SetupConfiguration  `json:"selected,omitempty"`
+	SelectedItems   []domain.SetupConfiguration `json:"selectedItems,omitempty"`
 }
 
 // Service owns setup state transitions.
@@ -80,7 +89,7 @@ type Service struct {
 	mu              sync.RWMutex
 	transitionMu    sync.Mutex
 	tokenConfigured bool
-	selected        *domain.SetupConfiguration
+	manifest        *domain.SetupManifest
 }
 
 // New constructs a setup service from narrow infrastructure boundaries.
@@ -99,10 +108,13 @@ func New(repository Repository, gatewayFactory GatewayFactory, runtimeFactory Ru
 func (s *Service) Status() Status {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	status := Status{SetupRequired: s.selected == nil, TokenConfigured: s.tokenConfigured}
-	if s.selected != nil {
-		copy := *s.selected
-		status.Selected = &copy
+	status := Status{SetupRequired: s.manifest == nil, TokenConfigured: s.tokenConfigured}
+	if s.manifest != nil {
+		status.SelectedItems = append([]domain.SetupConfiguration(nil), s.manifest.Items...)
+		if len(status.SelectedItems) > 0 {
+			copy := status.SelectedItems[0]
+			status.Selected = &copy
+		}
 	}
 	return status
 }
@@ -130,7 +142,7 @@ func (s *Service) Discover(ctx context.Context, token string) ([]domain.MediaCan
 // AuthorizeSetup permits first-time setup, a browser session derived from the
 // securely saved token, or explicit re-entry of that saved token.
 func (s *Service) AuthorizeSetup(ctx context.Context, suppliedToken string, session string, bootstrapToken string) error {
-	savedToken, _, err := s.repository.Load(ctx)
+	savedToken, _, err := s.repository.LoadManifest(ctx)
 	if err != nil {
 		if errors.Is(err, domain.ErrNotFound) {
 			if suppliedToken == "" || !s.validBootstrap(bootstrapToken) {
@@ -174,73 +186,86 @@ func (s *Service) IssueSession(ctx context.Context, token string) (string, error
 	return value, nil
 }
 
-// Apply validates and probes one selected video, persists its credentials and
-// metadata, then atomically publishes the prepared runtime.
-func (s *Service) Apply(ctx context.Context, request ApplyRequest) (domain.SetupConfiguration, error) {
+// Apply validates and probes one selected manifest, persists its credentials
+// and metadata, then atomically publishes the prepared runtime.
+func (s *Service) Apply(ctx context.Context, request ApplyRequest) (domain.SetupManifest, error) {
 	s.transitionMu.Lock()
 	defer s.transitionMu.Unlock()
 	token, err := s.resolveToken(ctx, request.Token)
 	if err != nil {
-		return domain.SetupConfiguration{}, err
+		return domain.SetupManifest{}, err
+	}
+	requests, err := request.itemRequests()
+	if err != nil {
+		return domain.SetupManifest{}, ErrInvalidSelection
 	}
 	items, err := s.discoverWithToken(ctx, token)
 	if err != nil {
-		return domain.SetupConfiguration{}, err
+		return domain.SetupManifest{}, err
 	}
-	var selected *domain.MediaCandidate
+	candidates := make(map[string]domain.MediaCandidate, len(items))
 	for index := range items {
-		if items[index].ObjectID == request.ObjectID {
-			copy := items[index]
-			selected = &copy
-			break
+		candidates[items[index].ObjectID] = items[index]
+	}
+	configurations := make([]domain.SetupConfiguration, 0, len(requests))
+	for index := range requests {
+		selected, exists := candidates[requests[index].ObjectID]
+		if !exists {
+			return domain.SetupManifest{}, ErrInvalidSelection
 		}
+		configuration, configurationErr := domain.NewSetupConfiguration(selected, requests[index].Title, requests[index].Year)
+		if configurationErr != nil {
+			return domain.SetupManifest{}, fmt.Errorf("validate selected media: %w", ErrInvalidSelection)
+		}
+		configurations = append(configurations, configuration)
 	}
-	if selected == nil {
-		return domain.SetupConfiguration{}, ErrInvalidSelection
-	}
-	configuration, err := domain.NewSetupConfiguration(*selected, request.Title, request.Year)
+	manifest, err := domain.NewSetupManifest(configurations)
 	if err != nil {
-		return domain.SetupConfiguration{}, fmt.Errorf("validate selected media: %w", ErrInvalidSelection)
+		return domain.SetupManifest{}, fmt.Errorf("validate selected manifest: %w", ErrInvalidSelection)
 	}
-	runtime, err := s.runtimeFactory(ctx, token, configuration)
+	runtime, err := s.runtimeFactory(ctx, token, manifest)
 	if err != nil {
-		return domain.SetupConfiguration{}, errors.Join(fmt.Errorf("prepare selected media: %w", ErrUnavailable), err)
+		return domain.SetupManifest{}, errors.Join(fmt.Errorf("prepare selected media: %w", ErrUnavailable), err)
 	}
 	if err := runtime.Ready(ctx); err != nil {
-		return domain.SetupConfiguration{}, errors.Join(fmt.Errorf("probe selected media: %w", ErrUnavailable), err)
+		return domain.SetupManifest{}, errors.Join(fmt.Errorf("probe selected media: %w", ErrUnavailable), err)
 	}
-	previousToken, previousConfiguration, loadErr := s.repository.Load(ctx)
+	previousToken, previousManifest, loadErr := s.repository.LoadManifest(ctx)
 	hadPrevious := loadErr == nil
 	if loadErr != nil && !errors.Is(loadErr, domain.ErrNotFound) {
-		return domain.SetupConfiguration{}, fmt.Errorf("load prior setup before commit: %w", ErrUnavailable)
+		return domain.SetupManifest{}, fmt.Errorf("load prior setup before commit: %w", ErrUnavailable)
 	}
-	if err := s.repository.Save(ctx, token, configuration); err != nil {
-		if !errors.Is(err, domain.ErrCleanupDeferred) {
-			return domain.SetupConfiguration{}, fmt.Errorf("persist selected media: %w", ErrUnavailable)
-		}
-		committedToken, committedConfiguration, loadAfterSaveErr := s.repository.Load(ctx)
-		if loadAfterSaveErr != nil || committedToken != token || committedConfiguration != configuration {
-			return domain.SetupConfiguration{}, fmt.Errorf("persist selected media: %w", ErrUnavailable)
+	if saveErr := s.repository.SaveManifest(ctx, token, manifest); saveErr != nil {
+		committedToken, committedManifest, loadAfterSaveErr := s.repository.LoadManifest(ctx)
+		committed := loadAfterSaveErr == nil && committedToken == token && manifestsEqual(committedManifest, manifest)
+		if errors.Is(saveErr, domain.ErrCleanupDeferred) && committed {
+			// The new generation is durable and visible; only removal of an
+			// inactive private generation was deferred.
+		} else if committed {
+			rollbackErr := s.rollbackPersistence(ctx, hadPrevious, previousToken, previousManifest)
+			return domain.SetupManifest{}, errors.Join(fmt.Errorf("persist selected media: %w", ErrUnavailable), rollbackErr)
+		} else {
+			return domain.SetupManifest{}, fmt.Errorf("persist selected media: %w", ErrUnavailable)
 		}
 	}
 	if err := s.publisher.Publish(ctx, runtime); err != nil {
-		rollbackErr := s.rollbackPersistence(ctx, hadPrevious, previousToken, previousConfiguration)
-		return domain.SetupConfiguration{}, errors.Join(fmt.Errorf("publish selected media: %w", ErrUnavailable), rollbackErr)
+		rollbackErr := s.rollbackPersistence(ctx, hadPrevious, previousToken, previousManifest)
+		return domain.SetupManifest{}, errors.Join(fmt.Errorf("publish selected media: %w", ErrUnavailable), rollbackErr)
 	}
-	s.setStatus(configuration)
-	return configuration, nil
+	s.setStatus(manifest)
+	return manifest, nil
 }
 
 // Restore activates securely persisted setup state during process startup.
 func (s *Service) Restore(ctx context.Context) error {
 	s.transitionMu.Lock()
 	defer s.transitionMu.Unlock()
-	token, configuration, err := s.repository.Load(ctx)
+	token, manifest, err := s.repository.LoadManifest(ctx)
 	if err != nil {
 		return err
 	}
 	s.markTokenConfigured()
-	runtime, err := s.runtimeFactory(ctx, token, configuration)
+	runtime, err := s.runtimeFactory(ctx, token, manifest)
 	if err != nil {
 		return fmt.Errorf("prepare saved setup: %w", ErrUnavailable)
 	}
@@ -250,7 +275,7 @@ func (s *Service) Restore(ctx context.Context) error {
 	if err := s.publisher.Publish(ctx, runtime); err != nil {
 		return fmt.Errorf("publish saved setup: %w", ErrUnavailable)
 	}
-	s.setStatus(configuration)
+	s.setStatus(manifest)
 	return nil
 }
 
@@ -276,7 +301,7 @@ func (s *Service) resolveToken(ctx context.Context, supplied string) (string, er
 		}
 		return supplied, nil
 	}
-	token, _, err := s.repository.Load(ctx)
+	token, _, err := s.repository.LoadManifest(ctx)
 	if err != nil {
 		if errors.Is(err, domain.ErrNotFound) {
 			return "", ErrUnauthorized
@@ -287,11 +312,11 @@ func (s *Service) resolveToken(ctx context.Context, supplied string) (string, er
 	return token, nil
 }
 
-func (s *Service) rollbackPersistence(ctx context.Context, hadPrevious bool, token string, configuration domain.SetupConfiguration) error {
+func (s *Service) rollbackPersistence(ctx context.Context, hadPrevious bool, token string, manifest domain.SetupManifest) error {
 	rollbackContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
 	if hadPrevious {
-		if err := s.repository.Save(rollbackContext, token, configuration); err != nil {
+		if err := s.repository.SaveManifest(rollbackContext, token, manifest); err != nil {
 			return fmt.Errorf("restore prior setup persistence: %w", err)
 		}
 		return nil
@@ -302,12 +327,40 @@ func (s *Service) rollbackPersistence(ctx context.Context, hadPrevious bool, tok
 	return nil
 }
 
-func (s *Service) setStatus(configuration domain.SetupConfiguration) {
+func (s *Service) setStatus(manifest domain.SetupManifest) {
 	s.mu.Lock()
-	copy := configuration
-	s.selected = &copy
+	copy := domain.SetupManifest{Items: append([]domain.SetupConfiguration(nil), manifest.Items...)}
+	s.manifest = &copy
 	s.tokenConfigured = true
 	s.mu.Unlock()
+}
+
+func (r ApplyRequest) itemRequests() ([]ApplyItemRequest, error) {
+	if len(r.Items) > 0 {
+		if len(r.Items) > domain.MaximumSetupManifestItems {
+			return nil, errors.New("request contains too many items")
+		}
+		if r.ObjectID != "" || r.Title != "" || r.Year != 0 {
+			return nil, errors.New("request cannot combine items and legacy selection")
+		}
+		return append([]ApplyItemRequest(nil), r.Items...), nil
+	}
+	if r.ObjectID == "" {
+		return nil, errors.New("request requires at least one item")
+	}
+	return []ApplyItemRequest{{ObjectID: r.ObjectID, Title: r.Title, Year: r.Year}}, nil
+}
+
+func manifestsEqual(left domain.SetupManifest, right domain.SetupManifest) bool {
+	if len(left.Items) != len(right.Items) {
+		return false
+	}
+	for index := range left.Items {
+		if left.Items[index] != right.Items[index] {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Service) markTokenConfigured() {

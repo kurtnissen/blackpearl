@@ -9,17 +9,26 @@ afterEach(() => {
   window.history.replaceState(null, "", "/");
 });
 
-it("discovers a video, applies it, and clears the token field", async () => {
+it("discovers videos, applies a multi-item manifest, and clears the token field", async () => {
   const session = "a".repeat(64);
   const bootstrap = "b".repeat(64);
   window.history.replaceState(null, "", `/#bootstrap=${bootstrap}`);
   const fetchSpy = vi.fn()
     .mockResolvedValueOnce(new Response(JSON.stringify({ setupRequired: true, tokenConfigured: false, csrfToken: "csrf" }), { status: 200 }))
-    .mockResolvedValueOnce(new Response(JSON.stringify({ candidates: [{ objectId: "17:3", name: "Films/Example.mkv", extension: ".mkv", size: 1073741824 }] }), {
+		.mockResolvedValueOnce(new Response(JSON.stringify({ candidates: [
+			{ objectId: "17:3", name: "Films/Example.mkv", extension: ".mkv", size: 1073741824 },
+			{ objectId: "17:4", name: "Films/Second.mp4", extension: ".mp4", size: 734003200 },
+		] }), {
       status: 200,
       headers: { "X-BlackPearl-Session": session },
     }))
-    .mockResolvedValueOnce(new Response(JSON.stringify({ selected: { objectId: "17:3", name: "Films/Example.mkv", extension: ".mkv", size: 1073741824, title: "Example", year: 2026 } }), {
+		.mockResolvedValueOnce(new Response(JSON.stringify({
+			selected: { objectId: "17:3", name: "Films/Example.mkv", extension: ".mkv", size: 1073741824, title: "Example", year: 2026 },
+			selectedItems: [
+				{ objectId: "17:3", name: "Films/Example.mkv", extension: ".mkv", size: 1073741824, title: "Example", year: 2026 },
+				{ objectId: "17:4", name: "Films/Second.mp4", extension: ".mp4", size: 734003200, title: "Second", year: 2026 },
+			],
+		}), {
       status: 200,
       headers: { "X-BlackPearl-Session": session },
     }));
@@ -30,8 +39,9 @@ it("discovers a video, applies it, and clears the token field", async () => {
   const token = await screen.findByLabelText("TorBox API token");
   await user.type(token, "private-token");
   await user.click(screen.getByRole("button", { name: "Find my videos" }));
-  await user.click(await screen.findByRole("radio", { name: /Example\.mkv/ }));
-  await user.click(screen.getByRole("button", { name: "Use with Plex" }));
+	await user.click(await screen.findByRole("checkbox", { name: /Example\.mkv/ }));
+	await user.click(screen.getByRole("checkbox", { name: /Second\.mp4/ }));
+	await user.click(screen.getByRole("button", { name: "Use 2 with Plex" }));
 
   expect(await screen.findByText("BlackPearl is ready" )).toBeInTheDocument();
   expect(window.location.hash).toBe("");
@@ -40,6 +50,9 @@ it("discovers a video, applies it, and clears the token field", async () => {
   expect(fetchSpy).toHaveBeenNthCalledWith(2, "/api/setup/discover", expect.objectContaining({
     headers: expect.objectContaining({ "X-BlackPearl-Bootstrap": bootstrap }),
   }));
+	expect(fetchSpy).toHaveBeenNthCalledWith(3, "/api/setup/configuration", expect.objectContaining({
+		body: expect.stringContaining('"items"'),
+	}));
   await user.click(screen.getByRole("button", { name: "Replace token" }));
   expect(screen.getByLabelText("TorBox API token")).toHaveValue("");
 });
@@ -56,6 +69,50 @@ it("shows a helpful empty state when no eligible videos exist", async () => {
   await user.click(screen.getByRole("button", { name: "Find my videos" }));
 
   expect(await screen.findByText("No ready MP4 or MKV files found")).toBeInTheDocument();
+});
+
+it("bounds the visible account list and searches the full discovery result", async () => {
+	const session = "a".repeat(64);
+	const candidates = Array.from({ length: 125 }, (_, index) => ({
+		objectId: `17:${index + 1}`,
+		name: index === 124 ? "Films/Needle.mp4" : `Films/Video-${index + 1}.mp4`,
+		extension: ".mp4",
+		size: 1024 + index,
+	}));
+	vi.stubGlobal("fetch", vi.fn()
+		.mockResolvedValueOnce(new Response(JSON.stringify({ setupRequired: true, tokenConfigured: false, csrfToken: "csrf" }), { status: 200 }))
+		.mockResolvedValueOnce(new Response(JSON.stringify({ candidates }), { status: 200, headers: { "X-BlackPearl-Session": session } })));
+	const user = userEvent.setup();
+	render(<SetupConsole />);
+
+	await user.type(await screen.findByLabelText("TorBox API token"), "private-token");
+	await user.click(screen.getByRole("button", { name: "Find my videos" }));
+	requireVisibleCheckboxCount(100);
+	await user.type(screen.getByLabelText("Search videos"), "Needle");
+
+	expect(screen.getAllByRole("checkbox")).toHaveLength(1);
+	expect(screen.getByRole("checkbox", { name: /Needle\.mp4/ })).toBeInTheDocument();
+	expect(screen.queryByText(/Showing the first/)).not.toBeInTheDocument();
+});
+
+it("keeps the active manifest selected when adding videos with the saved token", async () => {
+	const session = "a".repeat(64);
+	const bootstrap = "b".repeat(64);
+	const active = { objectId: "17:3", name: "Films/Existing.mp4", extension: ".mp4", size: 1024, title: "Existing", year: 2024 };
+	window.history.replaceState(null, "", `/#bootstrap=${bootstrap}`);
+	vi.stubGlobal("fetch", vi.fn()
+		.mockResolvedValueOnce(new Response(JSON.stringify({ setupRequired: false, tokenConfigured: true, csrfToken: "csrf", selected: active, selectedItems: [active] }), { status: 200 }))
+		.mockResolvedValueOnce(new Response(JSON.stringify({ candidates: [
+			{ objectId: "17:3", name: "Films/Existing.mp4", extension: ".mp4", size: 1024 },
+			{ objectId: "17:4", name: "Films/New.mp4", extension: ".mp4", size: 2048 },
+		] }), { status: 200, headers: { "X-BlackPearl-Session": session } })));
+	const user = userEvent.setup();
+	render(<SetupConsole />);
+
+	await user.click(await screen.findByRole("button", { name: "Change video" }));
+
+	expect(await screen.findByRole("checkbox", { name: /Existing\.mp4/ })).toBeChecked();
+	expect(screen.getByLabelText("Plex title")).toHaveValue("Existing");
 });
 
 it("announces provider errors without displaying the typed token", async () => {
@@ -110,7 +167,11 @@ it("limits the Plex title to the API filename bound", async () => {
 
   await user.type(await screen.findByLabelText("TorBox API token"), "private-token");
   await user.click(screen.getByRole("button", { name: "Find my videos" }));
-  await user.click(await screen.findByRole("radio", { name: /Example\.mkv/ }));
+	await user.click(await screen.findByRole("checkbox", { name: /Example\.mkv/ }));
 
   expect(screen.getByLabelText("Plex title")).toHaveAttribute("maxLength", "200");
 });
+
+function requireVisibleCheckboxCount(count: number): void {
+	expect(screen.getAllByRole("checkbox")).toHaveLength(count);
+}

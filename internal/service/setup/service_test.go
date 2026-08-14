@@ -42,7 +42,7 @@ func TestServiceDiscoverMapsProviderAuthenticationFailure(t *testing.T) {
 		func(string) (setupservice.Discoverer, error) {
 			return &fakeDiscoverer{err: domain.ErrUnauthorized}, nil
 		},
-		func(context.Context, string, domain.SetupConfiguration) (core.CatalogService, error) {
+		func(context.Context, string, domain.SetupManifest) (core.CatalogService, error) {
 			return &fakeCatalog{}, nil
 		},
 		&fakePublisher{},
@@ -71,7 +71,7 @@ func TestServiceSetupAuthorizationAllowsOnlyExplicitTokenBeforeFirstSave(t *test
 	t.Parallel()
 	service := setupservice.New(&fakeSetupRepository{},
 		func(string) (setupservice.Discoverer, error) { return &fakeDiscoverer{}, nil },
-		func(context.Context, string, domain.SetupConfiguration) (core.CatalogService, error) {
+		func(context.Context, string, domain.SetupManifest) (core.CatalogService, error) {
 			return &fakeCatalog{}, nil
 		},
 		&fakePublisher{}, "bootstrap-token",
@@ -92,9 +92,9 @@ func TestServiceApplyPersistsThenPublishesValidatedSelection(t *testing.T) {
 		func(string) (setupservice.Discoverer, error) {
 			return &fakeDiscoverer{items: []domain.MediaCandidate{candidate}}, nil
 		},
-		func(_ context.Context, token string, configuration domain.SetupConfiguration) (core.CatalogService, error) {
+		func(_ context.Context, token string, manifest domain.SetupManifest) (core.CatalogService, error) {
 			require.Equal(t, "new-token", token)
-			require.Equal(t, candidate.ObjectID, configuration.ObjectID)
+			require.Equal(t, candidate.ObjectID, manifest.Items[0].ObjectID)
 			return runtime, nil
 		},
 		publisher,
@@ -105,7 +105,7 @@ func TestServiceApplyPersistsThenPublishesValidatedSelection(t *testing.T) {
 	})
 
 	require.NoError(t, err)
-	require.Equal(t, candidate.ObjectID, selected.ObjectID)
+	require.Equal(t, candidate.ObjectID, selected.Items[0].ObjectID)
 	require.Same(t, runtime, publisher.active)
 	require.Equal(t, "new-token", repository.savedToken)
 	require.Equal(t, candidate.ObjectID, repository.savedConfiguration.ObjectID)
@@ -114,6 +114,43 @@ func TestServiceApplyPersistsThenPublishesValidatedSelection(t *testing.T) {
 	require.False(t, status.SetupRequired)
 	require.True(t, status.TokenConfigured)
 	require.NotNil(t, status.Selected)
+}
+
+func TestServiceApplyPublishesMultipleSelectionsAsOneManifest(t *testing.T) {
+	t.Parallel()
+	first, err := domain.NewMediaCandidate("17:3", "First.mp4", 1024)
+	require.NoError(t, err)
+	second, err := domain.NewMediaCandidate("17:4", "Second.mkv", 2048)
+	require.NoError(t, err)
+	repository := &fakeSetupRepository{}
+	runtime := &fakeCatalog{}
+	publisher := &fakePublisher{}
+	service := setupservice.New(repository,
+		func(string) (setupservice.Discoverer, error) {
+			return &fakeDiscoverer{items: []domain.MediaCandidate{first, second}}, nil
+		},
+		func(_ context.Context, _ string, manifest domain.SetupManifest) (core.CatalogService, error) {
+			require.Len(t, manifest.Items, 2)
+			return runtime, nil
+		},
+		publisher,
+	)
+
+	manifest, err := service.Apply(context.Background(), setupservice.ApplyRequest{
+		Token: "new-token",
+		Items: []setupservice.ApplyItemRequest{
+			{ObjectID: first.ObjectID, Title: "First", Year: 2024},
+			{ObjectID: second.ObjectID, Title: "Second", Year: 2025},
+		},
+	})
+
+	require.NoError(t, err)
+	require.Len(t, manifest.Items, 2)
+	require.Equal(t, manifest, repository.savedManifest)
+	require.Same(t, runtime, publisher.active)
+	status := service.Status()
+	require.Len(t, status.SelectedItems, 2)
+	require.Equal(t, status.SelectedItems[0], *status.Selected)
 }
 
 func TestServiceApplyKeepsRuntimeAndPersistenceWhenSaveOrPublishFails(t *testing.T) {
@@ -138,7 +175,7 @@ func TestServiceApplyKeepsRuntimeAndPersistenceWhenSaveOrPublishFails(t *testing
 				func(string) (setupservice.Discoverer, error) {
 					return &fakeDiscoverer{items: []domain.MediaCandidate{candidate}}, nil
 				},
-				func(context.Context, string, domain.SetupConfiguration) (core.CatalogService, error) {
+				func(context.Context, string, domain.SetupManifest) (core.CatalogService, error) {
 					return newRuntime, nil
 				},
 				publisher,
@@ -167,7 +204,7 @@ func TestServiceApplyPublishesWhenRepositoryReportsPostCommitMaintenanceError(t 
 		func(string) (setupservice.Discoverer, error) {
 			return &fakeDiscoverer{items: []domain.MediaCandidate{candidate}}, nil
 		},
-		func(context.Context, string, domain.SetupConfiguration) (core.CatalogService, error) {
+		func(context.Context, string, domain.SetupManifest) (core.CatalogService, error) {
 			return runtime, nil
 		},
 		publisher,
@@ -178,7 +215,7 @@ func TestServiceApplyPublishesWhenRepositoryReportsPostCommitMaintenanceError(t 
 	})
 
 	require.NoError(t, err)
-	require.Equal(t, "Example", selected.Title)
+	require.Equal(t, "Example", selected.Items[0].Title)
 	require.Same(t, runtime, publisher.active)
 }
 
@@ -194,7 +231,7 @@ func TestServiceApplyDoesNotPublishWhenRepositoryReportsDurabilityErrorAfterVisi
 		func(string) (setupservice.Discoverer, error) {
 			return &fakeDiscoverer{items: []domain.MediaCandidate{candidate}}, nil
 		},
-		func(context.Context, string, domain.SetupConfiguration) (core.CatalogService, error) {
+		func(context.Context, string, domain.SetupManifest) (core.CatalogService, error) {
 			return &fakeCatalog{}, nil
 		},
 		publisher,
@@ -206,6 +243,8 @@ func TestServiceApplyDoesNotPublishWhenRepositoryReportsDurabilityErrorAfterVisi
 
 	require.ErrorIs(t, err, setupservice.ErrUnavailable)
 	require.Zero(t, publisher.calls)
+	require.Empty(t, repository.token)
+	require.Empty(t, repository.manifest.Items)
 }
 
 func TestServiceApplyPreservesRuntimePreparationCauseForServerDiagnostics(t *testing.T) {
@@ -215,7 +254,7 @@ func TestServiceApplyPreservesRuntimePreparationCauseForServerDiagnostics(t *tes
 		func(string) (setupservice.Discoverer, error) {
 			return &fakeDiscoverer{items: []domain.MediaCandidate{candidate}}, nil
 		},
-		func(context.Context, string, domain.SetupConfiguration) (core.CatalogService, error) {
+		func(context.Context, string, domain.SetupManifest) (core.CatalogService, error) {
 			return nil, errors.New("TorBox CDN metadata requires status 200: got 206")
 		},
 		&fakePublisher{},
@@ -239,7 +278,7 @@ func TestServiceRestoreActivatesSavedSelection(t *testing.T) {
 		func(string) (setupservice.Discoverer, error) {
 			return &fakeDiscoverer{items: []domain.MediaCandidate{configuration.Candidate()}}, nil
 		},
-		func(context.Context, string, domain.SetupConfiguration) (core.CatalogService, error) {
+		func(context.Context, string, domain.SetupManifest) (core.CatalogService, error) {
 			return runtime, nil
 		},
 		publisher,
@@ -257,7 +296,7 @@ func TestServiceRestoreReportsSavedTokenWhenSelectedMediaIsUnavailable(t *testin
 	repository := &fakeSetupRepository{token: "saved-token", configuration: mustConfiguration(t)}
 	service := setupservice.New(repository,
 		func(string) (setupservice.Discoverer, error) { return &fakeDiscoverer{}, nil },
-		func(context.Context, string, domain.SetupConfiguration) (core.CatalogService, error) {
+		func(context.Context, string, domain.SetupManifest) (core.CatalogService, error) {
 			return &fakeCatalog{readyErr: errors.New("media disappeared")}, nil
 		},
 		&fakePublisher{},
@@ -281,7 +320,7 @@ func TestServiceApplyRestoresPriorSavedPairWhenPublishFails(t *testing.T) {
 		func(string) (setupservice.Discoverer, error) {
 			return &fakeDiscoverer{items: []domain.MediaCandidate{candidate}}, nil
 		},
-		func(context.Context, string, domain.SetupConfiguration) (core.CatalogService, error) {
+		func(context.Context, string, domain.SetupManifest) (core.CatalogService, error) {
 			return &fakeCatalog{}, nil
 		},
 		&fakePublisher{err: errors.New("NFS unavailable")},
@@ -302,40 +341,55 @@ type fakeSetupRepository struct {
 	loadedToken        string
 	savedToken         string
 	savedConfiguration domain.SetupConfiguration
+	manifest           domain.SetupManifest
+	savedManifest      domain.SetupManifest
 	loadErr            error
 	saveErr            error
 	commitOnSaveError  bool
 }
 
-func (f *fakeSetupRepository) Load(context.Context) (string, domain.SetupConfiguration, error) {
+func (f *fakeSetupRepository) LoadManifest(context.Context) (string, domain.SetupManifest, error) {
 	f.loadedToken = f.token
 	if f.loadErr != nil {
-		return "", domain.SetupConfiguration{}, f.loadErr
+		return "", domain.SetupManifest{}, f.loadErr
 	}
 	if f.token == "" {
-		return "", domain.SetupConfiguration{}, domain.ErrNotFound
+		return "", domain.SetupManifest{}, domain.ErrNotFound
 	}
-	return f.token, f.configuration, nil
+	if len(f.manifest.Items) > 0 {
+		return f.token, f.manifest, nil
+	}
+	manifest, err := domain.NewSetupManifest([]domain.SetupConfiguration{f.configuration})
+	if err != nil {
+		return "", domain.SetupManifest{}, err
+	}
+	return f.token, manifest, nil
 }
 
-func (f *fakeSetupRepository) Save(_ context.Context, token string, configuration domain.SetupConfiguration) error {
+func (f *fakeSetupRepository) SaveManifest(_ context.Context, token string, manifest domain.SetupManifest) error {
 	f.savedToken = token
-	f.savedConfiguration = configuration
+	f.savedManifest = manifest
+	if len(manifest.Items) > 0 {
+		f.savedConfiguration = manifest.Items[0]
+	}
 	if f.saveErr != nil {
 		if f.commitOnSaveError {
 			f.token = token
-			f.configuration = configuration
+			f.manifest = manifest
+			f.configuration = manifest.Items[0]
 		}
 		return f.saveErr
 	}
 	f.token = token
-	f.configuration = configuration
+	f.manifest = manifest
+	f.configuration = manifest.Items[0]
 	return nil
 }
 
 func (f *fakeSetupRepository) Clear(context.Context) error {
 	f.token = ""
 	f.configuration = domain.SetupConfiguration{}
+	f.manifest = domain.SetupManifest{}
 	return nil
 }
 
@@ -377,7 +431,7 @@ func newService(repository *fakeSetupRepository, items []domain.MediaCandidate) 
 			repository.loadedToken = token
 			return &fakeDiscoverer{items: items}, nil
 		},
-		func(context.Context, string, domain.SetupConfiguration) (core.CatalogService, error) {
+		func(context.Context, string, domain.SetupManifest) (core.CatalogService, error) {
 			return &fakeCatalog{}, nil
 		},
 		&fakePublisher{},

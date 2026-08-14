@@ -63,6 +63,12 @@ Rolling mode divides a logical object into independently addressable chunks and:
 
 The implementation enforces `published chunk bytes + reserved fetch bytes <= quota`, coalesces concurrent misses, atomically publishes verified chunks, restores valid chunks after restart, and evicts least-recently-used unpinned chunks. Browser-selected runtimes share one process-lifetime rolling pool, preventing competing recovery scans or independent quota ledgers on the same directory. Read-ahead and adaptive scheduling remain later work. None of these policies change PearlFS, PearlNFS, or Plex integration; the same binary selects the policy from configuration.
 
+Browser setup persists one credential plus a validated manifest of 1-100 movie
+selections. It prepares every provider object and a fresh in-memory catalog
+before atomically replacing persistence and the NFS namespace. Object IDs and
+Plex paths must be unique. Existing single-selection generations migrate in
+memory to a one-item manifest, so upgrades do not invalidate saved credentials.
+
 PearlNFS publishes each namespace together with the catalog that supplies its bytes. NFS file handles retain an immutable generation snapshot, while new lookups use the newest generation. This keeps active reads stable during browser-driven media replacement, including when a replacement reuses the same Plex path.
 
 ## Direct Play target
@@ -79,7 +85,8 @@ SQLite owns catalog metadata only. Cache bytes and the optional FUSE mount live 
 2. Add production authentication to an explicitly authorized ranged acquisition provider.
 3. Add seek-aware read-ahead and adaptive scheduling.
 4. Add bounded next-episode prefetch.
-5. Add optional Prowlarr discovery and additional authorized providers.
+5. Add explicit TV show/season/episode hierarchy.
+6. Add optional Prowlarr discovery and additional authorized providers.
 
 Each stage needs its own acceptance evidence. A generic interface alone is not evidence that a provider, rolling cache, or progressive stream works.
 

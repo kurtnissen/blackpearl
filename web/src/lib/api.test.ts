@@ -38,19 +38,21 @@ describe("setup API", () => {
     await expect(discoverMedia("bad-token", "csrf", {})).rejects.toMatchObject({ code: "unauthorized", message: "Token rejected" });
   });
 
-  it("loads status and applies the selected public metadata", async () => {
+  it("loads status and applies a public media manifest", async () => {
+	const selectedItems = [{ objectId: "17:3", name: "Film.mkv", extension: ".mkv", size: 9, title: "Film", year: 2026 }];
     const fetchSpy = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({ setupRequired: true, tokenConfigured: false, csrfToken: "csrf" }), { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ selected: { objectId: "17:3", name: "Film.mkv", extension: ".mkv", size: 9, title: "Film", year: 2026 } }), {
+		.mockResolvedValueOnce(new Response(JSON.stringify({ selected: selectedItems[0], selectedItems }), {
         status: 200,
         headers: { "X-BlackPearl-Session": session },
       }));
     vi.stubGlobal("fetch", fetchSpy);
 
     const status = await getStatus();
-    const result = await applyConfiguration({ objectId: "17:3", title: "Film", year: 2026 }, status.csrfToken, { session });
+	const result = await applyConfiguration({ items: [{ objectId: "17:3", title: "Film", year: 2026 }] }, status.csrfToken, { session });
 
     expect(result.selected.extension).toBe(".mkv");
+	expect(result.selectedItems).toHaveLength(1);
     expect(result.session).toBe(session);
     expect(fetchSpy).toHaveBeenLastCalledWith("/api/setup/configuration", expect.objectContaining({ method: "PUT", cache: "no-store" }));
   });

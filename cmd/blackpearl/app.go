@@ -335,7 +335,7 @@ func runBrowserSetup(ctx context.Context, cfg config.Config, logger *slog.Logger
 			MetadataTTL: time.Minute, LinkTTL: 2 * time.Hour,
 		}, &client)
 	}
-	runtimeFactory := func(runtimeContext context.Context, token string, configuration domain.SetupConfiguration) (core.CatalogService, error) {
+	runtimeFactory := func(runtimeContext context.Context, token string, manifest domain.SetupManifest) (core.CatalogService, error) {
 		client := *deps.torBoxClient
 		client.Timeout = cfg.RangeTimeout
 		gateway, gatewayErr := torbox.New(torbox.Options{
@@ -345,28 +345,31 @@ func runBrowserSetup(ctx context.Context, cfg config.Config, logger *slog.Logger
 		if gatewayErr != nil {
 			return nil, fmt.Errorf("configure selected TorBox source: %w", gatewayErr)
 		}
-		backing, backingErr := domain.NewBackingRef("torbox-torrent", configuration.ObjectID)
-		if backingErr != nil {
-			return nil, fmt.Errorf("construct selected backing: %w", backingErr)
-		}
-		metadata, openErr := gateway.Open(runtimeContext, backing)
-		if openErr != nil {
-			return nil, fmt.Errorf("validate selected TorBox source: %w", openErr)
-		}
-		logicalSize := metadata.Size()
-		if closeErr := metadata.Close(); closeErr != nil {
-			return nil, fmt.Errorf("close selected TorBox metadata: %w", closeErr)
-		}
-		if logicalSize != configuration.Size {
-			return nil, fmt.Errorf("selected TorBox size changed: got %d want %d", logicalSize, configuration.Size)
-		}
 		rolling, rollingErr := rollingPool.Source(gateway)
 		if rollingErr != nil {
 			return nil, fmt.Errorf("open selected rolling cache: %w", rollingErr)
 		}
 		catalog := core.NewCatalog(state.NewMemory(), nil, rolling)
-		if _, registerErr := catalog.RegisterRemoteMovie(runtimeContext, configuration, backing); registerErr != nil {
-			return nil, registerErr
+		for index := range manifest.Items {
+			configuration := manifest.Items[index]
+			backing, backingErr := domain.NewBackingRef("torbox-torrent", configuration.ObjectID)
+			if backingErr != nil {
+				return nil, fmt.Errorf("construct selected backing: %w", backingErr)
+			}
+			metadata, openErr := gateway.Open(runtimeContext, backing)
+			if openErr != nil {
+				return nil, fmt.Errorf("validate selected TorBox source: %w", openErr)
+			}
+			logicalSize := metadata.Size()
+			if closeErr := metadata.Close(); closeErr != nil {
+				return nil, fmt.Errorf("close selected TorBox metadata: %w", closeErr)
+			}
+			if logicalSize != configuration.Size {
+				return nil, fmt.Errorf("selected TorBox size changed: got %d want %d", logicalSize, configuration.Size)
+			}
+			if _, registerErr := catalog.RegisterRemoteMovie(runtimeContext, configuration, backing); registerErr != nil {
+				return nil, registerErr
+			}
 		}
 		return catalog, nil
 	}

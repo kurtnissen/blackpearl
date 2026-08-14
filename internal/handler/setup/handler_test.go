@@ -91,6 +91,37 @@ func TestHandlerConfigurationRejectsUnknownFieldsAndMapsInvalidSelection(t *test
 	require.Contains(t, validResponse.Body.String(), "invalid_selection")
 }
 
+func TestHandlerConfigurationReturnsActivatedMultiItemManifest(t *testing.T) {
+	t.Parallel()
+	firstCandidate, err := domain.NewMediaCandidate("17:3", "First.mp4", 100)
+	require.NoError(t, err)
+	secondCandidate, err := domain.NewMediaCandidate("17:4", "Second.mkv", 200)
+	require.NoError(t, err)
+	first, err := domain.NewSetupConfiguration(firstCandidate, "First", 2024)
+	require.NoError(t, err)
+	second, err := domain.NewSetupConfiguration(secondCandidate, "Second", 2025)
+	require.NoError(t, err)
+	manifest, err := domain.NewSetupManifest([]domain.SetupConfiguration{first, second})
+	require.NoError(t, err)
+	service := &fakeService{manifest: manifest}
+	handler, err := setuphandler.New(service)
+	require.NoError(t, err)
+	csrf := fetchCSRF(t, handler)
+	request := newMutation(t, http.MethodPut, "/api/setup/configuration", csrf, `{"token":"private-token","items":[{"objectId":"17:3","title":"First","year":2024},{"objectId":"17:4","title":"Second","year":2025}]}`)
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	require.Equal(t, http.StatusOK, response.Code)
+	require.Len(t, service.applyRequest.Items, 2)
+	var body struct {
+		SelectedItems []domain.SetupConfiguration `json:"selectedItems"`
+	}
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &body))
+	require.Equal(t, manifest.Items, body.SelectedItems)
+	require.NotContains(t, response.Body.String(), "private-token")
+}
+
 func TestHandlerNeverEchoesTokenOnProviderFailure(t *testing.T) {
 	t.Parallel()
 	service := &fakeService{discoverErr: errors.New("upstream includes private-token")}
@@ -164,7 +195,8 @@ type fakeService struct {
 	items              []domain.MediaCandidate
 	discoverToken      string
 	discoverErr        error
-	selected           domain.SetupConfiguration
+	manifest           domain.SetupManifest
+	applyRequest       setupservice.ApplyRequest
 	applyErr           error
 	authorizeErr       error
 	authorizeSession   string
@@ -176,8 +208,9 @@ func (f *fakeService) Discover(_ context.Context, token string) ([]domain.MediaC
 	f.discoverToken = token
 	return f.items, f.discoverErr
 }
-func (f *fakeService) Apply(context.Context, setupservice.ApplyRequest) (domain.SetupConfiguration, error) {
-	return f.selected, f.applyErr
+func (f *fakeService) Apply(_ context.Context, request setupservice.ApplyRequest) (domain.SetupManifest, error) {
+	f.applyRequest = request
+	return f.manifest, f.applyErr
 }
 func (f *fakeService) AuthorizeSetup(_ context.Context, _ string, session string, bootstrap string) error {
 	f.authorizeSession = session

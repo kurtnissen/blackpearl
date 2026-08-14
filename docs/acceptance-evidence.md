@@ -4,12 +4,12 @@ Evidence states are deliberately separate. Unit tests, a container build, a kern
 
 ## Current verified evidence — 2026-08-14
 
-Tested from the `research/portable-filesystem` branch on an Apple Silicon Mac with Docker Desktop's Linux ARM64 VM.
+Tested from `main` on an Apple Silicon Mac with Docker Desktop's Linux ARM64 VM.
 
 | Gate | Result | Evidence |
 |---|---|---|
 | Go race tests | Pass | `go test -race ./...` |
-| Go coverage | Pass | 81.5% of project statements from `go test -race -coverprofile=coverage.out ./...`; generated Go code inside `web/node_modules` is excluded from the project floor |
+| Go coverage | Pass | 80.7% of project statements from `go test -coverprofile=coverage.out ./...`; generated Go code inside `web/node_modules` is excluded from the project floor |
 | Static analysis | Pass | `go vet ./...` |
 | Compose isolation | Pass | Rendered configuration checked by `scripts/test-compose-paths.sh`; every bind is under `runtime/`, Plex media is read-only `rslave`, and only BlackPearl receives FUSE privileges |
 | POC image build | Pass | `blackpearl:poc` built for local Linux ARM64 |
@@ -39,6 +39,8 @@ Tested from the `research/portable-filesystem` branch on an Apple Silicon Mac wi
 | TorBox dynamic Plex namespace | Pass on macOS | A setup replacement changed the NFS namespace without restarting Plex; one-second attribute caching plus disabled negative lookup caching exposed the new path, and generation-based modification times caused Plex to rescan it |
 | TorBox Plex Direct Play and seek | Pass on macOS | Plex indexed an authorized 1,783,163,131-byte H.264/AAC MP4, reported `decision="directplay"`, resumed at 10:13 after a non-sequential seek, and advanced continuously to 10:34 while BlackPearl held 56,519,784 bytes of rolling chunks |
 | TorBox CDN request control | Pass in unit and live tests | A validated signed link is reused within its TTL instead of issuing a validation range before every NFS read; an expired link still refreshes on the first rejected content range. This removed live CDN 429 failures during Plex playback. |
+| TorBox multi-item manifest | Pass on macOS | Browser setup searched 3,232 eligible account videos, atomically published two authorized logical MP4s, and Plex indexed both without a Plex or stack restart. Random reads succeeded in both files. |
+| TorBox manifest restart recovery | Pass on macOS | After a BlackPearl-only restart, the saved two-item manifest restored, both NFS files remained readable through the existing Plex mount, and the rolling cache held about 107 MB for about 2.15 GB of logical media. |
 | Cross-container Plex mount | Pending Ubuntu | Docker Desktop bind propagation cannot prove this Linux-host behavior |
 
 The current result includes locally verified FUSE and portable NFS adapters, persistent and rolling macOS Plex playback, strict random-range retrieval, a live hard-quota test, eviction, and refetch evidence. The rolling client test completed the eight-second fixture; explicit rolling-client forward/backward seek evidence remains to be captured with a longer fixture. Windows and native-Linux portability remain unverified.
@@ -64,6 +66,7 @@ The current result includes locally verified FUSE and portable NFS adapters, per
 - [x] Plex mounts an empty TorBox NFS export while BlackPearl reports setup-required media readiness.
 - [x] An authorized TorBox token discovers account media through the live provider.
 - [x] Plex Direct Plays and seeks an authorized TorBox-backed logical file.
+- [x] A multi-item TorBox manifest publishes atomically, scans in Plex, and survives BlackPearl restart.
 - [ ] A longer rolling fixture demonstrates explicit forward and backward client seeks before playback completes.
 - [ ] CI passes after publishing the repository.
 - [ ] Both Linux AMD64 and ARM64 image builds pass in CI.

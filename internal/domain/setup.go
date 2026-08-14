@@ -10,6 +10,9 @@ import (
 
 var setupObjectIDPattern = regexp.MustCompile(`^[1-9][0-9]*:[1-9][0-9]*$`)
 
+// MaximumSetupManifestItems bounds setup work, API payloads, and Plex scan fan-out.
+const MaximumSetupManifestItems = 100
+
 // MediaCandidate is public metadata for one range-readable provider object.
 type MediaCandidate struct {
 	ObjectID  string `json:"objectId"`
@@ -26,6 +29,11 @@ type SetupConfiguration struct {
 	Size      int64  `json:"size"`
 	Title     string `json:"title"`
 	Year      int    `json:"year"`
+}
+
+// SetupManifest is one validated, atomically published Plex library snapshot.
+type SetupManifest struct {
+	Items []SetupConfiguration `json:"items"`
 }
 
 // NewMediaCandidate validates normalized provider metadata for the setup UI.
@@ -81,4 +89,39 @@ func NewSetupConfiguration(candidate MediaCandidate, title string, year int) (Se
 // Candidate returns the provider metadata embedded in the selection.
 func (c SetupConfiguration) Candidate() MediaCandidate {
 	return MediaCandidate{ObjectID: c.ObjectID, Name: c.Name, Extension: c.Extension, Size: c.Size}
+}
+
+// NewSetupManifest validates and copies one bounded movie manifest.
+func NewSetupManifest(items []SetupConfiguration) (SetupManifest, error) {
+	if len(items) == 0 {
+		return SetupManifest{}, errors.New("setup manifest requires at least one item")
+	}
+	if len(items) > MaximumSetupManifestItems {
+		return SetupManifest{}, fmt.Errorf("setup manifest supports at most %d items", MaximumSetupManifestItems)
+	}
+	validated := make([]SetupConfiguration, 0, len(items))
+	objectIDs := make(map[string]struct{}, len(items))
+	virtualPaths := make(map[string]struct{}, len(items))
+	for index := range items {
+		item, err := NewSetupConfiguration(items[index].Candidate(), items[index].Title, items[index].Year)
+		if err != nil {
+			return SetupManifest{}, fmt.Errorf("validate setup manifest item %d: %w", index, err)
+		}
+		if _, exists := objectIDs[item.ObjectID]; exists {
+			return SetupManifest{}, fmt.Errorf("setup manifest contains duplicate object ID at item %d", index)
+		}
+		virtualPath := setupVirtualPath(item)
+		if _, exists := virtualPaths[virtualPath]; exists {
+			return SetupManifest{}, fmt.Errorf("setup manifest contains duplicate Plex path at item %d", index)
+		}
+		objectIDs[item.ObjectID] = struct{}{}
+		virtualPaths[virtualPath] = struct{}{}
+		validated = append(validated, item)
+	}
+	return SetupManifest{Items: validated}, nil
+}
+
+func setupVirtualPath(configuration SetupConfiguration) string {
+	displayName := fmt.Sprintf("%s (%d)", configuration.Title, configuration.Year)
+	return path.Join("Movies", displayName, displayName+configuration.Extension)
 }

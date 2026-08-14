@@ -1,8 +1,8 @@
 # macOS TorBox Plex POC
 
-This profile connects BlackPearl's rolling range cache to one already-complete
-MP4 or MKV in your TorBox account, exposes it through PearlNFS, and lets an
-isolated Plex container scan and Direct Play the logical file. It does not
+This profile connects BlackPearl's rolling range cache to a selected manifest
+of already-complete MP4/MKV files in your TorBox account, exposes them through
+PearlNFS, and lets an isolated Plex container scan and Direct Play the logical files. It does not
 search for, create, alter, or delete TorBox downloads.
 
 ## Start it
@@ -16,8 +16,8 @@ the terminal:
 
 The setup page is published only on the Mac's loopback interface. Paste your
 TorBox API token and select **Find my videos**. BlackPearl shows completed,
-present, unarchived, uninfected MP4/MKV files. Choose one, adjust the Plex title
-or year if needed, and select **Use with Plex**.
+present, unarchived, uninfected MP4/MKV files. Search and select up to 100,
+adjust their Plex titles or years if needed, and select **Use with Plex**.
 
 The launcher creates a private local pairing value under the ignored
 `runtime/` directory and carries it in the setup page URL fragment. The
@@ -25,7 +25,8 @@ fragment is removed before any request, is never sent to Plex, and authorizes
 first setup through a dedicated request header. BlackPearl stores the TorBox
 token only in the active private generation beneath
 `/var/lib/blackpearl/setup/generations/`, with mode `0600`. An atomically
-replaced `current` pointer commits the token and selection as one pair. The
+replaced `current` pointer commits the token and complete manifest as one pair.
+Legacy single-selection state is loaded as a one-item manifest. The
 setup directories use mode `0700`; inactive and orphan generations are
 removed on startup and after a successful replacement. The TorBox token is
 never returned by the API, placed in browser storage, container environment,
@@ -42,7 +43,7 @@ new isolated server, then create one Movies library rooted at:
 /blackpearl/Movies
 ```
 
-Scan the library after BlackPearl reports **ready**. The selected path uses its
+Scan the library after BlackPearl reports **ready**. Each selected path uses its
 real `.mp4` or `.mkv` extension and TorBox logical size. Seeking and Direct Play
 read arbitrary ranges through PearlNFS; the complete file is not required on
 BlackPearl's disk.
@@ -81,8 +82,9 @@ Ports are isolated from the existing POCs:
 `/healthz` passes while setup is incomplete so Plex can mount the empty NFS
 export. `/readyz` reports `setup_required` until a selection is active.
 
-Live discovery, Plex scanning, Direct Play, and seeking are separate acceptance
-evidence. They were observed on macOS on 2026-08-14 with an authorized
-H.264/AAC MP4: Plex reported Direct Play, resumed after a ten-minute seek, and
-continued playing while the rolling cache remained far smaller than the
-logical file.
+Live discovery, Plex scanning, Direct Play, seeking, and restart recovery are
+separate acceptance evidence. They were observed on macOS on 2026-08-14 with a
+two-video authorized manifest: Plex indexed both items, an H.264/AAC MP4
+reported Direct Play and resumed after a ten-minute seek, and BlackPearl
+restored both logical files after restart while its rolling cache remained far
+smaller than the logical manifest.

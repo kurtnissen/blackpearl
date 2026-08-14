@@ -3,6 +3,8 @@ package core
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 
@@ -15,7 +17,6 @@ const (
 	pocTitle     string         = "BlackPearl POC"
 	pocYear      int            = 2026
 	pocExtension string         = ".mp4"
-	selectedID   domain.MediaID = "blackpearl-selected-media"
 )
 
 // Repository is the catalog persistence required by Catalog.
@@ -38,7 +39,7 @@ func (c *Catalog) RegisterRemoteMovie(ctx context.Context, configuration domain.
 	if err != nil {
 		return domain.Media{}, fmt.Errorf("validate selected movie backing: %w", err)
 	}
-	media, err := domain.NewMovie(selectedID, validated.Title, validated.Year, validated.Extension, validated.Size, validatedBacking)
+	media, err := domain.NewMovie(remoteMediaID(validatedBacking), validated.Title, validated.Year, validated.Extension, validated.Size, validatedBacking)
 	if err != nil {
 		return domain.Media{}, fmt.Errorf("construct selected movie: %w", err)
 	}
@@ -46,6 +47,11 @@ func (c *Catalog) RegisterRemoteMovie(ctx context.Context, configuration domain.
 		return domain.Media{}, fmt.Errorf("persist selected movie: %w", err)
 	}
 	return media, nil
+}
+
+func remoteMediaID(backing domain.BackingRef) domain.MediaID {
+	digest := sha256.Sum256([]byte(backing.Provider + "\x00" + backing.ObjectID))
+	return domain.MediaID("blackpearl-remote-" + hex.EncodeToString(digest[:16]))
 }
 
 // POCImporter imports the legal Milestone 1 fixture without exposing a path to consumers.

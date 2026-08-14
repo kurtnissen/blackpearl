@@ -128,3 +128,55 @@ func TestRepositoryRejectsUnsafeTokenWithoutEchoingIt(t *testing.T) {
 	_, _, loadErr := repository.Load(context.Background())
 	require.True(t, errors.Is(loadErr, domain.ErrNotFound))
 }
+
+func TestRepositorySaveManifestSurvivesReopenWithMultipleItems(t *testing.T) {
+	t.Parallel()
+	root := filepath.Join(t.TempDir(), "setup")
+	repository, err := setuprepo.New(root)
+	require.NoError(t, err)
+	firstCandidate, err := domain.NewMediaCandidate("17:3", "First.mp4", 1234)
+	require.NoError(t, err)
+	secondCandidate, err := domain.NewMediaCandidate("17:4", "Second.mkv", 5678)
+	require.NoError(t, err)
+	first, err := domain.NewSetupConfiguration(firstCandidate, "First", 2024)
+	require.NoError(t, err)
+	second, err := domain.NewSetupConfiguration(secondCandidate, "Second", 2025)
+	require.NoError(t, err)
+	manifest, err := domain.NewSetupManifest([]domain.SetupConfiguration{first, second})
+	require.NoError(t, err)
+
+	require.NoError(t, repository.SaveManifest(context.Background(), "private-token", manifest))
+	reopened, err := setuprepo.New(root)
+	require.NoError(t, err)
+	token, loaded, err := reopened.LoadManifest(context.Background())
+
+	require.NoError(t, err)
+	require.Equal(t, "private-token", token)
+	require.Equal(t, manifest, loaded)
+	current, err := os.ReadFile(filepath.Join(root, "current"))
+	require.NoError(t, err)
+	generationRoot := filepath.Join(root, "generations", string(current[:len(current)-1]))
+	info, err := os.Stat(filepath.Join(generationRoot, "manifest.json"))
+	require.NoError(t, err)
+	require.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+	_, err = os.Stat(filepath.Join(generationRoot, "configuration.json"))
+	require.ErrorIs(t, err, os.ErrNotExist)
+}
+
+func TestRepositoryLoadManifestMigratesLegacySingleConfiguration(t *testing.T) {
+	t.Parallel()
+	root := filepath.Join(t.TempDir(), "setup")
+	repository, err := setuprepo.New(root)
+	require.NoError(t, err)
+	candidate, err := domain.NewMediaCandidate("17:3", "Example.mp4", 1234)
+	require.NoError(t, err)
+	configuration, err := domain.NewSetupConfiguration(candidate, "Example", 2024)
+	require.NoError(t, err)
+	require.NoError(t, repository.Save(context.Background(), "private-token", configuration))
+
+	token, manifest, err := repository.LoadManifest(context.Background())
+
+	require.NoError(t, err)
+	require.Equal(t, "private-token", token)
+	require.Equal(t, []domain.SetupConfiguration{configuration}, manifest.Items)
+}

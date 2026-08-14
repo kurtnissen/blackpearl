@@ -19,7 +19,7 @@ import (
 	setupservice "github.com/blackpearl-media/blackpearl/internal/service/setup"
 )
 
-const maximumRequestBytes = 8 * 1024
+const maximumRequestBytes = 128 * 1024
 const (
 	setupSessionHeader   = "X-BlackPearl-Session"
 	setupBootstrapHeader = "X-BlackPearl-Bootstrap"
@@ -29,7 +29,7 @@ const (
 type Service interface {
 	Status() setupservice.Status
 	Discover(ctx context.Context, token string) ([]domain.MediaCandidate, error)
-	Apply(ctx context.Context, request setupservice.ApplyRequest) (domain.SetupConfiguration, error)
+	Apply(ctx context.Context, request setupservice.ApplyRequest) (domain.SetupManifest, error)
 	AuthorizeSetup(ctx context.Context, suppliedToken string, session string, bootstrap string) error
 	IssueSession(ctx context.Context, token string) (string, error)
 }
@@ -120,7 +120,7 @@ func (h *handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 			h.writeServiceError(writer, request, err)
 			return
 		}
-		selected, err := h.service.Apply(request.Context(), input)
+		manifest, err := h.service.Apply(request.Context(), input)
 		if err != nil {
 			h.writeServiceError(writer, request, err)
 			return
@@ -130,8 +130,9 @@ func (h *handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 			return
 		}
 		writeJSON(writer, http.StatusOK, struct {
-			Selected domain.SetupConfiguration `json:"selected"`
-		}{Selected: selected})
+			Selected      domain.SetupConfiguration   `json:"selected"`
+			SelectedItems []domain.SetupConfiguration `json:"selectedItems"`
+		}{Selected: manifest.Items[0], SelectedItems: manifest.Items})
 	default:
 		http.NotFound(writer, request)
 	}
