@@ -23,6 +23,7 @@ import (
 
 const (
 	rollingDirectory              = "rolling"
+	persistentRangeDirectory      = "persistent"
 	maximumReadAheadChunks        = 64
 	maximumNextEpisodeChunkPrefix = 256
 )
@@ -42,6 +43,16 @@ type RangeOpener interface {
 type RollingOptions struct {
 	Root                      string
 	MaxBytes                  int64
+	ChunkBytes                int64
+	ReadAheadChunks           int
+	NextEpisodePrefetchChunks int
+	FetchTimeout              time.Duration
+}
+
+// PersistentRangeOptions configures non-evicting provider range retention.
+// Media remains range-readable before every chunk has been fetched.
+type PersistentRangeOptions struct {
+	Root                      string
 	ChunkBytes                int64
 	ReadAheadChunks           int
 	NextEpisodePrefetchChunks int
@@ -81,6 +92,7 @@ type rollingShared struct {
 	lifecycle context.Context
 	options   RollingOptions
 	root      string
+	policy    retentionPolicy
 
 	mu                 sync.Mutex
 	chunks             map[chunkKey]*chunkEntry
@@ -99,6 +111,13 @@ type rollingShared struct {
 	nextEpisodeFetches uint64
 	nextEpisodeErrors  uint64
 }
+
+type retentionPolicy uint8
+
+const (
+	retentionRolling retentionPolicy = iota
+	retentionPersistent
+)
 
 type chunkKey struct {
 	object string
@@ -135,38 +154,80 @@ func NewRolling(ctx context.Context, options RollingOptions, opener RangeOpener)
 	return pool.Source(opener)
 }
 
+// NewPersistentRange creates a non-evicting range cache. It retains each
+// verified chunk after first use without requiring the complete object before
+// reads can begin.
+func NewPersistentRange(ctx context.Context, options PersistentRangeOptions, opener RangeOpener) (*RollingSource, error) {
+	pool, err := NewPersistentRangePool(ctx, options)
+	if err != nil {
+		return nil, err
+	}
+	return pool.Source(opener)
+}
+
+// NewPersistentRangePool creates one process-lifetime owner for retained
+// provider ranges shared by every immutable catalog generation.
+func NewPersistentRangePool(ctx context.Context, options PersistentRangeOptions) (*RollingPool, error) {
+	if options.ChunkBytes <= 0 {
+		return nil, errors.New("persistent range cache chunk bytes must be positive")
+	}
+	common := RollingOptions{
+		Root:                      options.Root,
+		ChunkBytes:                options.ChunkBytes,
+		ReadAheadChunks:           options.ReadAheadChunks,
+		NextEpisodePrefetchChunks: options.NextEpisodePrefetchChunks,
+		FetchTimeout:              options.FetchTimeout,
+	}
+	if err := validateCommonRangeOptions(common, "persistent range cache"); err != nil {
+		return nil, err
+	}
+	return newRangePool(ctx, common, retentionPersistent, persistentRangeDirectory)
+}
+
 // NewRollingPool creates one process-lifetime cache owner that can serve
 // multiple immutable provider runtimes without duplicating quota accounting.
 func NewRollingPool(ctx context.Context, options RollingOptions) (*RollingPool, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, fmt.Errorf("create rolling cache pool: %w", err)
-	}
-	if !filepath.IsAbs(options.Root) {
-		return nil, fmt.Errorf("rolling cache root must be absolute: %q", options.Root)
-	}
 	if options.MaxBytes <= 0 {
 		return nil, errors.New("rolling cache maximum bytes must be positive")
 	}
 	if options.ChunkBytes <= 0 || options.ChunkBytes > options.MaxBytes {
 		return nil, errors.New("rolling cache chunk bytes must be positive and no larger than maximum bytes")
 	}
+	if err := validateCommonRangeOptions(options, "rolling cache"); err != nil {
+		return nil, err
+	}
+	return newRangePool(ctx, options, retentionRolling, rollingDirectory)
+}
+
+func validateCommonRangeOptions(options RollingOptions, label string) error {
+	if !filepath.IsAbs(options.Root) {
+		return fmt.Errorf("%s root must be absolute: %q", label, options.Root)
+	}
 	if options.ReadAheadChunks < 0 || options.ReadAheadChunks > maximumReadAheadChunks {
-		return nil, fmt.Errorf("rolling cache read-ahead chunks must be between 0 and %d", maximumReadAheadChunks)
+		return fmt.Errorf("%s read-ahead chunks must be between 0 and %d", label, maximumReadAheadChunks)
 	}
 	if options.NextEpisodePrefetchChunks < 0 || options.NextEpisodePrefetchChunks > maximumNextEpisodeChunkPrefix {
-		return nil, fmt.Errorf("rolling cache next-episode chunks must be between 0 and %d", maximumNextEpisodeChunkPrefix)
+		return fmt.Errorf("%s next-episode chunks must be between 0 and %d", label, maximumNextEpisodeChunkPrefix)
 	}
 	if options.FetchTimeout <= 0 {
-		return nil, errors.New("rolling cache fetch timeout must be positive")
+		return fmt.Errorf("%s fetch timeout must be positive", label)
 	}
-	root := filepath.Join(options.Root, rollingDirectory)
+	return nil
+}
+
+func newRangePool(ctx context.Context, options RollingOptions, policy retentionPolicy, directory string) (*RollingPool, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("create range cache pool: %w", err)
+	}
+	root := filepath.Join(options.Root, directory)
 	if err := os.MkdirAll(root, 0o750); err != nil {
-		return nil, fmt.Errorf("create rolling cache root: %w", err)
+		return nil, fmt.Errorf("create range cache root: %w", err)
 	}
 	shared := &rollingShared{
 		lifecycle: ctx,
 		options:   options,
 		root:      root,
+		policy:    policy,
 		chunks:    make(map[chunkKey]*chunkEntry),
 		inflight:  make(map[chunkKey]*fetchCall),
 		notify:    make(chan struct{}),
@@ -362,6 +423,10 @@ func (s *RollingSource) scheduleBackgroundChunks(
 }
 
 func (s *RollingSource) tryReserveBackgroundLocked(expected int64, kind backgroundFetchKind, protected *chunkKey) bool {
+	if s.shared.policy == retentionPersistent {
+		s.reserveLocked(expected)
+		return true
+	}
 	foregroundHeadroom := s.shared.options.ChunkBytes
 	if kind == backgroundFetchNextEpisode && s.shared.current+s.shared.reserved+expected > s.shared.options.MaxBytes-foregroundHeadroom {
 		return false
@@ -379,10 +444,7 @@ func (s *RollingSource) tryReserveBackgroundLocked(expected int64, kind backgrou
 		s.shared.current -= entry.size
 		s.shared.evictions++
 	}
-	s.shared.reserved += expected
-	if usage := s.shared.current + s.shared.reserved; usage > s.shared.highWater {
-		s.shared.highWater = usage
-	}
+	s.reserveLocked(expected)
 	return true
 }
 
@@ -531,6 +593,10 @@ func (s *RollingSource) acquireChunk(
 }
 
 func (s *RollingSource) tryReserveLocked(expected int64) (bool, error) {
+	if s.shared.policy == retentionPersistent {
+		s.reserveLocked(expected)
+		return true, nil
+	}
 	for s.shared.current+s.shared.reserved+expected > s.shared.options.MaxBytes {
 		key, entry, found := s.oldestUnpinnedLocked()
 		if !found {
@@ -543,11 +609,15 @@ func (s *RollingSource) tryReserveLocked(expected int64) (bool, error) {
 		s.shared.current -= entry.size
 		s.shared.evictions++
 	}
+	s.reserveLocked(expected)
+	return true, nil
+}
+
+func (s *RollingSource) reserveLocked(expected int64) {
 	s.shared.reserved += expected
 	if usage := s.shared.current + s.shared.reserved; usage > s.shared.highWater {
 		s.shared.highWater = usage
 	}
-	return true, nil
 }
 
 func (s *RollingSource) oldestUnpinnedLocked() (chunkKey, *chunkEntry, bool) {
@@ -750,7 +820,7 @@ func (p *RollingPool) recoverChunks() error {
 		p.shared.chunks[item.key] = item.entry
 		p.shared.current += item.entry.size
 	}
-	for p.shared.current > p.shared.options.MaxBytes {
+	for p.shared.policy == retentionRolling && p.shared.current > p.shared.options.MaxBytes {
 		key, entry, found := p.oldestUnpinnedLocked()
 		if !found {
 			return errors.New("rolling cache recovery could not trim quota")

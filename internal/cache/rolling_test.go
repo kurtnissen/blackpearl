@@ -45,6 +45,102 @@ func TestNewRollingRejectsInvalidOptions(t *testing.T) {
 	}
 }
 
+func TestNewPersistentRangeRejectsInvalidOptions(t *testing.T) {
+	t.Parallel()
+	opener := newFakeRangeOpener([]byte("abcd"))
+	tests := []struct {
+		name    string
+		options cache.PersistentRangeOptions
+	}{
+		{name: "relative root", options: cache.PersistentRangeOptions{Root: "cache", ChunkBytes: 4, FetchTimeout: time.Second}},
+		{name: "zero chunk", options: cache.PersistentRangeOptions{Root: t.TempDir(), ChunkBytes: 0, FetchTimeout: time.Second}},
+		{name: "zero timeout", options: cache.PersistentRangeOptions{Root: t.TempDir(), ChunkBytes: 4, FetchTimeout: 0}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := cache.NewPersistentRange(context.Background(), test.options, opener)
+
+			require.Error(t, err)
+		})
+	}
+}
+
+func TestPersistentRangeRetainsEveryFetchedChunkWithoutEviction(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	opener := newFakeRangeOpener([]byte("abcdefghijkl"))
+	source, err := cache.NewPersistentRange(context.Background(), cache.PersistentRangeOptions{
+		Root: root, ChunkBytes: 4, FetchTimeout: time.Second,
+	}, opener)
+	require.NoError(t, err)
+	handle := openRollingHandle(t, source, 12)
+
+	require.Equal(t, "abcd", readRollingExact(t, handle, 0, 4))
+	require.Equal(t, "ijkl", readRollingExact(t, handle, 8, 4))
+	require.Equal(t, "efgh", readRollingExact(t, handle, 4, 4))
+	require.Equal(t, "abcd", readRollingExact(t, handle, 0, 4))
+
+	stats := source.Stats()
+	require.Equal(t, int64(12), stats.CurrentBytes)
+	require.Equal(t, int64(3), stats.ChunkCount)
+	require.Equal(t, int64(12), stats.HighWaterBytes)
+	require.Zero(t, stats.Evictions)
+	require.Equal(t, 1, opener.readCount(0))
+	require.DirExists(t, filepath.Join(root, "persistent"))
+	require.NoDirExists(t, filepath.Join(root, "rolling"))
+}
+
+func TestPersistentRangeRecoversChunksWithoutRefetchingTheirRanges(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	firstOpener := newFakeRangeOpener([]byte("abcdefghijkl"))
+	first, err := cache.NewPersistentRange(context.Background(), cache.PersistentRangeOptions{
+		Root: root, ChunkBytes: 4, FetchTimeout: time.Second,
+	}, firstOpener)
+	require.NoError(t, err)
+	firstHandle := openRollingHandle(t, first, 12)
+	require.Equal(t, "abcd", readRollingExact(t, firstHandle, 0, 4))
+	require.Equal(t, "ijkl", readRollingExact(t, firstHandle, 8, 4))
+
+	secondOpener := newFakeRangeOpener([]byte("abcdefghijkl"))
+	second, err := cache.NewPersistentRange(context.Background(), cache.PersistentRangeOptions{
+		Root: root, ChunkBytes: 4, FetchTimeout: time.Second,
+	}, secondOpener)
+	require.NoError(t, err)
+	secondHandle := openRollingHandle(t, second, 12)
+
+	require.Equal(t, "abcd", readRollingExact(t, secondHandle, 0, 4))
+	require.Equal(t, "ijkl", readRollingExact(t, secondHandle, 8, 4))
+	require.Zero(t, secondOpener.readCount(0))
+	require.Zero(t, secondOpener.readCount(8))
+	require.Equal(t, int64(8), second.Stats().CurrentBytes)
+	require.Zero(t, second.Stats().Evictions)
+}
+
+func TestPersistentAndRollingRangeCachesUseSeparateNamespaces(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	opener := newFakeRangeOpener([]byte("abcdefgh"))
+	persistent, err := cache.NewPersistentRange(context.Background(), cache.PersistentRangeOptions{
+		Root: root, ChunkBytes: 4, FetchTimeout: time.Second,
+	}, opener)
+	require.NoError(t, err)
+	handle := openRollingHandle(t, persistent, 8)
+	require.Equal(t, "abcd", readRollingExact(t, handle, 0, 4))
+
+	rolling, err := cache.NewRolling(context.Background(), cache.RollingOptions{
+		Root: root, MaxBytes: 4, ChunkBytes: 4, FetchTimeout: time.Second,
+	}, opener)
+	require.NoError(t, err)
+
+	require.Equal(t, int64(4), persistent.Stats().CurrentBytes)
+	require.Zero(t, rolling.Stats().CurrentBytes)
+	require.DirExists(t, filepath.Join(root, "persistent"))
+	require.DirExists(t, filepath.Join(root, "rolling"))
+}
+
 func TestRollingSourceReadAtReturnsExactNonsequentialRanges(t *testing.T) {
 	t.Parallel()
 	opener := newFakeRangeOpener([]byte("abcdefghijkl"))
@@ -110,6 +206,9 @@ func TestRollingSourceForegroundReadJoinsInflightReadAhead(t *testing.T) {
 
 	require.Equal(t, "4:<nil>:efgh", <-result)
 	require.Equal(t, 1, opener.readCount(4))
+	require.Eventually(t, func() bool {
+		return opener.readCount(8) == 1 && source.Stats().ReservedBytes == 0
+	}, time.Second, 5*time.Millisecond)
 }
 
 func TestRollingSourceReadAheadPreservesForegroundHeadroom(t *testing.T) {
