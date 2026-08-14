@@ -375,6 +375,32 @@ it("explains that automatic intake applies only to newly observed authorized mov
   expect(screen.getByText(/TorBox may download an uncached release/i)).toBeInTheDocument();
 });
 
+it("turns automatic Watchlist intake on without commands", async () => {
+	const bootstrap = "b".repeat(64);
+	const session = "a".repeat(64);
+	const active = { objectId: "17:3", name: "Existing.mkv", extension: ".mkv", size: 1024, mediaType: "movie", title: "Existing", year: 2024 };
+	window.history.replaceState(null, "", `/#bootstrap=${bootstrap}`);
+	const fetchSpy = vi.fn()
+		.mockResolvedValueOnce(new Response(JSON.stringify({ setupRequired: false, tokenConfigured: true, csrfToken: "csrf", selected: active, selectedItems: [active] }), { status: 200 }))
+		.mockResolvedValueOnce(watchlistResponse())
+		.mockResolvedValueOnce(new Response(await watchlistResponse(true).text(), {
+			status: 200,
+			headers: { "X-BlackPearl-Session": session },
+		}));
+	vi.stubGlobal("fetch", fetchSpy);
+	const user = userEvent.setup();
+	render(<SetupConsole />);
+
+	await user.click(await screen.findByRole("button", { name: "Turn automatic adding on" }));
+
+	expect(await screen.findByText("AUTO ADD ON")).toBeInTheDocument();
+	expect(screen.getByRole("button", { name: "Turn automatic adding off" })).toBeInTheDocument();
+	expect(fetchSpy).toHaveBeenLastCalledWith("/api/watchlist/settings", expect.objectContaining({
+		method: "PUT",
+		body: JSON.stringify({ acquisitionEnabled: true }),
+	}));
+});
+
 function watchlistResponse(acquisitionEnabled = false): Response {
   return new Response(JSON.stringify({
     enabled: true,

@@ -71,16 +71,18 @@ health, last-sync time, and aggregate queue counts—never titles or Plex IDs.
 Observation is enabled by default but cannot mutate Prowlarr, TorBox, Plex's
 Watchlist, or the media manifest. After Prowlarr authentication and authorized
 indexers are configured, opt in to restart-safe movie preparation by setting
-this before launch:
+The environment value below is an optional first-start seed:
 
 ```bash
 BLACKPEARL_WATCHLIST_ACQUISITION_ENABLED=true ./scripts/torbox-stack.sh start
 ```
 
-This opt-in allows TorBox to download the selected release when it is not
-cached, so use it only with authorized sources. Startup performs a safe
-baseline: movies already in the Watchlist remain observation-only, and only a
-movie added after that baseline is eligible. The Watchlist queue persists the
+After startup, the paired setup page's **Turn automatic adding on/off** control
+is authoritative and survives restart. The opt-in allows TorBox to download the
+selected release when it is not cached, so use it only with authorized sources.
+Movies already in the Watchlist remain observation-only, and only a movie added
+on a later enabled sync is eligible. Turning the control off blocks new claims
+without canceling provider work already preparing. The Watchlist queue persists the
 durable acquisition job ID and reconciles it across restarts. No-source or
 stalled jobs wait six hours before another attempt. Known transient failures
 wait 15 minutes. Any provider or publication mutation with an ambiguous result

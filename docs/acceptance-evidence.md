@@ -113,6 +113,7 @@ The current result includes locally verified FUSE and portable NFS adapters, per
 - [x] Opening one TV episode prefetches only a bounded prefix of the next episode under the same hard rolling quota.
 - [x] The isolated Plex Watchlist is observed through a read-only named-volume credential source and stored in a durable lease queue.
 - [x] Automatic Watchlist movie acquisition is serialized, restart-safe, disabled by default, and refuses to retry ambiguous mutations.
+- [ ] The paired WebUI turns automatic Watchlist acquisition off and on without commands, and the saved choice survives restart without changing the manifest or Plex Watchlist.
 - [x] Enabling automatic Watchlist acquisition treats the first sync as a non-acquiring baseline and does not drain historical items.
 - [x] A newly authorized Watchlist movie already present in the published manifest succeeds without creating a provider job.
 - [x] A post-baseline legal Watchlist item completes provider preparation, publication, Plex Direct Play, and bidirectional seeking on the final safety-fixed build.

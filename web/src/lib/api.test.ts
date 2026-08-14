@@ -9,6 +9,7 @@ import {
 	listAcquisitionJobs,
 	getStatus,
 	getWatchlistStatus,
+	setWatchlistAcquisitionEnabled,
 	submitAcquisitionJob,
 } from "./api";
 
@@ -113,6 +114,34 @@ describe("setup API", () => {
       },
     });
   });
+
+	it("updates automatic Watchlist intake through the paired mutation boundary", async () => {
+		const aggregate = {
+			enabled: true,
+			healthy: true,
+			acquisitionEnabled: true,
+			queue: { pendingMovies: 0, acquiring: 0, succeeded: 1, notCached: 0, retryable: 0, manualReview: 0, observedShows: 2 },
+		};
+		const fetchSpy = vi.fn(async () => new Response(JSON.stringify(aggregate), {
+			status: 200,
+			headers: { "X-BlackPearl-Session": session },
+		}));
+		vi.stubGlobal("fetch", fetchSpy);
+
+		await expect(setWatchlistAcquisitionEnabled(true, "csrf-value", { session, bootstrap }))
+			.resolves.toEqual({ ...aggregate, session });
+		expect(fetchSpy).toHaveBeenCalledWith("/api/watchlist/settings", {
+			method: "PUT",
+			cache: "no-store",
+			headers: {
+				"Content-Type": "application/json",
+				"X-BlackPearl-CSRF": "csrf-value",
+				"X-BlackPearl-Session": session,
+				"X-BlackPearl-Bootstrap": bootstrap,
+			},
+			body: JSON.stringify({ acquisitionEnabled: true }),
+		});
+	});
 
   it("configures Prowlarr through the paired mutation boundary", async () => {
     const fetchSpy = vi.fn(async () => new Response(JSON.stringify({ configured: true }), {

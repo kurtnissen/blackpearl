@@ -137,15 +137,16 @@ read-only; it does not inspect a host Plex installation. Observation stores no
 Plex token in BlackPearl state and does not acquire anything. The paired setup
 page shows only aggregate queue counts and observation health; it never returns
 Watchlist titles or identifiers. After authorized indexers are configured and
-the observe-only counts look correct, automatic durable movie preparation can
-be enabled explicitly with
-`BLACKPEARL_WATCHLIST_ACQUISITION_ENABLED=true`. This opt-in permits the same
-TorBox download behavior as the setup page's **Prepare through TorBox** action;
-use it only with authorized sources. The first sync after startup is always a
-safe baseline: existing Watchlist movies remain observation-only, and only new
-movies added on a later sync are eligible for automatic preparation. Shows
-remain observation-only until an episode policy is configured in a later
-milestone.
+the observe-only counts look correct, use **Turn automatic adding on** in the
+paired setup page. The choice is stored in SQLite and survives restart;
+`BLACKPEARL_WATCHLIST_ACQUISITION_ENABLED` only seeds a database that has no
+saved choice yet. This opt-in permits the same TorBox download behavior as the
+setup page's **Prepare through TorBox** action, so use it only with authorized
+sources. Existing Watchlist movies remain observation-only, and only new movies
+added on a later enabled sync are eligible for automatic preparation. Turning
+the switch off immediately prevents new claims without canceling work already
+preparing or removing published media. Shows remain observation-only until an
+episode policy is configured in a later milestone.
 
 Successful manifest publication also schedules a best-effort refresh of the
 exact Plex library roots `/blackpearl/Movies` and `/blackpearl/TV Shows`. The

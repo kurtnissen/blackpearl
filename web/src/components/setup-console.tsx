@@ -11,6 +11,7 @@ import {
 	listAcquisitionJobs,
   getStatus,
   getWatchlistStatus,
+	setWatchlistAcquisitionEnabled,
 	submitAcquisitionJob,
   SetupAPIError,
   type AcquisitionIntent,
@@ -195,6 +196,24 @@ export function SetupConsole(): React.JSX.Element {
       setWatchlistLoading(false);
     }
   }
+
+	async function changeWatchlistAcquisitionPolicy(enabled: boolean): Promise<void> {
+		setWatchlistLoading(true);
+		setWatchlistError("");
+		try {
+			const result = await setWatchlistAcquisitionEnabled(enabled, csrf, authorization);
+			storeSession(result.session);
+			setSession(result.session);
+			setWatchlistStatus(result);
+			setMessage(enabled
+				? "Automatic Watchlist adding is on for newly added movies."
+				: "Automatic Watchlist adding is off. Existing media and current preparation are unchanged.");
+		} catch (error: unknown) {
+			setWatchlistError(publicMessage(error));
+		} finally {
+			setWatchlistLoading(false);
+		}
+	}
 
   function toggle(candidate: MediaCandidate): void {
 		setDrafts((current) => {
@@ -489,6 +508,21 @@ export function SetupConsole(): React.JSX.Element {
                     <p><strong>{watchlistStatus.queue.succeeded} added automatically</strong><span>Published into the BlackPearl manifest</span></p>
                     <p><strong>{watchlistStatus.queue.manualReview} need review</strong><span>Held instead of making an unsafe guess</span></p>
                   </div>
+							<div className="watchlist-control">
+								<div>
+									<strong>Automatic movie adding</strong>
+									<span>Only movies added to your Watchlist after this is turned on become eligible. Turning it off does not cancel media already preparing.</span>
+								</div>
+								<button
+									type="button"
+									className={watchlistStatus.acquisitionEnabled ? "" : "primary"}
+									aria-pressed={watchlistStatus.acquisitionEnabled}
+									onClick={() => void changeWatchlistAcquisitionPolicy(!watchlistStatus.acquisitionEnabled)}
+									disabled={watchlistLoading || (!session && !bootstrap)}
+								>
+									{watchlistStatus.acquisitionEnabled ? "Turn automatic adding off" : "Turn automatic adding on"}
+								</button>
+							</div>
                   {watchlistStatus.lastSyncAt && <p className="watchlist-sync">Last checked {formatWatchlistTime(watchlistStatus.lastSyncAt)}</p>}
                 </>
               )}
@@ -496,7 +530,9 @@ export function SetupConsole(): React.JSX.Element {
                 <p className="watchlist-summary">Pair this browser from the BlackPearl launcher to see Watchlist activity.</p>
               )}
               {watchlistError && <p className="watchlist-error">Watchlist status is temporarily unavailable. Your existing Plex library is unaffected.</p>}
-              <button type="button" onClick={() => void refreshWatchlist()} disabled={watchlistLoading || (!session && !bootstrap)}>Refresh Watchlist</button>
+							<div className="watchlist-actions">
+								<button type="button" onClick={() => void refreshWatchlist()} disabled={watchlistLoading || (!session && !bootstrap)}>Refresh Watchlist</button>
+							</div>
             </section>
 						{activeJob && (
 							<section className={`background-job background-job--${activeJob.state}`} aria-labelledby="background-job-title">

@@ -79,6 +79,10 @@ export type WatchlistStatus = {
   queue: WatchlistQueueStatus;
 };
 
+export type WatchlistStatusResult = WatchlistStatus & {
+  session: string;
+};
+
 export type ProwlarrSettingsInput = {
   baseUrl: string;
   apiKey: string;
@@ -168,6 +172,21 @@ export async function getWatchlistStatus(
     headers: mutationHeaders(csrfToken, authorization),
   });
   return readJSON(response, isWatchlistStatus, "invalid_watchlist_status");
+}
+
+export async function setWatchlistAcquisitionEnabled(
+  acquisitionEnabled: boolean,
+  csrfToken: string,
+  authorization: SetupAuthorization,
+): Promise<WatchlistStatusResult> {
+  const response = await fetch("/api/watchlist/settings", {
+    method: "PUT",
+    cache: "no-store",
+    headers: mutationHeaders(csrfToken, authorization),
+    body: JSON.stringify({ acquisitionEnabled }),
+  });
+  const status = await readJSON(response, isWatchlistStatus, "invalid_watchlist_status");
+  return { ...status, session: readSession(response) };
 }
 
 export async function configureAcquisition(

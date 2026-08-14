@@ -113,7 +113,12 @@ dd { margin: 0; overflow-wrap: anywhere; }
 .watchlist-stats span, .watchlist-sync { color: #665b49; font-size: 11px; line-height: 1.35; }
 .watchlist-sync { margin: 10px 0 0; font-family: ui-monospace, monospace; }
 .watchlist-error { color: var(--red); }
-.watchlist-panel > button { margin-top: 16px; }
+.watchlist-control { display: flex; align-items: center; justify-content: space-between; gap: 22px; margin-top: 16px; padding: 16px; border: 1px solid var(--ink); background: rgba(255, 255, 255, .35); }
+.watchlist-control > div { display: grid; gap: 5px; max-width: 620px; }
+.watchlist-control strong { font-size: 15px; }
+.watchlist-control span { color: #665b49; font-size: 11px; line-height: 1.4; }
+.watchlist-control button { flex: none; }
+.watchlist-actions { margin-top: 16px; }
 
 .background-job { margin-top: 20px; padding: 22px; border: 1px solid var(--ink); border-left: 5px solid var(--brass); background: #f6f0e4; }
 .background-job--succeeded { border-left-color: var(--green); }
@@ -161,6 +166,8 @@ footer { display: flex; justify-content: space-between; gap: 12px; color: #948a7
   .watchlist-panel__heading { align-items: start; flex-direction: column; }
 	.background-job__heading { flex-direction: column; }
   .watchlist-stats { grid-template-columns: 1fr; }
+	.watchlist-control { align-items: stretch; flex-direction: column; }
+	.watchlist-control button { width: 100%; }
   footer { flex-direction: column; }
 }
 

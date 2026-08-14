@@ -173,6 +173,11 @@ observed but never submitted because they lack season and episode intent. The
 first successful observer sync after startup is a non-acquiring baseline;
 immutable per-row eligibility permits only movies first seen on later opted-in
 syncs, so enabling the feature cannot drain a historical Watchlist backlog.
+The opt-in is a durable singleton policy in the same SQLite database. The paired
+control API updates it at runtime, observer syncs read it before assigning new
+eligibility, and the atomic claim statement checks it again before leasing work.
+Disabling therefore blocks new and retry claims immediately without canceling
+an already-running provider operation or changing the manifest.
 
 Provider readiness inspection returns safe media candidates together with a
 provider-neutral integer progress value. TorBox maps its fractional progress to
