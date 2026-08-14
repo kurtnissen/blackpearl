@@ -43,6 +43,7 @@ func TestParseUsesIsolatedContainerDefaults(t *testing.T) {
 	require.Equal(t, 10*time.Minute, cfg.WatchlistLeaseDuration)
 	require.Equal(t, 5*time.Minute, cfg.WatchlistAcquisitionTimeout)
 	require.Equal(t, 30*time.Second, cfg.WatchlistWorkerIdleInterval)
+	require.Equal(t, 30*time.Second, cfg.WatchlistReconcileInterval)
 	require.Equal(t, 6*time.Hour, cfg.WatchlistNotCachedCooldown)
 	require.Equal(t, 15*time.Minute, cfg.WatchlistRetryCooldown)
 	require.False(t, cfg.PlexRefreshEnabled)
@@ -167,11 +168,31 @@ func TestParseAcceptsSerializedPlexWatchlistAcquisition(t *testing.T) {
 	environment["BLACKPEARL_WATCHLIST_ENABLED"] = "true"
 	environment["BLACKPEARL_WATCHLIST_TOKEN_FILE"] = "/run/secrets/plex_watchlist_token"
 	environment["BLACKPEARL_WATCHLIST_ACQUISITION_ENABLED"] = "true"
+	environment["BLACKPEARL_WATCHLIST_RECONCILE_INTERVAL"] = "45s"
 
 	cfg, err := config.Parse(environment)
 
 	require.NoError(t, err)
 	require.True(t, cfg.WatchlistAcquisitionEnabled)
+	require.Equal(t, 45*time.Second, cfg.WatchlistReconcileInterval)
+}
+
+func TestParseRejectsUnsafeWatchlistReconciliationInterval(t *testing.T) {
+	t.Parallel()
+	for _, value := range []string{"4s", "11m"} {
+		t.Run(value, func(t *testing.T) {
+			t.Parallel()
+			environment := browserSetupEnvironment()
+			environment["BLACKPEARL_WATCHLIST_ENABLED"] = "true"
+			environment["BLACKPEARL_WATCHLIST_TOKEN_FILE"] = "/run/secrets/plex_watchlist_token"
+			environment["BLACKPEARL_WATCHLIST_ACQUISITION_ENABLED"] = "true"
+			environment["BLACKPEARL_WATCHLIST_RECONCILE_INTERVAL"] = value
+
+			_, err := config.Parse(environment)
+
+			require.ErrorContains(t, err, "BLACKPEARL_WATCHLIST_RECONCILE_INTERVAL")
+		})
+	}
 }
 
 func TestParseRejectsUnsafePlexWatchlistAcquisitionTiming(t *testing.T) {

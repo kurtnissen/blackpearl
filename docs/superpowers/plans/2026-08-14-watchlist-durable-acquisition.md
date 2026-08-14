@@ -74,12 +74,12 @@
 - Consumes: the existing process-lifetime acquisition-job manager and worker.
 - Produces: `BLACKPEARL_WATCHLIST_RECONCILE_INTERVAL` with a safe bounded default.
 
-- [ ] Write failing configuration tests for a 5-second to 10-minute reconciliation interval that is used only when Watchlist acquisition is enabled.
-- [ ] Write an app integration test where a Watchlist movie enters the durable job queue without invoking cached-only acquisition.
-- [ ] Run focused config and app tests and confirm they fail.
-- [ ] Wire the Watchlist worker to `acquisitionJobManager`; remove its direct cached coordinator dependency; keep Compose acquisition opt-in `false`.
-- [ ] Run `go test -race ./internal/config ./cmd/blackpearl` and confirm it passes.
-- [ ] Commit `feat: wire durable watchlist acquisition`.
+- [x] Write failing configuration tests for a 5-second to 10-minute reconciliation interval that is used only when Watchlist acquisition is enabled.
+- [x] Write an app integration test where a Watchlist movie enters the durable job queue without invoking cached-only acquisition.
+- [x] Run focused config and app tests and confirm they fail.
+- [x] Wire the Watchlist worker to `acquisitionJobManager`; remove its direct cached coordinator dependency; keep Compose acquisition opt-in `false`.
+- [x] Run `go test -race ./internal/config ./cmd/blackpearl` and confirm it passes.
+- [x] Commit `feat: wire durable watchlist acquisition`.
 
 ### Task 4: Update product copy and acceptance evidence
 

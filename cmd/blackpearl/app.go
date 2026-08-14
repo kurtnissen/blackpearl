@@ -580,12 +580,13 @@ func runBrowserSetup(ctx context.Context, cfg config.Config, logger *slog.Logger
 			return errors.Join(fmt.Errorf("configure Plex watchlist observer: %w", err), closeErr)
 		}
 		if cfg.WatchlistAcquisitionEnabled {
-			watchlistWorker, err = watchlistservice.NewWorker(watchlistRepository, acquisitionCoordinator, watchlistservice.WorkerOptions{
-				LeaseDuration:      cfg.WatchlistLeaseDuration,
-				AcquisitionTimeout: cfg.WatchlistAcquisitionTimeout,
-				IdleInterval:       cfg.WatchlistWorkerIdleInterval,
-				NotCachedCooldown:  cfg.WatchlistNotCachedCooldown,
-				RetryCooldown:      cfg.WatchlistRetryCooldown,
+			watchlistWorker, err = watchlistservice.NewWorker(watchlistRepository, acquisitionJobManager, watchlistservice.WorkerOptions{
+				LeaseDuration:     cfg.WatchlistLeaseDuration,
+				OperationTimeout:  cfg.WatchlistAcquisitionTimeout,
+				IdleInterval:      cfg.WatchlistWorkerIdleInterval,
+				ReconcileInterval: cfg.WatchlistReconcileInterval,
+				NotCachedCooldown: cfg.WatchlistNotCachedCooldown,
+				RetryCooldown:     cfg.WatchlistRetryCooldown,
 			})
 			if err != nil {
 				closeErr := watchlistRepository.Close()

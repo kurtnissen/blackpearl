@@ -64,6 +64,7 @@ type Config struct {
 	WatchlistLeaseDuration      time.Duration      `env:"BLACKPEARL_WATCHLIST_LEASE_DURATION" envDefault:"10m"`
 	WatchlistAcquisitionTimeout time.Duration      `env:"BLACKPEARL_WATCHLIST_ACQUISITION_TIMEOUT" envDefault:"5m"`
 	WatchlistWorkerIdleInterval time.Duration      `env:"BLACKPEARL_WATCHLIST_WORKER_IDLE_INTERVAL" envDefault:"30s"`
+	WatchlistReconcileInterval  time.Duration      `env:"BLACKPEARL_WATCHLIST_RECONCILE_INTERVAL" envDefault:"30s"`
 	WatchlistNotCachedCooldown  time.Duration      `env:"BLACKPEARL_WATCHLIST_NOT_CACHED_COOLDOWN" envDefault:"6h"`
 	WatchlistRetryCooldown      time.Duration      `env:"BLACKPEARL_WATCHLIST_RETRY_COOLDOWN" envDefault:"15m"`
 	PlexRefreshEnabled          bool               `env:"BLACKPEARL_PLEX_REFRESH_ENABLED" envDefault:"false"`
@@ -169,6 +170,9 @@ func (c Config) validate() error {
 		}
 		if c.WatchlistWorkerIdleInterval < time.Second || c.WatchlistWorkerIdleInterval > 10*time.Minute {
 			return errors.New("BLACKPEARL_WATCHLIST_WORKER_IDLE_INTERVAL must be between 1s and 10m")
+		}
+		if c.WatchlistReconcileInterval < 5*time.Second || c.WatchlistReconcileInterval > 10*time.Minute {
+			return errors.New("BLACKPEARL_WATCHLIST_RECONCILE_INTERVAL must be between 5s and 10m")
 		}
 		if c.WatchlistNotCachedCooldown < time.Minute || c.WatchlistNotCachedCooldown > 7*24*time.Hour {
 			return errors.New("BLACKPEARL_WATCHLIST_NOT_CACHED_COOLDOWN must be between 1m and 168h")

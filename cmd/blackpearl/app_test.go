@@ -24,6 +24,7 @@ import (
 	"github.com/blackpearl-media/blackpearl/internal/domain"
 	"github.com/blackpearl-media/blackpearl/internal/pearlfs"
 	acquisitionrepo "github.com/blackpearl-media/blackpearl/internal/repository/acquisition"
+	acquisitionjobrepo "github.com/blackpearl-media/blackpearl/internal/repository/acquisitionjob"
 	setuprepo "github.com/blackpearl-media/blackpearl/internal/repository/setup"
 	watchlistrepo "github.com/blackpearl-media/blackpearl/internal/repository/watchlist"
 	setupservice "github.com/blackpearl-media/blackpearl/internal/service/setup"
@@ -526,11 +527,12 @@ func TestRunBrowserSetupObservesPlexWatchlistWithoutAcquiring(t *testing.T) {
 	require.NoError(t, <-result)
 }
 
-func TestRunBrowserSetupSeriallyAcquiresCachedWatchlistMovie(t *testing.T) {
+func TestRunBrowserSetupSubmitsWatchlistMovieToDurableQueue(t *testing.T) {
 	root := t.TempDir()
 	credentialPath := filepath.Join(root, "plex-token")
 	require.NoError(t, os.WriteFile(credentialPath, []byte("private-plex-token"), 0o600))
 	var createCalls atomic.Int32
+	var cacheCheckCalls atomic.Int32
 	var provider *httptest.Server
 	provider = httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
@@ -541,9 +543,10 @@ func TestRunBrowserSetupSeriallyAcquiresCachedWatchlistMovie(t *testing.T) {
 		case "/prowlarr/api/v1/search":
 			require.Equal(t, "private-prowlarr-key", request.Header.Get("X-Api-Key"))
 			require.Equal(t, "Automatic Movie 2026", request.URL.Query().Get("query"))
-			_, err := writer.Write([]byte(`[{"id":1,"guid":"release","size":16,"indexerId":1,"indexer":"Authorized","title":"Automatic.Movie.2026.1080p","protocol":"torrent","infoHash":"0123456789abcdef0123456789abcdef01234567","seeders":20}]`))
+			_, err := writer.Write([]byte(`[{"id":1,"guid":"release","size":16,"indexerId":1,"indexer":"Authorized","title":"Automatic.Movie.2026.1080p","protocol":"torrent","infoHash":"0123456789abcdef0123456789abcdef01234567","magnetUrl":"magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567","seeders":20}]`))
 			require.NoError(t, err)
 		case "/v1/api/torrents/checkcached":
+			cacheCheckCalls.Add(1)
 			_, err := writer.Write([]byte(`{"success":true,"detail":"ok","data":{"0123456789abcdef0123456789abcdef01234567":{"name":"cached","size":16,"hash":"0123456789abcdef0123456789abcdef01234567"}}}`))
 			require.NoError(t, err)
 		case "/v1/api/torrents/createtorrent":
@@ -594,6 +597,7 @@ func TestRunBrowserSetupSeriallyAcquiresCachedWatchlistMovie(t *testing.T) {
 	cfg.WatchlistLeaseDuration = time.Minute
 	cfg.WatchlistAcquisitionTimeout = 30 * time.Second
 	cfg.WatchlistWorkerIdleInterval = 5 * time.Millisecond
+	cfg.WatchlistReconcileInterval = 5 * time.Millisecond
 	cfg.WatchlistNotCachedCooldown = time.Hour
 	cfg.WatchlistRetryCooldown = time.Minute
 	setupRepository, err := setuprepo.New(cfg.SetupDir)
@@ -629,21 +633,24 @@ func TestRunBrowserSetupSeriallyAcquiresCachedWatchlistMovie(t *testing.T) {
 	result := make(chan error, 1)
 	go func() { result <- run(ctx, cfg, testLogger(), deps) }()
 	<-httpAddress
+	jobQueue, err := acquisitionjobrepo.Open(context.Background(), filepath.Join(cfg.DataDir, "acquisition-jobs.db"))
+	require.NoError(t, err)
 	require.Eventually(t, func() bool {
-		_, manifest, loadErr := setupRepository.LoadManifest(context.Background())
-		return loadErr == nil && len(manifest.Items) == 2
+		jobs, listErr := jobQueue.List(context.Background(), 20)
+		return listErr == nil && len(jobs) == 1 && jobs[0].Request().Title() == "Automatic Movie"
 	}, 5*time.Second, 10*time.Millisecond)
+	require.NoError(t, jobQueue.Close())
 	queue, err := watchlistrepo.Open(context.Background(), cfg.DBPath)
 	require.NoError(t, err)
 	var queueStatus acquisitiondomain.WatchlistQueueStatus
 	require.Eventually(t, func() bool {
 		var statusErr error
 		queueStatus, statusErr = queue.Status(context.Background())
-		return statusErr == nil && queueStatus.Succeeded == 1
+		return statusErr == nil && queueStatus.Acquiring+queueStatus.Succeeded == 1
 	}, 5*time.Second, 10*time.Millisecond)
 	require.NoError(t, queue.Close())
-	require.Equal(t, 1, queueStatus.Succeeded)
-	require.Equal(t, int32(1), createCalls.Load())
+	require.Equal(t, 1, queueStatus.Acquiring+queueStatus.Succeeded)
+	require.Zero(t, cacheCheckCalls.Load())
 
 	cancel()
 	require.NoError(t, <-result)
