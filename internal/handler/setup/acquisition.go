@@ -31,7 +31,7 @@ type AcquisitionJobService interface {
 // WatchlistService returns privacy-safe observation state to a paired browser.
 type WatchlistService interface {
 	Status(ctx context.Context) (watchlistservice.ObserverStatus, error)
-	SetAcquisitionEnabled(ctx context.Context, enabled bool) error
+	SetPolicy(ctx context.Context, policy acquisitiondomain.WatchlistPolicy) error
 }
 
 // NewWithAcquisition constructs setup and acquisition routes with one shared
@@ -146,17 +146,26 @@ func (h *handler) serveWatchlistSettings(writer http.ResponseWriter, request *ht
 		return
 	}
 	var input struct {
-		AcquisitionEnabled *bool `json:"acquisitionEnabled"`
+		AcquisitionEnabled *bool  `json:"acquisitionEnabled"`
+		ShowPolicy         string `json:"showPolicy"`
 	}
 	if err := decodeJSON(writer, request, &input); err != nil || input.AcquisitionEnabled == nil {
-		writeError(writer, http.StatusBadRequest, "invalid_request", "Choose whether BlackPearl should automatically add new Watchlist movies.")
+		writeError(writer, http.StatusBadRequest, "invalid_request", "Choose how BlackPearl should handle new Watchlist movies and shows.")
+		return
+	}
+	policy, err := acquisitiondomain.NewWatchlistPolicy(
+		*input.AcquisitionEnabled,
+		acquisitiondomain.WatchlistShowPolicy(input.ShowPolicy),
+	)
+	if err != nil {
+		writeError(writer, http.StatusBadRequest, "invalid_request", "Choose off or pilot for new Watchlist shows.")
 		return
 	}
 	if err := h.authorizeAcquisition(request); err != nil {
 		h.writeServiceError(writer, request, err)
 		return
 	}
-	if err := h.watchlist.SetAcquisitionEnabled(request.Context(), *input.AcquisitionEnabled); err != nil {
+	if err := h.watchlist.SetPolicy(request.Context(), policy); err != nil {
 		h.logger.WarnContext(request.Context(), "watchlist policy update failed", "error", err)
 		writeError(writer, http.StatusServiceUnavailable, "watchlist_unavailable", "The Watchlist setting could not be saved right now.")
 		return

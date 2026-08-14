@@ -258,7 +258,7 @@ paths:
   /api/watchlist/settings:
     put:
       operationId: updateWatchlistSettings
-      description: Enables or disables automatic acquisition for movies first observed after the durable post-enable baseline. Existing jobs and published media are not removed.
+      description: Controls automatic acquisition for media first observed after the durable post-enable baseline. Show policy "pilot" creates exactly S01E01 intent; it never expands to a season or series. Existing jobs and published media are not removed.
       parameters:
         - $ref: "#/components/parameters/CSRF"
         - $ref: "#/components/parameters/Session"
@@ -358,19 +358,21 @@ components:
     WatchlistStatus:
       type: object
       additionalProperties: false
-      required: [enabled, healthy, acquisitionEnabled, queue]
+      required: [enabled, healthy, acquisitionEnabled, showPolicy, queue]
       properties:
         enabled: { type: boolean }
         healthy: { type: boolean }
         acquisitionEnabled: { type: boolean }
+        showPolicy: { type: string, enum: [off, pilot] }
         lastSyncAt: { type: string, format: date-time }
         queue: { $ref: "#/components/schemas/WatchlistQueueStatus" }
     WatchlistSettingsInput:
       type: object
       additionalProperties: false
-      required: [acquisitionEnabled]
+      required: [acquisitionEnabled, showPolicy]
       properties:
         acquisitionEnabled: { type: boolean }
+        showPolicy: { type: string, enum: [off, pilot] }
     WatchlistQueueStatus:
       type: object
       additionalProperties: false

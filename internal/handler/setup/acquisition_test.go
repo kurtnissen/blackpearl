@@ -23,7 +23,8 @@ func TestHandlerWatchlistStatusRequiresPairingAndReturnsOnlyAggregates(t *testin
 	lastSync := time.Date(2026, time.August, 14, 14, 0, 0, 0, time.UTC)
 	setup := &fakeService{}
 	watchlist := &fakeWatchlistService{status: watchlistservice.ObserverStatus{
-		Enabled: true, Healthy: true, AcquisitionEnabled: false, LastSyncAt: &lastSync,
+		Enabled: true, Healthy: true, AcquisitionEnabled: false,
+		ShowPolicy: acquisitiondomain.WatchlistShowPolicyPilot, LastSyncAt: &lastSync,
 		Queue: acquisitiondomain.WatchlistQueueStatus{PendingMovies: 2, Succeeded: 1, ObservedShows: 3},
 	}}
 	handler, err := setuphandler.NewWithAcquisitionAndWatchlist(setup, &fakeAcquisitionService{}, watchlist)
@@ -37,7 +38,7 @@ func TestHandlerWatchlistStatusRequiresPairingAndReturnsOnlyAggregates(t *testin
 	handler.ServeHTTP(response, request)
 
 	require.Equal(t, http.StatusOK, response.Code)
-	require.JSONEq(t, `{"enabled":true,"healthy":true,"acquisitionEnabled":false,"lastSyncAt":"2026-08-14T14:00:00Z","queue":{"pendingMovies":2,"acquiring":0,"succeeded":1,"notCached":0,"retryable":0,"manualReview":0,"observedShows":3}}`, response.Body.String())
+	require.JSONEq(t, `{"enabled":true,"healthy":true,"acquisitionEnabled":false,"showPolicy":"pilot","lastSyncAt":"2026-08-14T14:00:00Z","queue":{"pendingMovies":2,"acquiring":0,"succeeded":1,"notCached":0,"retryable":0,"manualReview":0,"observedShows":3}}`, response.Body.String())
 	require.Equal(t, "paired-session", setup.authorizeSession)
 	require.NotContains(t, response.Body.String(), "title")
 	require.NotContains(t, response.Body.String(), "externalId")
@@ -79,25 +80,35 @@ func TestHandlerWatchlistStatusRejectsUnpairedBrowserBeforeReadingQueue(t *testi
 func TestHandlerUpdatesWatchlistAcquisitionPolicyThroughPairedMutation(t *testing.T) {
 	t.Parallel()
 	setup := &fakeService{}
-	watchlist := &fakeWatchlistService{status: watchlistservice.ObserverStatus{Enabled: true, AcquisitionEnabled: true}}
+	watchlist := &fakeWatchlistService{status: watchlistservice.ObserverStatus{
+		Enabled: true, AcquisitionEnabled: true, ShowPolicy: acquisitiondomain.WatchlistShowPolicyPilot,
+	}}
 	handler, err := setuphandler.NewWithAcquisitionAndWatchlist(setup, &fakeAcquisitionService{}, watchlist)
 	require.NoError(t, err)
 	csrf := fetchCSRF(t, handler)
-	request := newMutation(t, http.MethodPut, "/api/watchlist/settings", csrf, `{"acquisitionEnabled":true}`)
+	request := newMutation(t, http.MethodPut, "/api/watchlist/settings", csrf, `{"acquisitionEnabled":true,"showPolicy":"pilot"}`)
 	request.Header.Set("X-BlackPearl-Session", "paired-session")
 	response := httptest.NewRecorder()
 
 	handler.ServeHTTP(response, request)
 
 	require.Equal(t, http.StatusOK, response.Code)
-	require.JSONEq(t, `{"enabled":true,"healthy":false,"acquisitionEnabled":true,"queue":{"pendingMovies":0,"acquiring":0,"succeeded":0,"notCached":0,"retryable":0,"manualReview":0,"observedShows":0}}`, response.Body.String())
-	require.Equal(t, []bool{true}, watchlist.policyUpdates)
+	require.JSONEq(t, `{"enabled":true,"healthy":false,"acquisitionEnabled":true,"showPolicy":"pilot","queue":{"pendingMovies":0,"acquiring":0,"succeeded":0,"notCached":0,"retryable":0,"manualReview":0,"observedShows":0}}`, response.Body.String())
+	require.Len(t, watchlist.policyUpdates, 1)
+	require.True(t, watchlist.policyUpdates[0].AcquisitionEnabled())
+	require.Equal(t, acquisitiondomain.WatchlistShowPolicyPilot, watchlist.policyUpdates[0].ShowPolicy())
 	require.Equal(t, "paired-session", setup.authorizeSession)
 }
 
 func TestHandlerRejectsInvalidWatchlistAcquisitionPolicyWithoutMutation(t *testing.T) {
 	t.Parallel()
-	tests := []string{`{}`, `{"acquisitionEnabled":true,"extra":false}`, `{"acquisitionEnabled":"yes"}`}
+	tests := []string{
+		`{}`,
+		`{"acquisitionEnabled":true}`,
+		`{"acquisitionEnabled":true,"showPolicy":"all"}`,
+		`{"acquisitionEnabled":true,"showPolicy":"pilot","extra":false}`,
+		`{"acquisitionEnabled":"yes","showPolicy":"off"}`,
+	}
 	for _, body := range tests {
 		watchlist := &fakeWatchlistService{}
 		handler, err := setuphandler.NewWithAcquisitionAndWatchlist(&fakeService{}, &fakeAcquisitionService{}, watchlist)
@@ -398,7 +409,7 @@ type fakeWatchlistService struct {
 	status        watchlistservice.ObserverStatus
 	statusErr     error
 	statusCalls   int
-	policyUpdates []bool
+	policyUpdates []acquisitiondomain.WatchlistPolicy
 	policyErr     error
 }
 
@@ -407,8 +418,8 @@ func (f *fakeWatchlistService) Status(context.Context) (watchlistservice.Observe
 	return f.status, f.statusErr
 }
 
-func (f *fakeWatchlistService) SetAcquisitionEnabled(_ context.Context, enabled bool) error {
-	f.policyUpdates = append(f.policyUpdates, enabled)
+func (f *fakeWatchlistService) SetPolicy(_ context.Context, policy acquisitiondomain.WatchlistPolicy) error {
+	f.policyUpdates = append(f.policyUpdates, policy)
 	return f.policyErr
 }
 
