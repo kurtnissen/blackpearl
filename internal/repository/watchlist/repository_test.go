@@ -285,6 +285,82 @@ func TestRepositoryPersistsAcquisitionPolicyAndGatesClaimsAtomically(t *testing.
 	require.True(t, enabled)
 }
 
+func TestRepositoryPersistsPilotPolicyAndClaimsExactShowIntent(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "blackpearl.db")
+	repository, err := watchlistrepo.Open(context.Background(), path, false)
+	require.NoError(t, err)
+	now := time.Date(2026, time.August, 14, 18, 0, 0, 0, time.UTC)
+
+	policy, err := repository.Policy(context.Background())
+	require.NoError(t, err)
+	require.False(t, policy.AcquisitionEnabled())
+	require.Equal(t, acquisitiondomain.WatchlistShowPolicyOff, policy.ShowPolicy())
+	pilotPolicy, err := acquisitiondomain.NewWatchlistPolicy(true, acquisitiondomain.WatchlistShowPolicyPilot)
+	require.NoError(t, err)
+	require.NoError(t, repository.SetPolicy(context.Background(), pilotPolicy))
+	show := mustItem(t, "plex://show/pilot", acquisitiondomain.WatchlistMediaTypeShow, "Pilot Show")
+	observation, err := acquisitiondomain.NewWatchlistObservation(show, true, 1, 1)
+	require.NoError(t, err)
+	require.NoError(t, repository.UpsertObservations(
+		context.Background(), []acquisitiondomain.WatchlistObservation{observation}, now,
+	))
+
+	claim, err := repository.Claim(context.Background(), now, time.Minute)
+	require.NoError(t, err)
+	request, err := claim.SearchRequest()
+	require.NoError(t, err)
+	require.Equal(t, "Pilot Show S01E01", request.Query())
+	deferred, err := acquisitiondomain.NewWatchlistDeferred(
+		acquisitiondomain.WatchlistQueueStateNotCached, now.Add(time.Hour),
+	)
+	require.NoError(t, err)
+	require.NoError(t, repository.Complete(context.Background(), claim, deferred))
+	offPolicy, err := acquisitiondomain.NewWatchlistPolicy(true, acquisitiondomain.WatchlistShowPolicyOff)
+	require.NoError(t, err)
+	require.NoError(t, repository.SetPolicy(context.Background(), offPolicy))
+	_, err = repository.Claim(context.Background(), now.Add(time.Hour), time.Minute)
+	require.ErrorIs(t, err, domain.ErrNotFound)
+	require.NoError(t, repository.Close())
+
+	reopened, err := watchlistrepo.Open(context.Background(), path, false)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, reopened.Close()) })
+	policy, err = reopened.Policy(context.Background())
+	require.NoError(t, err)
+	require.True(t, policy.AcquisitionEnabled())
+	require.Equal(t, acquisitiondomain.WatchlistShowPolicyOff, policy.ShowPolicy())
+	require.NoError(t, reopened.SetPolicy(context.Background(), pilotPolicy))
+	retry, err := reopened.Claim(context.Background(), now.Add(time.Hour), time.Minute)
+	require.NoError(t, err)
+	require.Equal(t, 1, retry.Season())
+	require.Equal(t, 1, retry.Episode())
+}
+
+func TestRepositoryNeverRetroactivelyEnablesPreviouslyObservedShow(t *testing.T) {
+	t.Parallel()
+	repository := openRepository(t, filepath.Join(t.TempDir(), "blackpearl.db"))
+	now := time.Date(2026, time.August, 14, 18, 0, 0, 0, time.UTC)
+	show := mustItem(t, "plex://show/baseline", acquisitiondomain.WatchlistMediaTypeShow, "Baseline Show")
+	baseline, err := acquisitiondomain.NewWatchlistObservation(show, false, 0, 0)
+	require.NoError(t, err)
+	pilot, err := acquisitiondomain.NewWatchlistObservation(show, true, 1, 1)
+	require.NoError(t, err)
+
+	require.NoError(t, repository.UpsertObservations(
+		context.Background(), []acquisitiondomain.WatchlistObservation{baseline}, now,
+	))
+	require.NoError(t, repository.UpsertObservations(
+		context.Background(), []acquisitiondomain.WatchlistObservation{pilot}, now.Add(time.Minute),
+	))
+	policy, err := acquisitiondomain.NewWatchlistPolicy(true, acquisitiondomain.WatchlistShowPolicyPilot)
+	require.NoError(t, err)
+	require.NoError(t, repository.SetPolicy(context.Background(), policy))
+
+	_, err = repository.Claim(context.Background(), now.Add(time.Minute), time.Minute)
+	require.ErrorIs(t, err, domain.ErrNotFound)
+}
+
 func mustItem(t *testing.T, externalID string, mediaType acquisitiondomain.WatchlistMediaType, title string) acquisitiondomain.WatchlistItem {
 	t.Helper()
 	item, err := acquisitiondomain.NewWatchlistItem(acquisitiondomain.WatchlistItemInput{

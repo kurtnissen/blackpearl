@@ -69,30 +69,58 @@ func (r *Repository) initializeAcquisitionPolicy(ctx context.Context, enabled bo
 
 // AcquisitionEnabled returns the durable automatic-acquisition policy.
 func (r *Repository) AcquisitionEnabled(ctx context.Context) (bool, error) {
-	if err := ctx.Err(); err != nil {
-		return false, fmt.Errorf("read watchlist acquisition policy: %w", err)
-	}
-	var value int
-	if err := r.db.QueryRowContext(ctx, `
-		SELECT acquisition_enabled FROM watchlist_settings WHERE singleton = 1
-	`).Scan(&value); err != nil {
-		return false, fmt.Errorf("read watchlist acquisition policy: %w", err)
-	}
-	return value == 1, nil
+	policy, err := r.Policy(ctx)
+	return policy.AcquisitionEnabled(), err
 }
 
 // SetAcquisitionEnabled replaces the durable automatic-acquisition policy.
 func (r *Repository) SetAcquisitionEnabled(ctx context.Context, enabled bool) error {
+	policy, err := r.Policy(ctx)
+	if err != nil {
+		return err
+	}
+	updated, err := acquisitiondomain.NewWatchlistPolicy(enabled, policy.ShowPolicy())
+	if err != nil {
+		return fmt.Errorf("validate watchlist acquisition policy: %w", err)
+	}
+	return r.SetPolicy(ctx, updated)
+}
+
+// Policy returns the complete durable automatic-acquisition policy.
+func (r *Repository) Policy(ctx context.Context) (acquisitiondomain.WatchlistPolicy, error) {
+	if err := ctx.Err(); err != nil {
+		return acquisitiondomain.WatchlistPolicy{}, fmt.Errorf("read watchlist acquisition policy: %w", err)
+	}
+	var enabled int
+	var showPolicy string
+	if err := r.db.QueryRowContext(ctx, `
+		SELECT acquisition_enabled, show_policy FROM watchlist_settings WHERE singleton = 1
+	`).Scan(&enabled, &showPolicy); err != nil {
+		return acquisitiondomain.WatchlistPolicy{}, fmt.Errorf("read watchlist acquisition policy: %w", err)
+	}
+	policy, err := acquisitiondomain.NewWatchlistPolicy(enabled == 1, acquisitiondomain.WatchlistShowPolicy(showPolicy))
+	if err != nil {
+		return acquisitiondomain.WatchlistPolicy{}, fmt.Errorf("validate watchlist acquisition policy: %w", err)
+	}
+	return policy, nil
+}
+
+// SetPolicy atomically replaces the complete durable acquisition policy.
+func (r *Repository) SetPolicy(ctx context.Context, policy acquisitiondomain.WatchlistPolicy) error {
+	validated, err := acquisitiondomain.NewWatchlistPolicy(policy.AcquisitionEnabled(), policy.ShowPolicy())
+	if err != nil {
+		return fmt.Errorf("validate watchlist acquisition policy: %w", err)
+	}
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("set watchlist acquisition policy: %w", err)
 	}
-	value := 0
-	if enabled {
-		value = 1
+	enabled := 0
+	if validated.AcquisitionEnabled() {
+		enabled = 1
 	}
 	result, err := r.db.ExecContext(ctx, `
-		UPDATE watchlist_settings SET acquisition_enabled = ? WHERE singleton = 1
-	`, value)
+		UPDATE watchlist_settings SET acquisition_enabled = ?, show_policy = ? WHERE singleton = 1
+	`, enabled, validated.ShowPolicy())
 	if err != nil {
 		return fmt.Errorf("set watchlist acquisition policy: %w", err)
 	}
@@ -186,15 +214,34 @@ func (r *Repository) UpsertSnapshotPolicy(
 	observedAt time.Time,
 	autoEligible bool,
 ) error {
+	observations := make([]acquisitiondomain.WatchlistObservation, 0, len(items))
+	for _, item := range items {
+		eligible := autoEligible && item.MediaType() == acquisitiondomain.WatchlistMediaTypeMovie
+		observation, err := acquisitiondomain.NewWatchlistObservation(item, eligible, 0, 0)
+		if err != nil {
+			return fmt.Errorf("validate watchlist snapshot item: %w", err)
+		}
+		observations = append(observations, observation)
+	}
+	return r.UpsertObservations(ctx, observations, observedAt)
+}
+
+// UpsertObservations persists validated provider observations and immutable
+// acquisition intent without reopening existing queue rows.
+func (r *Repository) UpsertObservations(
+	ctx context.Context,
+	observations []acquisitiondomain.WatchlistObservation,
+	observedAt time.Time,
+) error {
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("upsert watchlist snapshot: %w", err)
 	}
 	if observedAt.IsZero() {
 		return errors.New("watchlist observation time is required")
 	}
-	validated := make([]acquisitiondomain.WatchlistItem, 0, len(items))
-	for _, item := range items {
-		value, err := validateItem(item)
+	validated := make([]acquisitiondomain.WatchlistObservation, 0, len(observations))
+	for _, observation := range observations {
+		value, err := validateObservation(observation)
 		if err != nil {
 			return err
 		}
@@ -205,23 +252,26 @@ func (r *Repository) UpsertSnapshotPolicy(
 		return fmt.Errorf("begin watchlist snapshot: %w", err)
 	}
 	timestamp := observedAt.UTC().UnixMilli()
-	eligible := 0
-	if autoEligible {
-		eligible = 1
-	}
-	for _, item := range validated {
+	for _, observation := range validated {
+		item := observation.Item()
+		eligible := 0
+		if observation.AutoEligible() {
+			eligible = 1
+		}
 		if _, err := transaction.ExecContext(ctx, `
 			INSERT INTO watchlist_queue (
 				source, external_id, media_type, title, release_year,
-				first_observed_unix_ms, last_observed_unix_ms, updated_unix_ms, auto_eligible
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+				first_observed_unix_ms, last_observed_unix_ms, updated_unix_ms, auto_eligible,
+				intent_season, intent_episode
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(source, external_id) DO UPDATE SET
 				media_type = excluded.media_type,
 				title = excluded.title,
 				release_year = excluded.release_year,
 				last_observed_unix_ms = excluded.last_observed_unix_ms,
 				updated_unix_ms = excluded.updated_unix_ms
-		`, item.Source(), item.ExternalID(), item.MediaType(), item.Title(), item.Year(), timestamp, timestamp, timestamp, eligible); err != nil {
+		`, item.Source(), item.ExternalID(), item.MediaType(), item.Title(), item.Year(), timestamp, timestamp, timestamp,
+			eligible, observation.Season(), observation.Episode()); err != nil {
 			return errors.Join(fmt.Errorf("upsert watchlist item: %w", err), transaction.Rollback())
 		}
 	}
@@ -231,8 +281,7 @@ func (r *Repository) UpsertSnapshotPolicy(
 	return nil
 }
 
-// Claim atomically leases one eligible movie. Shows remain observable but are
-// never converted into incomplete acquisition intent.
+// Claim atomically leases one eligible exact movie or episode intent.
 func (r *Repository) Claim(ctx context.Context, now time.Time, leaseDuration time.Duration) (acquisitiondomain.WatchlistClaim, error) {
 	if err := ctx.Err(); err != nil {
 		return acquisitiondomain.WatchlistClaim{}, fmt.Errorf("claim watchlist item: %w", err)
@@ -253,8 +302,17 @@ func (r *Repository) Claim(ctx context.Context, now time.Time, leaseDuration tim
 				SELECT 1 FROM watchlist_settings
 				WHERE singleton = 1 AND acquisition_enabled = 1
 			)
-			  AND media_type = 'movie'
 			  AND auto_eligible = 1
+			  AND (
+				media_type = 'movie'
+				OR (
+					media_type = 'show'
+					AND EXISTS (
+						SELECT 1 FROM watchlist_settings
+						WHERE singleton = 1 AND show_policy = 'pilot'
+					)
+				)
+			  )
 			  AND (
 				(state IN ('pending', 'not_cached', 'retryable') AND next_attempt_unix_ms <= ?)
 				OR (state = 'acquiring' AND lease_until_unix_ms <= ? AND next_attempt_unix_ms <= ?)
@@ -274,7 +332,8 @@ func (r *Repository) Claim(ctx context.Context, now time.Time, leaseDuration tim
 			lease_until_unix_ms = ?,
 			updated_unix_ms = ?
 		WHERE rowid = (SELECT rowid FROM eligible)
-		RETURNING source, external_id, media_type, title, release_year, lease_version, attempt_count, background_job_id
+		RETURNING source, external_id, media_type, title, release_year,
+			intent_season, intent_episode, lease_version, attempt_count, background_job_id
 	`, nowMillis, nowMillis, nowMillis, leaseUntilMillis, nowMillis)
 	claim, err := scanClaim(row)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -293,7 +352,7 @@ func (r *Repository) AttachJob(
 	jobID string,
 	nextAttempt time.Time,
 ) error {
-	validated, err := acquisitiondomain.NewWatchlistJobClaim(claim.Item(), claim.LeaseVersion(), claim.Attempt(), jobID)
+	validated, err := validateClaimWithJob(claim, jobID)
 	if err != nil {
 		return fmt.Errorf("validate watchlist job attachment: %w", err)
 	}
@@ -305,9 +364,7 @@ func (r *Repository) DeferJob(ctx context.Context, claim acquisitiondomain.Watch
 	if claim.BackgroundJobID() == "" {
 		return errors.New("deferred watchlist job requires a linked background job")
 	}
-	validated, err := acquisitiondomain.NewWatchlistJobClaim(
-		claim.Item(), claim.LeaseVersion(), claim.Attempt(), claim.BackgroundJobID(),
-	)
+	validated, err := validateClaimWithJob(claim, claim.BackgroundJobID())
 	if err != nil {
 		return fmt.Errorf("validate deferred watchlist job: %w", err)
 	}
@@ -349,7 +406,7 @@ func (r *Repository) transitionJob(
 
 // Complete commits a result only when the caller still owns the exact lease.
 func (r *Repository) Complete(ctx context.Context, claim acquisitiondomain.WatchlistClaim, completion acquisitiondomain.WatchlistCompletion) error {
-	validatedClaim, err := acquisitiondomain.NewWatchlistClaim(claim.Item(), claim.LeaseVersion(), claim.Attempt())
+	validatedClaim, err := validateClaim(claim)
 	if err != nil {
 		return fmt.Errorf("invalid watchlist completion claim: %w", err)
 	}
@@ -393,11 +450,11 @@ func (r *Repository) Status(ctx context.Context) (acquisitiondomain.WatchlistQue
 	err := r.db.QueryRowContext(ctx, `
 		SELECT
 			COALESCE(SUM(CASE WHEN media_type = 'movie' AND state = 'pending' THEN 1 ELSE 0 END), 0),
-			COALESCE(SUM(CASE WHEN media_type = 'movie' AND state = 'acquiring' THEN 1 ELSE 0 END), 0),
-			COALESCE(SUM(CASE WHEN media_type = 'movie' AND state = 'succeeded' THEN 1 ELSE 0 END), 0),
-			COALESCE(SUM(CASE WHEN media_type = 'movie' AND state = 'not_cached' THEN 1 ELSE 0 END), 0),
-			COALESCE(SUM(CASE WHEN media_type = 'movie' AND state = 'retryable' THEN 1 ELSE 0 END), 0),
-			COALESCE(SUM(CASE WHEN media_type = 'movie' AND state = 'manual_review' THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN state = 'acquiring' THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN state = 'succeeded' THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN state = 'not_cached' THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN state = 'retryable' THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN state = 'manual_review' THEN 1 ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN media_type = 'show' THEN 1 ELSE 0 END), 0)
 		FROM watchlist_queue
 	`).Scan(&status.PendingMovies, &status.Acquiring, &status.Succeeded, &status.NotCached,
@@ -426,9 +483,11 @@ func scanClaim(scanner rowScanner) (acquisitiondomain.WatchlistClaim, error) {
 	var leaseVersion int64
 	var attempt int
 	var backgroundJobID string
+	var season int
+	var episode int
 	if err := scanner.Scan(
 		&input.Source, &input.ExternalID, &mediaType, &input.Title, &input.Year,
-		&leaseVersion, &attempt, &backgroundJobID,
+		&season, &episode, &leaseVersion, &attempt, &backgroundJobID,
 	); err != nil {
 		return acquisitiondomain.WatchlistClaim{}, err
 	}
@@ -437,10 +496,14 @@ func scanClaim(scanner rowScanner) (acquisitiondomain.WatchlistClaim, error) {
 	if err != nil {
 		return acquisitiondomain.WatchlistClaim{}, fmt.Errorf("validate persisted watchlist item: %w", err)
 	}
-	if backgroundJobID != "" {
-		return acquisitiondomain.NewWatchlistJobClaim(item, leaseVersion, attempt, backgroundJobID)
+	observation, err := acquisitiondomain.NewWatchlistObservation(item, true, season, episode)
+	if err != nil {
+		return acquisitiondomain.WatchlistClaim{}, fmt.Errorf("validate persisted watchlist intent: %w", err)
 	}
-	return acquisitiondomain.NewWatchlistClaim(item, leaseVersion, attempt)
+	if backgroundJobID != "" {
+		return acquisitiondomain.NewWatchlistIntentJobClaim(observation, leaseVersion, attempt, backgroundJobID)
+	}
+	return acquisitiondomain.NewWatchlistIntentClaim(observation, leaseVersion, attempt)
 }
 
 func validateItem(item acquisitiondomain.WatchlistItem) (acquisitiondomain.WatchlistItem, error) {
@@ -452,6 +515,38 @@ func validateItem(item acquisitiondomain.WatchlistItem) (acquisitiondomain.Watch
 		return acquisitiondomain.WatchlistItem{}, fmt.Errorf("invalid watchlist snapshot item: %w", err)
 	}
 	return validated, nil
+}
+
+func validateObservation(observation acquisitiondomain.WatchlistObservation) (acquisitiondomain.WatchlistObservation, error) {
+	validated, err := acquisitiondomain.NewWatchlistObservation(
+		observation.Item(), observation.AutoEligible(), observation.Season(), observation.Episode(),
+	)
+	if err != nil {
+		return acquisitiondomain.WatchlistObservation{}, fmt.Errorf("invalid watchlist observation: %w", err)
+	}
+	return validated, nil
+}
+
+func validateClaim(claim acquisitiondomain.WatchlistClaim) (acquisitiondomain.WatchlistClaim, error) {
+	observation, err := acquisitiondomain.NewWatchlistObservation(
+		claim.Item(), claim.AutoEligible(), claim.Season(), claim.Episode(),
+	)
+	if err != nil {
+		return acquisitiondomain.WatchlistClaim{}, err
+	}
+	return acquisitiondomain.NewWatchlistIntentClaim(observation, claim.LeaseVersion(), claim.Attempt())
+}
+
+func validateClaimWithJob(claim acquisitiondomain.WatchlistClaim, jobID string) (acquisitiondomain.WatchlistClaim, error) {
+	observation, err := acquisitiondomain.NewWatchlistObservation(
+		claim.Item(), claim.AutoEligible(), claim.Season(), claim.Episode(),
+	)
+	if err != nil {
+		return acquisitiondomain.WatchlistClaim{}, err
+	}
+	return acquisitiondomain.NewWatchlistIntentJobClaim(
+		observation, claim.LeaseVersion(), claim.Attempt(), jobID,
+	)
 }
 
 func validateCompletion(completion acquisitiondomain.WatchlistCompletion) (acquisitiondomain.WatchlistCompletion, error) {
