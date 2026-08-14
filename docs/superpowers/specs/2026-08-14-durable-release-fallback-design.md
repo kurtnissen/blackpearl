@@ -111,9 +111,10 @@ the next candidate. An unauthorized, unavailable, malformed, or ambiguous
 cleanup result enters manual review; BlackPearl does not retry the destructive
 call automatically.
 
-Advancement atomically clears the attached object, selects the next pending
-candidate, and returns the job to selected. When no candidates remain, the job
-fails with the most specific public terminal code. The Watchlist worker keeps
+Advancement atomically records the current outcome and either clears the
+attached object, selects the next pending candidate, and returns the job to
+selected, or moves the job directly to failed with the most specific public
+terminal code when no candidates remain. The Watchlist worker keeps
 the item in `acquiring` while alternatives remain and applies its normal
 cooldown only after the background job is terminal.
 
