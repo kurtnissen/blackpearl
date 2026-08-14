@@ -114,7 +114,7 @@ func (s *Service) Acquire(ctx context.Context, request acquisitiondomain.SearchR
 	if err != nil {
 		return acquisitiondomain.AcquiredMedia{}, ambiguousMutationError("inspect created acquisition object", err)
 	}
-	selected, err := selectCandidate(validated, items)
+	selected, err := SelectCandidate(validated, items)
 	if err != nil {
 		return acquisitiondomain.AcquiredMedia{}, ambiguousMutationError("select created acquisition media", err)
 	}
@@ -201,7 +201,9 @@ func waitForInspection(ctx context.Context, interval time.Duration) error {
 	}
 }
 
-func selectCandidate(request acquisitiondomain.SearchRequest, candidates []domain.MediaCandidate) (domain.MediaCandidate, error) {
+// SelectCandidate deterministically chooses the playable provider file that
+// best matches validated movie or episode intent.
+func SelectCandidate(request acquisitiondomain.SearchRequest, candidates []domain.MediaCandidate) (domain.MediaCandidate, error) {
 	matching := make([]domain.MediaCandidate, 0, len(candidates))
 	if request.MediaType() == domain.MediaTypeEpisode {
 		episodeToken := fmt.Sprintf("s%02de%02d", request.Season(), request.Episode())

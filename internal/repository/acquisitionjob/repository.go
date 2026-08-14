@@ -252,7 +252,7 @@ func (r *Repository) Defer(
 	if progress < 0 || progress >= 100 {
 		return errors.New("deferred acquisition job progress must be between 0 and 99")
 	}
-	if code != acquisition.JobErrorProviderUnavailable && code != acquisition.JobErrorUnauthorized {
+	if code != acquisition.JobErrorNone && code != acquisition.JobErrorProviderUnavailable && code != acquisition.JobErrorUnauthorized {
 		return errors.New("deferred acquisition job requires a retryable public error code")
 	}
 	return r.transitionAnyActive(ctx, claim, now, `
