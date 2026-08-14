@@ -1,6 +1,7 @@
 package acquisition_test
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/blackpearl-media/blackpearl/internal/acquisition"
@@ -39,6 +40,67 @@ func TestNewCreatedObjectRejectsInvalidReferences(t *testing.T) {
 			_, err := acquisition.NewCreatedObject(test.provider, test.objectID)
 
 			require.Error(t, err)
+		})
+	}
+}
+
+func TestNewPreparationInspectionValidatesProgressAndDefensivelyCopiesCandidates(t *testing.T) {
+	t.Parallel()
+	candidate, err := domain.NewMediaCandidate("17:3", "Example.2026.mp4", 10)
+	require.NoError(t, err)
+	candidates := []domain.MediaCandidate{candidate}
+
+	inspection, err := acquisition.NewPreparationInspection(candidates, 42)
+
+	require.NoError(t, err)
+	require.Equal(t, 42, inspection.Progress())
+	candidates[0].Name = "mutated.mp4"
+	first := inspection.Candidates()
+	require.Equal(t, candidate, first[0])
+	first[0].Name = "also-mutated.mp4"
+	require.Equal(t, candidate, inspection.Candidates()[0])
+}
+
+func TestNewPreparationInspectionAcceptsBoundaryProgress(t *testing.T) {
+	t.Parallel()
+
+	for _, progress := range []int{0, 100} {
+		t.Run(fmt.Sprintf("progress %d", progress), func(t *testing.T) {
+			t.Parallel()
+
+			inspection, err := acquisition.NewPreparationInspection(nil, progress)
+
+			require.NoError(t, err)
+			require.Equal(t, progress, inspection.Progress())
+			require.Empty(t, inspection.Candidates())
+		})
+	}
+}
+
+func TestNewPreparationInspectionRejectsInvalidValues(t *testing.T) {
+	t.Parallel()
+	valid, err := domain.NewMediaCandidate("17:3", "Example.2026.mp4", 10)
+	require.NoError(t, err)
+	invalidExtension := valid
+	invalidExtension.Extension = ".mkv"
+
+	tests := []struct {
+		name       string
+		candidates []domain.MediaCandidate
+		progress   int
+	}{
+		{name: "negative progress", progress: -1},
+		{name: "progress over one hundred", progress: 101},
+		{name: "zero candidate", candidates: []domain.MediaCandidate{{}}, progress: 1},
+		{name: "mismatched extension", candidates: []domain.MediaCandidate{invalidExtension}, progress: 1},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, inspectionErr := acquisition.NewPreparationInspection(test.candidates, test.progress)
+
+			require.Error(t, inspectionErr)
 		})
 	}
 }

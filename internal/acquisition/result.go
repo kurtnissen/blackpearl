@@ -43,6 +43,41 @@ func (o CreatedObject) ObjectID() string { return o.backing.ObjectID }
 // Backing returns an independent provider-neutral reference value.
 func (o CreatedObject) Backing() domain.BackingRef { return o.backing }
 
+// PreparationInspection is one provider-neutral snapshot of an account
+// object's readiness. It contains only safe media metadata and bounded
+// progress; provider response bodies and transient locators never enter it.
+type PreparationInspection struct {
+	candidates []domain.MediaCandidate
+	progress   int
+}
+
+// NewPreparationInspection validates one provider preparation snapshot.
+func NewPreparationInspection(candidates []domain.MediaCandidate, progress int) (PreparationInspection, error) {
+	if progress < 0 || progress > 100 {
+		return PreparationInspection{}, errors.New("preparation progress must be between 0 and 100")
+	}
+	validated := make([]domain.MediaCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		item, err := domain.NewMediaCandidate(candidate.ObjectID, candidate.Name, candidate.Size)
+		if err != nil {
+			return PreparationInspection{}, fmt.Errorf("validate preparation candidate: %w", err)
+		}
+		if candidate.Extension != "" && candidate.Extension != item.Extension {
+			return PreparationInspection{}, errors.New("preparation candidate extension does not match its name")
+		}
+		validated = append(validated, item)
+	}
+	return PreparationInspection{candidates: validated, progress: progress}, nil
+}
+
+// Candidates returns an independent copy of eligible provider media.
+func (i PreparationInspection) Candidates() []domain.MediaCandidate {
+	return append([]domain.MediaCandidate(nil), i.candidates...)
+}
+
+// Progress returns provider preparation completion from 0 through 100.
+func (i PreparationInspection) Progress() int { return i.progress }
+
 // AcquiredMedia binds validated search intent to the exact torrent release and
 // eligible provider media candidate selected from the created account object.
 type AcquiredMedia struct {
