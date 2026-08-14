@@ -56,6 +56,31 @@ func TestNewWatchlistJobClaimValidatesDurableJobIdentity(t *testing.T) {
 	}
 }
 
+func TestWatchlistIntentClaimOwnsExactEpisodeSearch(t *testing.T) {
+	t.Parallel()
+	show := mustWatchlistItem(t, "plex://show/pilot", acquisition.WatchlistMediaTypeShow)
+	observation, err := acquisition.NewWatchlistObservation(show, true, 1, 1)
+	require.NoError(t, err)
+
+	claim, err := acquisition.NewWatchlistIntentClaim(observation, 4, 2)
+	require.NoError(t, err)
+	request, err := claim.SearchRequest()
+
+	require.NoError(t, err)
+	require.Equal(t, "Example Movie S01E01", request.Query())
+	require.Equal(t, 1, claim.Season())
+	require.Equal(t, 1, claim.Episode())
+	require.True(t, claim.AutoEligible())
+
+	jobClaim, err := acquisition.NewWatchlistIntentJobClaim(
+		observation, 4, 2, "0123456789abcdef0123456789abcdef",
+	)
+	require.NoError(t, err)
+	require.Equal(t, claim.Item(), jobClaim.Item())
+	require.Equal(t, 1, jobClaim.Season())
+	require.Equal(t, 1, jobClaim.Episode())
+}
+
 func TestWatchlistCompletionConstructorsEnforceOutcomeContract(t *testing.T) {
 	t.Parallel()
 	nextAttempt := time.Date(2026, time.August, 15, 12, 0, 0, 0, time.UTC)

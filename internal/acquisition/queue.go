@@ -34,7 +34,7 @@ const (
 
 // WatchlistClaim is one immutable, versioned queue lease.
 type WatchlistClaim struct {
-	item            WatchlistItem
+	observation     WatchlistObservation
 	leaseVersion    int64
 	attempt         int
 	backgroundJobID string
@@ -42,24 +42,49 @@ type WatchlistClaim struct {
 
 // NewWatchlistClaim validates a queue lease loaded from persistence.
 func NewWatchlistClaim(item WatchlistItem, leaseVersion int64, attempt int) (WatchlistClaim, error) {
-	return newWatchlistClaim(item, leaseVersion, attempt, "")
+	observation, err := NewWatchlistObservation(item, true, 0, 0)
+	if err != nil {
+		return WatchlistClaim{}, err
+	}
+	return NewWatchlistIntentClaim(observation, leaseVersion, attempt)
 }
 
 // NewWatchlistJobClaim validates a queue lease linked to a durable acquisition job.
 func NewWatchlistJobClaim(item WatchlistItem, leaseVersion int64, attempt int, jobID string) (WatchlistClaim, error) {
+	observation, err := NewWatchlistObservation(item, true, 0, 0)
+	if err != nil {
+		return WatchlistClaim{}, err
+	}
+	return NewWatchlistIntentJobClaim(observation, leaseVersion, attempt, jobID)
+}
+
+// NewWatchlistIntentClaim validates an exact queue lease loaded from persistence.
+func NewWatchlistIntentClaim(observation WatchlistObservation, leaseVersion int64, attempt int) (WatchlistClaim, error) {
+	return newWatchlistClaim(observation, leaseVersion, attempt, "")
+}
+
+// NewWatchlistIntentJobClaim validates an exact queue lease linked to a durable job.
+func NewWatchlistIntentJobClaim(
+	observation WatchlistObservation,
+	leaseVersion int64,
+	attempt int,
+	jobID string,
+) (WatchlistClaim, error) {
 	if !jobIDPattern.MatchString(jobID) {
 		return WatchlistClaim{}, errors.New("watchlist background job ID must be 32 lowercase hexadecimal characters")
 	}
-	return newWatchlistClaim(item, leaseVersion, attempt, jobID)
+	return newWatchlistClaim(observation, leaseVersion, attempt, jobID)
 }
 
-func newWatchlistClaim(item WatchlistItem, leaseVersion int64, attempt int, jobID string) (WatchlistClaim, error) {
-	validated, err := NewWatchlistItem(WatchlistItemInput{
-		Source: item.Source(), ExternalID: item.ExternalID(), MediaType: item.MediaType(),
-		Title: item.Title(), Year: item.Year(),
-	})
+func newWatchlistClaim(observation WatchlistObservation, leaseVersion int64, attempt int, jobID string) (WatchlistClaim, error) {
+	validated, err := NewWatchlistObservation(
+		observation.Item(), observation.AutoEligible(), observation.Season(), observation.Episode(),
+	)
 	if err != nil {
-		return WatchlistClaim{}, fmt.Errorf("invalid watchlist claim item: %w", err)
+		return WatchlistClaim{}, fmt.Errorf("invalid watchlist claim intent: %w", err)
+	}
+	if !validated.AutoEligible() {
+		return WatchlistClaim{}, errors.New("watchlist claim requires eligible acquisition intent")
 	}
 	if leaseVersion < 1 {
 		return WatchlistClaim{}, errors.New("watchlist claim lease version must be positive")
@@ -67,11 +92,32 @@ func newWatchlistClaim(item WatchlistItem, leaseVersion int64, attempt int, jobI
 	if attempt < 1 {
 		return WatchlistClaim{}, errors.New("watchlist claim attempt must be positive")
 	}
-	return WatchlistClaim{item: validated, leaseVersion: leaseVersion, attempt: attempt, backgroundJobID: jobID}, nil
+	return WatchlistClaim{observation: validated, leaseVersion: leaseVersion, attempt: attempt, backgroundJobID: jobID}, nil
 }
 
 // Item returns the validated watchlist intent owned by this lease.
-func (c WatchlistClaim) Item() WatchlistItem { return c.item }
+func (c WatchlistClaim) Item() WatchlistItem { return c.observation.Item() }
+
+// AutoEligible reports whether the first observation authorized this intent.
+func (c WatchlistClaim) AutoEligible() bool { return c.observation.AutoEligible() }
+
+// Season returns the exact episode season, or zero for movies.
+func (c WatchlistClaim) Season() int { return c.observation.Season() }
+
+// Episode returns the exact episode number, or zero for movies.
+func (c WatchlistClaim) Episode() int { return c.observation.Episode() }
+
+// SearchRequest returns the exact acquisition intent persisted with this claim.
+func (c WatchlistClaim) SearchRequest() (SearchRequest, error) {
+	item := c.Item()
+	if item.MediaType() == WatchlistMediaTypeMovie {
+		return item.SearchRequest()
+	}
+	if item.MediaType() == WatchlistMediaTypeShow {
+		return NewEpisodeSearch(item.Title(), item.Year(), c.Season(), c.Episode())
+	}
+	return SearchRequest{}, ErrUnsupportedWatchlistMedia
+}
 
 // LeaseVersion returns the optimistic concurrency token for this lease.
 func (c WatchlistClaim) LeaseVersion() int64 { return c.leaseVersion }

@@ -41,6 +41,58 @@ func TestWatchlistShowRemainsObservableWithoutInventingEpisodeIntent(t *testing.
 	require.ErrorIs(t, err, acquisition.ErrUnsupportedWatchlistMedia)
 }
 
+func TestWatchlistPolicyAndObservationRequireExplicitShowIntent(t *testing.T) {
+	t.Parallel()
+	movie := mustWatchlistItem(t, "plex://movie/policy", acquisition.WatchlistMediaTypeMovie)
+	show := mustWatchlistItem(t, "plex://show/policy", acquisition.WatchlistMediaTypeShow)
+
+	policy, err := acquisition.NewWatchlistPolicy(true, acquisition.WatchlistShowPolicyPilot)
+	require.NoError(t, err)
+	require.True(t, policy.AcquisitionEnabled())
+	require.Equal(t, acquisition.WatchlistShowPolicyPilot, policy.ShowPolicy())
+	_, err = acquisition.NewWatchlistPolicy(true, "season")
+	require.Error(t, err)
+
+	movieObservation, err := acquisition.NewWatchlistObservation(movie, true, 0, 0)
+	require.NoError(t, err)
+	require.True(t, movieObservation.AutoEligible())
+	require.Equal(t, movie, movieObservation.Item())
+	require.Zero(t, movieObservation.Season())
+	require.Zero(t, movieObservation.Episode())
+
+	pilot, err := acquisition.NewWatchlistObservation(show, true, 1, 1)
+	require.NoError(t, err)
+	require.True(t, pilot.AutoEligible())
+	require.Equal(t, 1, pilot.Season())
+	require.Equal(t, 1, pilot.Episode())
+
+	observedOnly, err := acquisition.NewWatchlistObservation(show, false, 0, 0)
+	require.NoError(t, err)
+	require.False(t, observedOnly.AutoEligible())
+
+	for _, test := range []struct {
+		name     string
+		item     acquisition.WatchlistItem
+		eligible bool
+		season   int
+		episode  int
+	}{
+		{name: "movie coordinates", item: movie, eligible: true, season: 1, episode: 1},
+		{name: "eligible show without coordinates", item: show, eligible: true},
+		{name: "observation-only show coordinates", item: show, season: 1, episode: 1},
+		{name: "show season too large", item: show, eligible: true, season: 100, episode: 1},
+		{name: "show episode too large", item: show, eligible: true, season: 1, episode: 1000},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			_, observationErr := acquisition.NewWatchlistObservation(
+				test.item, test.eligible, test.season, test.episode,
+			)
+			require.Error(t, observationErr)
+		})
+	}
+}
+
 func TestNewWatchlistItemRejectsInvalidProviderData(t *testing.T) {
 	t.Parallel()
 
