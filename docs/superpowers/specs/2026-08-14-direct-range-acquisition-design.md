@@ -106,29 +106,28 @@ type RangeCandidate struct {
     backing   domain.BackingRef
     name      string
     size      int64
-    title     string
     indexer   string
+    validator string
 }
 ```
 
 Its object ID is a provider-owned opaque identifier. The Internet Archive
 adapter uses base64url-encoded `identifier` and `filename` components separated
 by `~`; it reconstructs a current trusted host from Archive metadata at open
-time.
+time. The validator is a provider-neutral immutable content fingerprint. It is
+captured during discovery, persisted with the selection, and compared every
+time preparation or inspection reopens the backing.
 
 ## Persistence
 
-A new SQLite migration rebuilds `acquisition_job_candidates` with a canonical
-`selection_key` and variant columns, copies every existing row as `torrent`,
-and recreates the selected-row indexes. `acquisition_jobs` gains selected kind,
-backing provider, backing object ID, and media name columns. Existing selected
-jobs default to `torrent`; queued/terminal rows remain valid.
-
-`selection_key` is `torrent:<normalized-info-hash>` for torrents and
-`range:<provider>:<sha256-of-object-id>` for range candidates. It is used only
-for uniqueness and never sent to a provider. The migration preserves all
-existing jobs, attempts, leases, outcomes, created objects, and publication
-records.
+SQLite migration 003 rebuilds `acquisition_job_candidates` with tagged
+`torrent | range` rows and stable provider-local selection identities, then
+adds the corresponding selected-job columns. Migration 004 adds the immutable
+validator to both selected jobs and candidate-plan rows. Existing range rows
+receive a fail-closed legacy sentinel: completed publication history remains
+readable, while an active legacy row cannot be republished without verification.
+All existing torrent jobs, attempts, leases, outcomes, created objects, and
+publication records remain intact.
 
 ## Provider and service boundaries
 

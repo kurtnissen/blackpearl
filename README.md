@@ -126,8 +126,10 @@ release locators in SQLite.
 
 For a legal smoke test, the Compose profile also enables a direct public
 Internet Archive search adapter. Exact licensed MP4/MKV files can be persisted
-as metadata-only range candidates and published without a complete local copy
-or a TorBox mutation. If no eligible direct file is available, bounded torrent
+as metadata-only range candidates, including their immutable content validator,
+and published without a complete local copy or a TorBox mutation. A changed
+same-name/same-size remote file is rejected before publication and advances to
+the next durable candidate. If no eligible direct file is available, bounded torrent
 metadata can still be verified against its selected info hash before TorBox
 creation. Candidate ordering is cached torrent, direct range, then uncached
 torrent, with one direct slot reserved in the five-entry durable plan. Set
