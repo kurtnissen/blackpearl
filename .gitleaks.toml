@@ -1,0 +1,12 @@
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Documented non-secret test credentials"
+regexTarget = "secret"
+regexes = [
+  '''secret-token''',
+  '''private-plex-token''',
+  '''saved-torbox-token''',
+  '''0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef''',
+]

@@ -9,6 +9,19 @@ permissions:
   contents: read
 
 jobs:
+  secrets:
+    name: Secret history scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - run: >-
+          docker run --rm
+          -v "$PWD:/repo:ro"
+          zricethezav/gitleaks:v8.30.0
+          git --no-banner /repo
+
   test:
     name: Test and coverage
     runs-on: ubuntu-latest
