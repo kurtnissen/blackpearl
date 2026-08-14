@@ -248,7 +248,7 @@ func newService(t *testing.T, searcher *fakeSearcher, gateway *fakeCachedGateway
 func mustRelease(t *testing.T, sourceID string, infoHash string) acquisitiondomain.Release {
 	t.Helper()
 	release, err := acquisitiondomain.NewRelease(acquisitiondomain.ReleaseInput{
-		Provider: "prowlarr", SourceID: sourceID, Title: "Example.2026", Protocol: acquisitiondomain.ReleaseProtocolTorrent,
+		Provider: "prowlarr", SourceID: sourceID, Title: "Example.Movie.2026", Protocol: acquisitiondomain.ReleaseProtocolTorrent,
 		Size: 20, Indexer: "authorized", InfoHash: infoHash,
 	})
 	require.NoError(t, err)

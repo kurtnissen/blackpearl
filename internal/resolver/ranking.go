@@ -23,7 +23,7 @@ type releaseRank struct {
 func rankAndDeduplicate(request acquisition.SearchRequest, releases []acquisition.Release) []acquisition.Release {
 	usable := make([]acquisition.Release, 0, len(releases))
 	for _, release := range releases {
-		if usableRelease(release) {
+		if usableRelease(release) && releaseEligibleForIntent(request, release.Title()) {
 			usable = append(usable, release)
 		}
 	}
@@ -41,6 +41,13 @@ func rankAndDeduplicate(request acquisition.SearchRequest, releases []acquisitio
 		result = append(result, release)
 	}
 	return result
+}
+
+func releaseEligibleForIntent(request acquisition.SearchRequest, releaseTitle string) bool {
+	if request.Episode() > 0 {
+		return releaseMatches(request, releaseTitle)
+	}
+	return releaseStartsWithTitle(request, releaseTitle) && releaseMatchesYear(request, releaseTitle)
 }
 
 func usableRelease(release acquisition.Release) bool {

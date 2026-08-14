@@ -20,10 +20,10 @@ func TestSearchRanksCompleteMovieTitleMatchFirst(t *testing.T) {
 
 	actual := searchWithReleases(t, request, releases)
 
-	require.Equal(t, []string{"match", "partial"}, releaseIDs(actual))
+	require.Equal(t, []string{"match"}, releaseIDs(actual))
 }
 
-func TestSearchRanksMovieTitlePrefixAndYearAheadOfPreview(t *testing.T) {
+func TestSearchDropsPreviewBeforeCachedFirstPlanningCanPromoteIt(t *testing.T) {
 	t.Parallel()
 	request, err := acquisition.NewMovieSearch("Sintel", 2010)
 	require.NoError(t, err)
@@ -34,7 +34,7 @@ func TestSearchRanksMovieTitlePrefixAndYearAheadOfPreview(t *testing.T) {
 
 	actual := searchWithReleases(t, request, releases)
 
-	require.Equal(t, []string{"movie", "preview"}, releaseIDs(actual))
+	require.Equal(t, []string{"movie"}, releaseIDs(actual))
 }
 
 func TestSearchDoesNotTreatPartialWordAsCompleteTitleMatch(t *testing.T) {
@@ -48,7 +48,7 @@ func TestSearchDoesNotTreatPartialWordAsCompleteTitleMatch(t *testing.T) {
 
 	actual := searchWithReleases(t, request, releases)
 
-	require.Equal(t, []string{"complete-word", "partial-word"}, releaseIDs(actual))
+	require.Equal(t, []string{"complete-word"}, releaseIDs(actual))
 }
 
 func TestSearchRanksCompleteEpisodeTokenFirst(t *testing.T) {
@@ -62,7 +62,7 @@ func TestSearchRanksCompleteEpisodeTokenFirst(t *testing.T) {
 
 	actual := searchWithReleases(t, request, releases)
 
-	require.Equal(t, []string{"match", "wrong-episode"}, releaseIDs(actual))
+	require.Equal(t, []string{"match"}, releaseIDs(actual))
 }
 
 func TestSearchRanksHashThenSeedersThenSizeAndStableIdentity(t *testing.T) {
