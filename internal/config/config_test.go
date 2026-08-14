@@ -48,6 +48,10 @@ func TestParseUsesIsolatedContainerDefaults(t *testing.T) {
 	require.Equal(t, 15*time.Minute, cfg.WatchlistRetryCooldown)
 	require.False(t, cfg.PlexRefreshEnabled)
 	require.Empty(t, cfg.PlexRefreshURL)
+	require.False(t, cfg.PlaybackAdvancementEnabled)
+	require.Equal(t, 30*time.Second, cfg.PlaybackPollInterval)
+	require.Equal(t, 15*time.Second, cfg.PlaybackOperationTimeout)
+	require.Equal(t, "https://metadata.provider.plex.tv", cfg.PlaybackMetadataURL)
 }
 
 func TestParseAcceptsBoundedOpenMediaSearchForBrowserSetup(t *testing.T) {
@@ -160,6 +164,85 @@ func TestParseRejectsUnsafeAutomaticPlexRefreshConfiguration(t *testing.T) {
 			require.ErrorContains(t, err, "PLEX_REFRESH")
 		})
 	}
+}
+
+func TestParseAcceptsPlaybackDrivenEpisodeAdvancement(t *testing.T) {
+	t.Parallel()
+	environment := browserSetupEnvironment()
+	environment["BLACKPEARL_WATCHLIST_ENABLED"] = "true"
+	environment["BLACKPEARL_WATCHLIST_PREFERENCES_PATH"] = "/plex/Preferences.xml"
+	environment["BLACKPEARL_PLEX_REFRESH_ENABLED"] = "true"
+	environment["BLACKPEARL_PLEX_REFRESH_URL"] = "http://host.docker.internal:32402"
+	environment["BLACKPEARL_PLAYBACK_ADVANCEMENT_ENABLED"] = "true"
+	environment["BLACKPEARL_PLAYBACK_POLL_INTERVAL"] = "20s"
+	environment["BLACKPEARL_PLAYBACK_OPERATION_TIMEOUT"] = "10s"
+	environment["BLACKPEARL_PLAYBACK_METADATA_URL"] = "https://metadata.example.test"
+
+	cfg, err := config.Parse(environment)
+
+	require.NoError(t, err)
+	require.True(t, cfg.PlaybackAdvancementEnabled)
+	require.Equal(t, 20*time.Second, cfg.PlaybackPollInterval)
+	require.Equal(t, 10*time.Second, cfg.PlaybackOperationTimeout)
+	require.Equal(t, "https://metadata.example.test", cfg.PlaybackMetadataURL)
+}
+
+func TestParseRejectsUnsafePlaybackAdvancementConfiguration(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		mutate func(map[string]string)
+	}{
+		{name: "requires Watchlist", mutate: func(environment map[string]string) {
+			delete(environment, "BLACKPEARL_WATCHLIST_ENABLED")
+			delete(environment, "BLACKPEARL_WATCHLIST_PREFERENCES_PATH")
+		}},
+		{name: "requires Plex refresh", mutate: func(environment map[string]string) {
+			delete(environment, "BLACKPEARL_PLEX_REFRESH_ENABLED")
+			delete(environment, "BLACKPEARL_PLEX_REFRESH_URL")
+		}},
+		{name: "zero poll", mutate: func(environment map[string]string) {
+			environment["BLACKPEARL_PLAYBACK_POLL_INTERVAL"] = "0s"
+		}},
+		{name: "zero timeout", mutate: func(environment map[string]string) {
+			environment["BLACKPEARL_PLAYBACK_OPERATION_TIMEOUT"] = "0s"
+		}},
+		{name: "relative metadata URL", mutate: func(environment map[string]string) {
+			environment["BLACKPEARL_PLAYBACK_METADATA_URL"] = "metadata.provider.plex.tv"
+		}},
+		{name: "credentialed metadata URL", mutate: func(environment map[string]string) {
+			environment["BLACKPEARL_PLAYBACK_METADATA_URL"] = "https://user:secret@metadata.provider.plex.tv"
+		}},
+		{name: "metadata query", mutate: func(environment map[string]string) {
+			environment["BLACKPEARL_PLAYBACK_METADATA_URL"] = "https://metadata.provider.plex.tv?token=secret"
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			environment := browserSetupEnvironment()
+			environment["BLACKPEARL_WATCHLIST_ENABLED"] = "true"
+			environment["BLACKPEARL_WATCHLIST_PREFERENCES_PATH"] = "/plex/Preferences.xml"
+			environment["BLACKPEARL_PLEX_REFRESH_ENABLED"] = "true"
+			environment["BLACKPEARL_PLEX_REFRESH_URL"] = "http://host.docker.internal:32402"
+			environment["BLACKPEARL_PLAYBACK_ADVANCEMENT_ENABLED"] = "true"
+			test.mutate(environment)
+
+			_, err := config.Parse(environment)
+
+			require.ErrorContains(t, err, "PLAYBACK")
+		})
+	}
+}
+
+func TestParseRejectsPlaybackSettingsWhileAdvancementIsDisabled(t *testing.T) {
+	t.Parallel()
+	environment := browserSetupEnvironment()
+	environment["BLACKPEARL_PLAYBACK_METADATA_URL"] = "https://metadata.example.test"
+
+	_, err := config.Parse(environment)
+
+	require.ErrorContains(t, err, "PLAYBACK_ADVANCEMENT_ENABLED")
 }
 
 func TestParseAcceptsSerializedPlexWatchlistAcquisition(t *testing.T) {

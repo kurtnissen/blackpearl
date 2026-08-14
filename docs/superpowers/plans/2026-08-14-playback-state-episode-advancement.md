@@ -358,13 +358,13 @@ git commit -m "feat: advance shows from Plex playback state"
 - Consumes: existing `plexTokenSource`, `cfg.PlexRefreshURL`, setup service, Watchlist repository, HTTP clients, and background `errgroup` lifecycle.
 - Produces: validated playback configuration and one background worker in the same BlackPearl binary.
 
-- [ ] **Step 1: Write failing config, wiring, Compose, and UI tests**
+- [x] **Step 1: Write failing config, wiring, Compose, and UI tests**
 
 Add configuration tests for valid defaults and invalid enablement without Watchlist/refresh/token source, non-positive intervals/timeouts, unsafe metadata URL credentials/query/fragment, and disabled stray configuration. App tests must prove dependencies are wired only when enabled and all background resources close on startup failure/cancellation. Compose tests must prove the feature is enabled, local Plex URL remains credential-free, Plex networks remain disjoint, and no new mount appears.
 
 Update the existing show-policy UI test to require copy that describes one-episode-ahead playback behavior without promising whole-season acquisition.
 
-- [ ] **Step 2: Run targeted tests and verify RED**
+- [x] **Step 2: Run targeted tests and verify RED**
 
 Run:
 
@@ -376,7 +376,7 @@ cd web && bun run test -- setup-console.test.tsx
 
 Expected: failures because configuration, runtime wiring, Compose settings, and copy are absent.
 
-- [ ] **Step 3: Add validated configuration**
+- [x] **Step 3: Add validated configuration**
 
 Add fields with these exact defaults:
 
@@ -389,15 +389,15 @@ PlaybackMetadataURL        string        `env:"BLACKPEARL_PLAYBACK_METADATA_URL"
 
 Enablement requires Watchlist and Plex refresh. The metadata URL must be absolute HTTP(S) without user info, query, or fragment.
 
-- [ ] **Step 4: Wire one lifecycle-owned playback worker**
+- [x] **Step 4: Wire one lifecycle-owned playback worker**
 
 Construct both gateways from the existing token source, use the setup service as exact manifest index and the Watchlist repository as frontier, then add `playbackWorker.Run(backgroundContext)` to the existing group. Startup errors must close the repository exactly once. Set Compose enablement to `true`; durable Watchlist policy remains the authorization gate.
 
-- [ ] **Step 5: Update the paired UI copy and docs**
+- [x] **Step 5: Update the paired UI copy and docs**
 
 Keep the existing control, but change its description from an S01E01-only pilot to: start with S01E01, then keep exactly one next episode queued only after real playback. Explicitly state that removing the show or turning the policy off stops future advancement and that BlackPearl never requests a whole season.
 
-- [ ] **Step 6: Run targeted tests until GREEN**
+- [x] **Step 6: Run targeted tests until GREEN**
 
 Run:
 
@@ -409,7 +409,7 @@ cd web && bun run lint && bun run test
 
 Expected: PASS.
 
-- [ ] **Step 7: Commit runtime wiring**
+- [x] **Step 7: Commit runtime wiring**
 
 ```bash
 git add internal/config/config.go internal/config/config_test.go cmd/blackpearl/app.go cmd/blackpearl/app_test.go compose.torbox.yaml scripts/test-torbox-compose.sh web/src/components/setup-console.tsx web/src/components/setup-console.test.tsx README.md docs/architecture.md docs/macos-torbox-poc.md

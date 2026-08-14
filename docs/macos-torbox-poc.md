@@ -91,16 +91,20 @@ selected release when it is not cached, so use it only with authorized sources.
 Items already in the Watchlist remain observation-only, and only an item first
 seen on a later enabled sync is eligible. Movies use their exact title and year.
 Shows remain observation-only unless **Start new shows with S01E01** is enabled
-beneath the master control; that durable policy converts a newly observed show
-into exactly one season 1 episode 1 request. It never requests a full season or
-series, and enabling it is non-retroactive. Turning either control off blocks
-matching new and retry claims without canceling provider work already preparing.
+beneath the master control. That durable policy starts a newly observed show at
+season 1 episode 1. After Plex reports at least 120 seconds and 10 percent played
+from that exact BlackPearl episode, BlackPearl resolves and queues exactly one
+next episode. It never requests a full season or series, and enabling it is
+non-retroactive. Removing the show or turning either control off blocks future
+advancement without canceling provider work already preparing.
 The Watchlist queue persists the exact movie/episode coordinates and durable
 acquisition job ID and reconciles them across restarts. No-source or stalled
 jobs wait six hours before another attempt. Known transient failures wait 15
 minutes. Any provider or publication mutation with an ambiguous result moves to
 manual review instead of being retried. Playback-triggered next-episode intent
-is a later milestone and is intentionally separate from Watchlist membership.
+is deliberately separate from Watchlist membership and uses only the isolated
+Plex server's read-only session and metadata APIs. The portable profile enables
+the worker, while the paired durable controls remain the authorization gate.
 
 The launcher creates a private local pairing value under the ignored
 `runtime/` directory and carries it in the setup page URL fragment. The

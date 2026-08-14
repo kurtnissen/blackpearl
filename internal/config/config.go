@@ -69,6 +69,10 @@ type Config struct {
 	WatchlistRetryCooldown      time.Duration      `env:"BLACKPEARL_WATCHLIST_RETRY_COOLDOWN" envDefault:"15m"`
 	PlexRefreshEnabled          bool               `env:"BLACKPEARL_PLEX_REFRESH_ENABLED" envDefault:"false"`
 	PlexRefreshURL              string             `env:"BLACKPEARL_PLEX_REFRESH_URL"`
+	PlaybackAdvancementEnabled  bool               `env:"BLACKPEARL_PLAYBACK_ADVANCEMENT_ENABLED" envDefault:"false"`
+	PlaybackPollInterval        time.Duration      `env:"BLACKPEARL_PLAYBACK_POLL_INTERVAL" envDefault:"30s"`
+	PlaybackOperationTimeout    time.Duration      `env:"BLACKPEARL_PLAYBACK_OPERATION_TIMEOUT" envDefault:"15s"`
+	PlaybackMetadataURL         string             `env:"BLACKPEARL_PLAYBACK_METADATA_URL" envDefault:"https://metadata.provider.plex.tv"`
 	FilesystemMode              string             `env:"BLACKPEARL_FILESYSTEM_MODE" envDefault:"fuse"`
 	NFSAddr                     string             `env:"BLACKPEARL_NFS_ADDR" envDefault:":2049"`
 	Plex                        Plex
@@ -181,6 +185,9 @@ func (c Config) validate() error {
 			return errors.New("BLACKPEARL_WATCHLIST_RETRY_COOLDOWN must be between 1m and 24h")
 		}
 	}
+	if c.PlaybackAdvancementEnabled && (!c.WatchlistEnabled || !c.PlexRefreshEnabled) {
+		return errors.New("BLACKPEARL_PLAYBACK_ADVANCEMENT_ENABLED requires Watchlist observation and Plex refresh")
+	}
 	if c.PlexRefreshEnabled {
 		if !c.WatchlistEnabled {
 			return errors.New("BLACKPEARL_PLEX_REFRESH_ENABLED requires BLACKPEARL_WATCHLIST_ENABLED for its read-only credential source")
@@ -191,6 +198,22 @@ func (c Config) validate() error {
 		}
 	} else if c.PlexRefreshURL != "" {
 		return errors.New("BLACKPEARL_PLEX_REFRESH_URL requires BLACKPEARL_PLEX_REFRESH_ENABLED=true")
+	}
+	if c.PlaybackAdvancementEnabled {
+		if c.PlaybackPollInterval <= 0 || c.PlaybackPollInterval > 10*time.Minute {
+			return errors.New("BLACKPEARL_PLAYBACK_POLL_INTERVAL must be positive and not exceed 10m")
+		}
+		if c.PlaybackOperationTimeout <= 0 || c.PlaybackOperationTimeout > time.Minute {
+			return errors.New("BLACKPEARL_PLAYBACK_OPERATION_TIMEOUT must be positive and not exceed 1m")
+		}
+		metadataURL, err := url.Parse(c.PlaybackMetadataURL)
+		if err != nil || (metadataURL.Scheme != "http" && metadataURL.Scheme != "https") || metadataURL.Host == "" || metadataURL.User != nil || metadataURL.RawQuery != "" || metadataURL.Fragment != "" {
+			return errors.New("BLACKPEARL_PLAYBACK_METADATA_URL must be an absolute HTTP(S) URL without credentials, query, or fragment")
+		}
+	} else if c.PlaybackPollInterval != 30*time.Second ||
+		c.PlaybackOperationTimeout != 15*time.Second ||
+		c.PlaybackMetadataURL != "https://metadata.provider.plex.tv" {
+		return errors.New("BLACKPEARL_PLAYBACK_POLL_INTERVAL, BLACKPEARL_PLAYBACK_OPERATION_TIMEOUT, and BLACKPEARL_PLAYBACK_METADATA_URL require BLACKPEARL_PLAYBACK_ADVANCEMENT_ENABLED=true")
 	}
 	switch c.StorageMode {
 	case domain.StorageModePersistent:

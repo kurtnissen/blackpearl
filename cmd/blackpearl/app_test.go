@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -530,6 +531,154 @@ func TestRunBrowserSetupObservesPlexWatchlistWithoutAcquiring(t *testing.T) {
 	require.Equal(t, 1, watchlistStatus.Queue.PendingMovies)
 	require.Equal(t, 1, watchlistStatus.Queue.ObservedShows)
 	require.Zero(t, watchlistStatus.Queue.Acquiring)
+
+	cancel()
+	require.NoError(t, <-result)
+}
+
+func TestRunBrowserSetupAdvancesPublishedEpisodeFromPlexPlayback(t *testing.T) {
+	root := t.TempDir()
+	credentialPath := filepath.Join(root, "plex-token")
+	require.NoError(t, os.WriteFile(credentialPath, []byte("private-plex-token"), 0o600))
+	showID := "plex://show/5d9c086ce98e47001eb0f520"
+	seasonID := "5d9c09de2192ba001f32230f"
+	var provider *httptest.Server
+
+	candidate, err := domain.NewMediaCandidate("17:3", "MariposaHD.S01E01.mp4", 16)
+	require.NoError(t, err)
+	episode, err := domain.NewSetupEpisodeConfiguration(candidate, "MariposaHD", 2006, 1, 1, "Episode 1")
+	require.NoError(t, err)
+	virtualPath, err := episode.VirtualPath()
+	require.NoError(t, err)
+	provider = httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if strings.HasPrefix(request.URL.Path, "/library/") || request.URL.Path == "/status/sessions" {
+			require.Equal(t, "private-plex-token", request.Header.Get("X-Plex-Token"))
+		}
+		switch request.URL.Path {
+		case "/library/sections/watchlist/all":
+			_, writeErr := writer.Write([]byte(`{"MediaContainer":{"size":1,"totalSize":1,"Metadata":[{"guid":"plex://show/5d9c086ce98e47001eb0f520","type":"show","title":"MariposaHD","year":2006}]}}`))
+			require.NoError(t, writeErr)
+		case "/status/sessions":
+			_, writeErr := fmt.Fprintf(writer, `{"MediaContainer":{"size":1,"Metadata":[{"type":"episode","grandparentGuid":%q,"parentIndex":1,"index":1,"viewOffset":300000,"duration":1200000,"Player":{"state":"playing"},"Media":[{"Part":[{"file":%q,"selected":true}]}]}]}}`, showID, "/blackpearl/"+virtualPath)
+			require.NoError(t, writeErr)
+		case "/library/metadata/5d9c086ce98e47001eb0f520/children":
+			_, writeErr := fmt.Fprintf(writer, `{"MediaContainer":{"size":1,"Metadata":[{"type":"season","index":1,"ratingKey":%q}]}}`, seasonID)
+			require.NoError(t, writeErr)
+		case "/library/metadata/" + seasonID + "/children":
+			_, writeErr := writer.Write([]byte(`{"MediaContainer":{"size":2,"Metadata":[{"type":"episode","parentIndex":1,"index":1},{"type":"episode","parentIndex":1,"index":2}]}}`))
+			require.NoError(t, writeErr)
+		case "/library/sections":
+			_, writeErr := writer.Write([]byte(`{"MediaContainer":{"size":2,"Directory":[{"key":"2","type":"movie","Location":[{"id":2,"path":"/blackpearl/Movies"}]},{"key":"3","type":"show","Location":[{"id":3,"path":"/blackpearl/TV Shows"}]}]}}`))
+			require.NoError(t, writeErr)
+		case "/library/sections/2/refresh", "/library/sections/3/refresh":
+			writer.WriteHeader(http.StatusOK)
+		case "/v1/api/torrents/mylist":
+			_, writeErr := writer.Write([]byte(`{"success":true,"detail":"ok","data":{"id":17,"download_finished":true,"download_present":true,"files":[{"id":3,"name":"MariposaHD.S01E01.mp4","size":16,"hash":"episode-file-hash","zipped":false,"infected":false}]}}`))
+			require.NoError(t, writeErr)
+		case "/v1/api/torrents/requestdl":
+			_, writeErr := fmt.Fprintf(writer, `{"success":true,"detail":"ok","data":%q}`, provider.URL+"/cdn/file")
+			require.NoError(t, writeErr)
+		case "/cdn/file":
+			writer.Header().Set("Content-Range", "bytes 0-0/16")
+			writer.Header().Set("Content-Length", "1")
+			writer.WriteHeader(http.StatusPartialContent)
+			_, writeErr := writer.Write([]byte("0"))
+			require.NoError(t, writeErr)
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	t.Cleanup(provider.Close)
+
+	cfg := testConfig(root, "")
+	cfg.StorageMode = domain.StorageModeRolling
+	cfg.CacheMaxBytes = 1024
+	cfg.CacheChunkBytes = 256
+	cfg.RangeProvider = "torbox-torrent"
+	cfg.FilesystemMode = "nfs"
+	cfg.SetupEnabled = true
+	cfg.SetupDir = filepath.Join(root, "data", "setup")
+	cfg.SetupBootstrapToken = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	cfg.TorBoxAPIURL = provider.URL + "/v1/api/"
+	cfg.RangeTimeout = time.Second
+	cfg.WatchlistEnabled = true
+	cfg.WatchlistBaseURL = provider.URL
+	cfg.WatchlistPollInterval = time.Hour
+	cfg.WatchlistTokenFile = credentialPath
+	cfg.WatchlistAcquisitionEnabled = true
+	cfg.WatchlistLeaseDuration = time.Minute
+	cfg.WatchlistAcquisitionTimeout = 30 * time.Second
+	cfg.WatchlistWorkerIdleInterval = 5 * time.Millisecond
+	cfg.WatchlistReconcileInterval = 5 * time.Millisecond
+	cfg.WatchlistNotCachedCooldown = time.Hour
+	cfg.WatchlistRetryCooldown = time.Minute
+	cfg.PlexRefreshEnabled = true
+	cfg.PlexRefreshURL = provider.URL
+	cfg.PlaybackAdvancementEnabled = true
+	cfg.PlaybackPollInterval = 5 * time.Millisecond
+	cfg.PlaybackOperationTimeout = time.Second
+	cfg.PlaybackMetadataURL = provider.URL
+
+	setupRepository, err := setuprepo.New(cfg.SetupDir)
+	require.NoError(t, err)
+	manifest, err := domain.NewSetupManifest([]domain.SetupConfiguration{episode})
+	require.NoError(t, err)
+	require.NoError(t, setupRepository.SaveManifest(context.Background(), "saved-torbox-token", manifest))
+	queue, err := watchlistrepo.Open(context.Background(), cfg.DBPath, true)
+	require.NoError(t, err)
+	policy, err := acquisitiondomain.NewWatchlistPolicy(true, acquisitiondomain.WatchlistShowPolicyPilot)
+	require.NoError(t, err)
+	require.NoError(t, queue.SetPolicy(context.Background(), policy))
+	item, err := acquisitiondomain.NewWatchlistItem(acquisitiondomain.WatchlistItemInput{
+		Source: "plex-watchlist", ExternalID: showID, MediaType: acquisitiondomain.WatchlistMediaTypeShow,
+		Title: "MariposaHD", Year: 2006,
+	})
+	require.NoError(t, err)
+	observation, err := acquisitiondomain.NewWatchlistObservation(item, true, 1, 1)
+	require.NoError(t, err)
+	observedAt := time.Now().UTC()
+	require.NoError(t, queue.UpsertObservations(context.Background(), []acquisitiondomain.WatchlistObservation{observation}, observedAt))
+	claim, err := queue.Claim(context.Background(), observedAt, time.Minute)
+	require.NoError(t, err)
+	completion, err := acquisitiondomain.NewWatchlistSucceeded(episode.Backing().ObjectID)
+	require.NoError(t, err)
+	require.NoError(t, queue.Complete(context.Background(), claim, completion))
+	require.NoError(t, queue.Close())
+
+	nfs := &fakeNFSServer{address: fakeAddress("127.0.0.1:2049")}
+	httpAddress := make(chan string, 1)
+	deps := defaultDependencies()
+	deps.httpClient = provider.Client()
+	deps.torBoxClient = provider.Client()
+	deps.serveNFS = func(context.Context, string, nfsCatalog) (nfsServer, error) { return nfs, nil }
+	deps.listen = func(network string, address string) (net.Listener, error) {
+		listener, listenErr := net.Listen(network, address)
+		if listenErr == nil {
+			httpAddress <- listener.Addr().String()
+		}
+		return listener, listenErr
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	result := make(chan error, 1)
+	go func() { result <- run(ctx, cfg, testLogger(), deps) }()
+	select {
+	case <-httpAddress:
+	case runErr := <-result:
+		require.NoError(t, runErr)
+		require.FailNow(t, "browser setup stopped before HTTP startup")
+	case <-time.After(5 * time.Second):
+		require.FailNow(t, "browser setup did not start HTTP")
+	}
+
+	jobQueue, err := acquisitionjobrepo.Open(context.Background(), filepath.Join(cfg.DataDir, "acquisition-jobs.db"))
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		jobs, listErr := jobQueue.List(context.Background(), 20)
+		return listErr == nil && len(jobs) == 1 && jobs[0].Request().MediaType() == domain.MediaTypeEpisode &&
+			jobs[0].Request().Season() == 1 && jobs[0].Request().Episode() == 2
+	}, 5*time.Second, 10*time.Millisecond)
+	require.NoError(t, jobQueue.Close())
 
 	cancel()
 	require.NoError(t, <-result)

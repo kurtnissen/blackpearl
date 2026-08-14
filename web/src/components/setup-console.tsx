@@ -211,7 +211,7 @@ export function SetupConsole(): React.JSX.Element {
 			setWatchlistStatus(result);
 			setMessage(acquisitionEnabled
 				? (showPolicy === "pilot"
-					? "Automatic Watchlist adding is on. New shows start with S01E01 only."
+					? "Automatic Watchlist adding is on. New shows advance one episode at a time after playback."
 					: "Automatic Watchlist adding is on for newly added movies.")
 				: "Automatic Watchlist adding is off. Existing media and current preparation are unchanged.");
 		} catch (error: unknown) {
@@ -510,7 +510,7 @@ export function SetupConsole(): React.JSX.Element {
                   <p className="watchlist-summary">{watchlistSummary(watchlistStatus)}</p>
                   <div className="watchlist-stats">
                     <p><strong>{observedMovieCount(watchlistStatus)} movies observed</strong><span>Existing items stay observation-only; auto add starts with newly observed movies</span></p>
-                    <p><strong>{watchlistStatus.queue.observedShows} shows observed</strong><span>{watchlistStatus.showPolicy === "pilot" ? "New shows start with S01E01 only" : "Observed without episode acquisition"}</span></p>
+                    <p><strong>{watchlistStatus.queue.observedShows} shows observed</strong><span>{watchlistStatus.showPolicy === "pilot" ? "New shows stay exactly one episode ahead of playback" : "Observed without episode acquisition"}</span></p>
                     <p><strong>{watchlistStatus.queue.succeeded} added automatically</strong><span>Published into the BlackPearl manifest</span></p>
                     <p><strong>{watchlistStatus.queue.manualReview} need review</strong><span>Held instead of making an unsafe guess</span></p>
                   </div>
@@ -532,7 +532,7 @@ export function SetupConsole(): React.JSX.Element {
 							<div className="watchlist-control watchlist-control--secondary">
 								<div>
 									<strong>Show pilot intake</strong>
-									<span>When on, a show newly added to Watchlist requests only S01E01. BlackPearl never adds a full season or series.</span>
+									<span>When on, a newly added show starts with S01E01, then queues exactly one next episode only after real playback. Removing the show from Watchlist or turning this off stops future episodes. BlackPearl never requests a whole season or series.</span>
 								</div>
 								<button
 									type="button"

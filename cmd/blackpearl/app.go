@@ -21,6 +21,8 @@ import (
 	"github.com/blackpearl-media/blackpearl/internal/domain"
 	"github.com/blackpearl-media/blackpearl/internal/gateway/httporigin"
 	"github.com/blackpearl-media/blackpearl/internal/gateway/internetarchive"
+	"github.com/blackpearl-media/blackpearl/internal/gateway/plexmetadata"
+	"github.com/blackpearl-media/blackpearl/internal/gateway/plexplayback"
 	"github.com/blackpearl-media/blackpearl/internal/gateway/plexwatchlist"
 	"github.com/blackpearl-media/blackpearl/internal/gateway/prowlarr"
 	"github.com/blackpearl-media/blackpearl/internal/gateway/torbox"
@@ -37,6 +39,7 @@ import (
 	acquisitionservice "github.com/blackpearl-media/blackpearl/internal/service/acquisition"
 	acquisitionjobservice "github.com/blackpearl-media/blackpearl/internal/service/acquisitionjob"
 	directrangeservice "github.com/blackpearl-media/blackpearl/internal/service/directrange"
+	playbackadvanceservice "github.com/blackpearl-media/blackpearl/internal/service/playbackadvance"
 	plexrefreshservice "github.com/blackpearl-media/blackpearl/internal/service/plexrefresh"
 	setupservice "github.com/blackpearl-media/blackpearl/internal/service/setup"
 	watchlistservice "github.com/blackpearl-media/blackpearl/internal/service/watchlist"
@@ -578,6 +581,7 @@ func runBrowserSetup(ctx context.Context, cfg config.Config, logger *slog.Logger
 	}
 	var watchlistObserver *watchlistservice.Observer
 	var watchlistWorker *watchlistservice.Worker
+	var playbackAdvanceWorker *playbackadvanceservice.Worker
 	var watchlistRepository *watchlistrepo.Repository
 	if cfg.WatchlistEnabled {
 		watchlistGateway, gatewayErr := plexwatchlist.New(plexwatchlist.Options{BaseURL: cfg.WatchlistBaseURL}, plexTokenSource, deps.httpClient)
@@ -608,6 +612,31 @@ func runBrowserSetup(ctx context.Context, cfg config.Config, logger *slog.Logger
 			closeErr := watchlistRepository.Close()
 			return errors.Join(fmt.Errorf("configure Plex watchlist acquisition worker: %w", err), closeErr)
 		}
+		if cfg.PlaybackAdvancementEnabled {
+			playbackGateway, playbackErr := plexplayback.New(plexplayback.Options{
+				BaseURL: cfg.PlexRefreshURL, LibraryRoot: "/blackpearl",
+			}, plexTokenSource, deps.httpClient)
+			if playbackErr != nil {
+				closeErr := watchlistRepository.Close()
+				return errors.Join(fmt.Errorf("configure Plex playback gateway: %w", playbackErr), closeErr)
+			}
+			metadataGateway, metadataErr := plexmetadata.New(cfg.PlaybackMetadataURL, plexTokenSource, deps.httpClient)
+			if metadataErr != nil {
+				closeErr := watchlistRepository.Close()
+				return errors.Join(fmt.Errorf("configure Plex metadata gateway: %w", metadataErr), closeErr)
+			}
+			playbackAdvanceWorker, err = playbackadvanceservice.NewWorker(
+				playbackGateway, service, watchlistRepository, metadataGateway,
+				playbackadvanceservice.WorkerOptions{
+					PollInterval: cfg.PlaybackPollInterval, OperationTimeout: cfg.PlaybackOperationTimeout,
+					WatchlistPollInterval: cfg.WatchlistPollInterval,
+				},
+			)
+			if err != nil {
+				closeErr := watchlistRepository.Close()
+				return errors.Join(fmt.Errorf("configure playback advancement worker: %w", err), closeErr)
+			}
+		}
 	}
 	startSetupRestore(ctx, service, logger, 2*time.Second)
 	if watchlistObserver != nil || plexRefreshWorker != nil || acquisitionJobWorker != nil {
@@ -628,6 +657,12 @@ func runBrowserSetup(ctx context.Context, cfg config.Config, logger *slog.Logger
 		if watchlistWorker != nil {
 			backgroundGroup.Go(func() error {
 				watchlistWorker.Run(backgroundContext)
+				return nil
+			})
+		}
+		if playbackAdvanceWorker != nil {
+			backgroundGroup.Go(func() error {
+				playbackAdvanceWorker.Run(backgroundContext)
 				return nil
 			})
 		}

@@ -32,6 +32,10 @@ assert environment["BLACKPEARL_WATCHLIST_PREFERENCES_PATH"] == "/plex-config/Lib
 assert environment["BLACKPEARL_WATCHLIST_ACQUISITION_ENABLED"] == "false"
 assert environment["BLACKPEARL_PLEX_REFRESH_ENABLED"] == "true"
 assert environment["BLACKPEARL_PLEX_REFRESH_URL"] == "http://host.docker.internal:32402"
+assert environment["BLACKPEARL_PLAYBACK_ADVANCEMENT_ENABLED"] == "true"
+assert environment["BLACKPEARL_PLAYBACK_POLL_INTERVAL"] == "30s"
+assert environment["BLACKPEARL_PLAYBACK_OPERATION_TIMEOUT"] == "15s"
+assert environment["BLACKPEARL_PLAYBACK_METADATA_URL"] == "https://metadata.provider.plex.tv"
 assert "BLACKPEARL_RANGE_OBJECT_ID" not in environment
 assert "BLACKPEARL_TORBOX_API_TOKEN_FILE" not in environment
 assert "BLACKPEARL_TORBOX_API_TOKEN" not in environment
@@ -39,6 +43,7 @@ assert not blackpearl.get("secrets")
 assert not model.get("secrets")
 assert "BLACKPEARL_RANGE_ORIGIN_URL" not in environment
 assert all(volume.get("type") == "volume" for volume in blackpearl.get("volumes", []))
+assert {volume["target"] for volume in blackpearl.get("volumes", [])} == {"/var/lib/blackpearl", "/plex-config"}
 assert not blackpearl.get("devices")
 assert not blackpearl.get("cap_add")
 assert set(blackpearl["networks"]) == {"blackpearl-control"}

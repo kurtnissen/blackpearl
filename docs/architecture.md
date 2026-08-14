@@ -172,19 +172,30 @@ request to survive restarts and multi-hour preparation without holding a
 Watchlist lease.
 
 The durable policy has an independent master acquisition switch and show policy.
-The only show policy implemented today is `pilot`: a show first observed after
-both controls are enabled receives immutable coordinates `1,1`, which map to one
-`S01E01` search request. `off` and all baseline shows retain coordinates `0,0`
-and cannot be claimed. No Watchlist state can represent a season or series
-request. The first successful observer sync after startup is a non-acquiring
+The `pilot` policy gives a show first observed after both controls are enabled
+coordinates `1,1`, which map to one `S01E01` search request. `off` and all
+baseline shows retain coordinates `0,0` and cannot be claimed. No Watchlist
+state can represent a season or series request. The first successful observer sync after startup is a non-acquiring
 baseline; immutable per-row eligibility permits only items first seen on later
 opted-in syncs, so enabling the feature cannot drain a historical Watchlist
 backlog. Observer syncs read the policy before assigning eligibility, and the
 atomic claim statement checks it again before leasing work. Disabling therefore
 blocks matching new and retry claims immediately without canceling an
-already-running provider operation or changing the manifest. Advancing beyond
-S01E01 requires a future explicit playback-state signal, not continued
-Watchlist membership.
+already-running provider operation or changing the manifest.
+
+A separate playback worker reads only Plex's bounded `/status/sessions`
+response and accepts playing or paused episodes whose selected part is beneath
+`/blackpearl`. A session must cross both 120 seconds and 10 percent. Its exact
+relative path must resolve to the active manifest, and the Plex show GUID,
+season, episode, published backing object, recent Watchlist observation, master
+switch, and `pilot` policy must all match the succeeded SQLite frontier. The
+metadata gateway then resolves the least exact episode coordinate after the
+current one, skipping specials. One optimistic `UPDATE` changes that succeeded
+row to the next pending coordinate and clears only its prior job/publication
+attachment; concurrent polls have one winner. The published current episode
+remains in the manifest. The existing acquisition worker owns everything after
+that transition. Removing the show or disabling either control prevents future
+transitions without inferring intent from continued Watchlist membership.
 
 Provider readiness inspection returns safe media candidates together with a
 provider-neutral integer progress value. TorBox maps its fractional progress to
@@ -217,12 +228,11 @@ SQLite owns catalog metadata only. Cache bytes and the optional FUSE mount live 
 
 ## Extension roadmap
 
-1. Add an explicit playback-state signal that can advance an opted-in show from the implemented S01E01 pilot to the next exact episode; Watchlist membership must never authorize a season or series.
+1. Complete cross-platform live acceptance for playback-driven exact episode advancement; the implementation is wired in the portable profile.
 2. Add a stable Plex Watchlist provider contract or RSS fallback.
 3. Add adaptive throughput-based read scheduling. Seek-aware read-ahead is implemented.
-4. Extend bounded next-episode prefix prefetch with the playback-state signal; ordinary read-ahead cancellation is handle-aware now.
-5. Add disk-capacity observability and operator alerts for non-evicting persistent retention.
-6. Add additional explicitly authorized search and range providers.
+4. Add disk-capacity observability and operator alerts for non-evicting persistent retention.
+5. Add additional explicitly authorized search and range providers.
 
 Each stage needs its own acceptance evidence. A generic interface alone is not evidence that a provider, rolling cache, or progressive stream works.
 

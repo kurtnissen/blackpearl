@@ -401,7 +401,7 @@ it("turns automatic Watchlist intake on without commands", async () => {
 	}));
 });
 
-it("can start only S01E01 for shows newly added after pilot intake is enabled", async () => {
+it("explains exact one-episode-ahead playback advancement for opted-in shows", async () => {
 	const bootstrap = "b".repeat(64);
 	const session = "a".repeat(64);
 	const active = { objectId: "17:3", name: "Existing.mkv", extension: ".mkv", size: 1024, mediaType: "movie", title: "Existing", year: 2024 };
@@ -420,7 +420,9 @@ it("can start only S01E01 for shows newly added after pilot intake is enabled", 
 	await user.click(await screen.findByRole("button", { name: "Start new shows with S01E01" }));
 
 	expect(await screen.findByRole("button", { name: "Stop starting new shows" })).toBeInTheDocument();
-	expect(screen.getByText(/never adds a full season/i)).toBeInTheDocument();
+	expect(screen.getByText(/starts with S01E01, then queues exactly one next episode only after real playback/i)).toBeInTheDocument();
+	expect(screen.getByText(/removing the show from Watchlist or turning this off stops future episodes/i)).toBeInTheDocument();
+	expect(screen.getByText(/never requests a whole season/i)).toBeInTheDocument();
 	expect(fetchSpy).toHaveBeenLastCalledWith("/api/watchlist/settings", expect.objectContaining({
 		method: "PUT",
 		body: JSON.stringify({ acquisitionEnabled: true, showPolicy: "pilot" }),
