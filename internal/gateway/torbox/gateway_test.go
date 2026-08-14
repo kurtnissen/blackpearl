@@ -141,6 +141,65 @@ func TestGatewayErrorsNeverExposeConfiguredToken(t *testing.T) {
 	require.NotContains(t, err.Error(), secret)
 }
 
+func TestGatewayDownloadTransportErrorNeverExposesToken(t *testing.T) {
+	t.Parallel()
+	secret := "transport-secret-value"
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		return nil, fmt.Errorf("failed request to %s", request.URL.String())
+	})}
+	gateway, err := New(Options{
+		APIBaseURL:  "https://api.example.invalid/v1/api/",
+		APIToken:    secret,
+		MetadataTTL: time.Minute,
+		LinkTTL:     2 * time.Hour,
+	}, client)
+	require.NoError(t, err)
+
+	_, err = gateway.requestDownloadURL(context.Background(), objectID{TorrentID: 17, FileID: 3})
+
+	require.ErrorContains(t, err, "request TorBox download link")
+	require.NotContains(t, err.Error(), secret)
+}
+
+func TestGatewayErrorsNeverExposeDownloadURLs(t *testing.T) {
+	t.Parallel()
+	signedURL := "https://signed.example.invalid/file?signature=sensitive"
+	api := newTestAPI(t, func(writer http.ResponseWriter, request *http.Request) {
+		writeEnvelope(writer, false, "denied ("+signedURL+")", "null")
+	})
+	gateway := newTestGateway(t, api.URL+"/v1/api/", api.Client())
+
+	_, err := gateway.Open(context.Background(), domainBacking("17:3"))
+
+	require.ErrorContains(t, err, "denied")
+	require.NotContains(t, err.Error(), signedURL)
+	require.NotContains(t, err.Error(), "signature=sensitive")
+}
+
+func TestNewRejectsAPIBaseCredentialsQueryAndFragment(t *testing.T) {
+	t.Parallel()
+	tests := []string{
+		"https://user:secret@api.example.invalid/v1/api/",
+		"https://api.example.invalid/v1/api/?token=secret",
+		"https://api.example.invalid/v1/api/#secret",
+	}
+	for _, baseURL := range tests {
+		t.Run(baseURL, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := New(Options{
+				APIBaseURL:  baseURL,
+				APIToken:    "test-token",
+				MetadataTTL: time.Minute,
+				LinkTTL:     2 * time.Hour,
+			}, http.DefaultClient)
+
+			require.ErrorContains(t, err, "API base")
+			require.NotContains(t, err.Error(), "secret")
+		})
+	}
+}
+
 func TestGatewayOpenCachesMetadataAndLinkWithinTTL(t *testing.T) {
 	t.Parallel()
 	cdn := newTestCDN(t, []byte("0123456789abcdef"), nil)
@@ -248,4 +307,10 @@ func torrentJSON(torrentID int64, fileID int64, size int64, torrentFields string
 func writeEnvelope(writer http.ResponseWriter, success bool, detail string, rawData string) {
 	writer.Header().Set("Content-Type", "application/json")
 	_, _ = fmt.Fprintf(writer, `{"success":%t,"detail":%q,"data":%s}`, success, detail, rawData)
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (function roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return function(request)
 }

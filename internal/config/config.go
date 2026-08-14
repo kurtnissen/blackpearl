@@ -94,6 +94,9 @@ func (c Config) validate() error {
 		if c.CacheMaxBytes < 0 {
 			return errors.New("BLACKPEARL_CACHE_MAX_BYTES must not be negative")
 		}
+		if c.TorBoxAPIToken != "" || c.RangeProvider != "http-range" {
+			return errors.New("BLACKPEARL_TORBOX_API_TOKEN and non-default BLACKPEARL_RANGE_PROVIDER require rolling mode")
+		}
 		if c.RangeOriginURL != "" || c.RangeObjectID != "" {
 			return errors.New("BLACKPEARL_RANGE_ORIGIN_URL and BLACKPEARL_RANGE_OBJECT_ID require rolling mode")
 		}
@@ -130,8 +133,8 @@ func (c Config) validate() error {
 				return errors.New("BLACKPEARL_TORBOX_API_TOKEN is required without surrounding whitespace")
 			}
 			torboxURL, err := url.Parse(c.TorBoxAPIURL)
-			if err != nil || torboxURL.Scheme != "https" || torboxURL.Host == "" {
-				return errors.New("BLACKPEARL_TORBOX_API_URL must be an absolute HTTPS URL")
+			if err != nil || torboxURL.Scheme != "https" || torboxURL.Host == "" || torboxURL.User != nil || torboxURL.RawQuery != "" || torboxURL.Fragment != "" {
+				return errors.New("BLACKPEARL_TORBOX_API_URL must be an absolute HTTPS URL without credentials, query, or fragment")
 			}
 			if !canonicalTorBoxObjectID(c.RangeObjectID) {
 				return errors.New("BLACKPEARL_RANGE_OBJECT_ID must use canonical positive <torrent-id>:<file-id> form for TorBox")

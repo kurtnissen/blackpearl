@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -222,15 +223,23 @@ func TestRunRollingModeRegistersRemotePOCAndStartsNFS(t *testing.T) {
 
 func TestRunRollingTorBoxRegistersRemotePOCAndStartsNFS(t *testing.T) {
 	root := t.TempDir()
-	api := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		require.Equal(t, "Bearer secret-token", request.Header.Get("Authorization"))
+	var api *httptest.Server
+	api = httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
 		case "/v1/api/torrents/mylist":
+			require.Equal(t, "Bearer secret-token", request.Header.Get("Authorization"))
 			_, err := writer.Write([]byte(`{"success":true,"detail":"ok","data":{"id":17,"download_finished":true,"download_present":true,"files":[{"id":3,"size":16,"hash":"fixture-hash","zipped":false,"infected":false}]}}`))
 			require.NoError(t, err)
 		case "/v1/api/torrents/requestdl":
-			_, err := writer.Write([]byte(`{"success":true,"detail":"ok","data":"https://cdn.example.invalid/file"}`))
+			require.Equal(t, "Bearer secret-token", request.Header.Get("Authorization"))
+			_, err := writer.Write([]byte(fmt.Sprintf(`{"success":true,"detail":"ok","data":%q}`, api.URL+"/cdn/file")))
 			require.NoError(t, err)
+		case "/cdn/file":
+			require.Empty(t, request.Header.Get("Authorization"))
+			require.Equal(t, http.MethodHead, request.Method)
+			writer.Header().Set("Content-Length", "16")
+			writer.Header().Set("Accept-Ranges", "bytes")
+			writer.WriteHeader(http.StatusOK)
 		default:
 			http.NotFound(writer, request)
 		}

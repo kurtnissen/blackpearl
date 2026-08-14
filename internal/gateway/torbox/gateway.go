@@ -93,8 +93,8 @@ type fileRecord struct {
 // New constructs a TorBox gateway without performing network I/O.
 func New(options Options, client *http.Client) (*Gateway, error) {
 	parsed, err := url.Parse(options.APIBaseURL)
-	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
-		return nil, fmt.Errorf("TorBox API base must be an absolute HTTP URL: %q", options.APIBaseURL)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return nil, errors.New("TorBox API base must be an absolute HTTP URL without credentials, query, or fragment")
 	}
 	if strings.TrimSpace(options.APIToken) == "" || strings.TrimSpace(options.APIToken) != options.APIToken {
 		return nil, errors.New("TorBox API token is required without surrounding whitespace")
@@ -314,7 +314,10 @@ func (g *Gateway) requestDownloadURL(ctx context.Context, identifier objectID) (
 func (g *Gateway) doJSON(request *http.Request, destination any) (resultErr error) {
 	response, err := g.client.Do(request)
 	if err != nil {
-		return err
+		if contextErr := request.Context().Err(); contextErr != nil {
+			return fmt.Errorf("perform TorBox API request: %w", contextErr)
+		}
+		return errors.New("perform TorBox API request")
 	}
 	defer func() { resultErr = errors.Join(resultErr, response.Body.Close()) }()
 	if response.StatusCode != http.StatusOK {
@@ -343,6 +346,13 @@ func (g *Gateway) sanitizeDetail(value string) string {
 		}
 	}
 	result := strings.ReplaceAll(builder.String(), g.token, "[redacted]")
+	words := strings.Fields(result)
+	for index, word := range words {
+		if strings.Contains(word, "https://") || strings.Contains(word, "http://") {
+			words[index] = "[redacted-url]"
+		}
+	}
+	result = strings.Join(words, " ")
 	if strings.TrimSpace(result) == "" {
 		return "request failed"
 	}

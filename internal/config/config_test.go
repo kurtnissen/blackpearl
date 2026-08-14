@@ -149,6 +149,18 @@ func TestParseRejectsInvalidRollingTorBoxConfiguration(t *testing.T) {
 	}
 }
 
+func TestParseRejectsTorBoxTokenInPersistentMode(t *testing.T) {
+	t.Parallel()
+
+	_, err := config.Parse(map[string]string{
+		"BLACKPEARL_STORAGE_MODE":     "persistent",
+		"BLACKPEARL_TORBOX_API_TOKEN": "secret-token",
+	})
+
+	require.ErrorContains(t, err, "TORBOX_API_TOKEN")
+	require.NotContains(t, err.Error(), "secret-token")
+}
+
 func TestParseRejectsRollingModeWithoutPositiveQuota(t *testing.T) {
 	t.Parallel()
 
