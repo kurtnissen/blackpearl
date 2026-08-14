@@ -85,7 +85,11 @@ func (s *fileTokenSource) Token(ctx context.Context) (string, error) {
 	default:
 		return "", errors.New("unsupported Plex watchlist credential source")
 	}
-	token = strings.TrimSpace(token)
+	return validateToken(token)
+}
+
+func validateToken(value string) (string, error) {
+	token := strings.TrimSpace(value)
 	if token == "" || len(token) > maximumTokenBytes {
 		return "", errors.New("validate Plex watchlist credential")
 	}
