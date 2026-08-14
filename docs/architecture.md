@@ -37,8 +37,10 @@ one account object with TorBox's cached-only guard enabled. A bounded inspection
 policy waits for that object to expose eligible video files, selects the exact
 episode or best movie candidate, and hands a provider-neutral acquired-media
 value to setup's existing durable manifest transaction. Provider creation is
-not retried after an ambiguous response, and no automatic-acquisition route is
-registered yet.
+not retried after an ambiguous response. The paired localhost API exposes this
+transaction without accepting release locators from the browser: users submit
+only validated movie or episode intent, and the backend owns ranking, cache
+selection, creation, inspection, and publication.
 
 ## Invariants established in Milestone 1
 
@@ -104,12 +106,11 @@ SQLite owns catalog metadata only. Cache bytes and the optional FUSE mount live 
 
 ## Extension roadmap
 
-1. Expose the implemented Prowlarr search and cached-only TorBox acquisition path through the paired local API/UI, including secure Prowlarr configuration.
-2. Add automatic movie and episode metadata/watchlist ingestion without coupling Plex metadata to provider locators.
-3. Add adaptive throughput-based read scheduling. Seek-aware read-ahead is implemented.
-4. Extend the implemented bounded next-episode prefix prefetch with playback-aware cancellation and prioritization.
-5. Implement provider-backed persistent retention policy alongside rolling mode.
-6. Add additional explicitly authorized search and range providers.
+1. Add automatic movie and episode metadata/watchlist ingestion without coupling Plex metadata to provider locators.
+2. Add adaptive throughput-based read scheduling. Seek-aware read-ahead is implemented.
+3. Extend the implemented bounded next-episode prefix prefetch with playback-aware cancellation and prioritization.
+4. Implement provider-backed persistent retention policy alongside rolling mode.
+5. Add additional explicitly authorized search and range providers.
 
 Each stage needs its own acceptance evidence. A generic interface alone is not evidence that a provider, rolling cache, or progressive stream works.
 
@@ -117,5 +118,5 @@ The first provider adapter is `torbox-torrent`. It maps an already-complete
 `torrent-id:file-id` account object to a short-lived HTTPS CDN link, validates
 its size, and exposes strict ranges without persisting the API token or URL.
 The cached-only TorBox creation contract is implemented and proven against
-mocked TLS endpoints, including atomic catalog publication. Live account
-mutation and browser/API wiring remain separate acceptance milestones.
+mocked TLS endpoints, including atomic catalog publication and paired browser/API
+wiring. A live authorized account mutation remains separate acceptance evidence.

@@ -10,7 +10,8 @@ BlackPearl is an experimental, open-source Go service that exposes a virtual med
 - SQLite catalog state and a persistent, content-addressed POC cache.
 - Context-aware arbitrary-offset media reads with immutable version validators; callers never receive a cache path.
 - Validated movie/episode search intent, a read-only Prowlarr gateway, and provider-neutral release deduplication and ranking.
-- Cached-only TorBox acquisition contracts now preflight cache availability, enforce `add_only_if_cached=true` during creation, inspect the resulting account object, select the requested video, and publish it through the existing atomic manifest transaction. This backend path is mocked and not yet exposed in the setup UI or exercised against the live account.
+- Cached-only TorBox acquisition preflights cache availability, enforces `add_only_if_cached=true` during creation, inspects the resulting account object, selects the requested video, and publishes it through the existing atomic manifest transaction.
+- A paired localhost acquisition console privately configures Prowlarr, accepts validated movie or TV-episode intent, and returns only the updated public Plex manifest. Provider credentials and release locators never return to the browser.
 - `persistent` and `rolling` configuration modes. Rolling mode fetches strict HTTP ranges into fixed-size chunks, coalesces misses, performs bounded seek-aware read-ahead and next-episode prefix prefetch, and enforces a hard local byte quota with LRU eviction.
 - A generated 8-second H.264/AAC test-pattern MP4 with no third-party media.
 - Docker/Compose files for BlackPearl, a legal range-origin fixture, and isolated opt-in Plex acceptance containers.
@@ -18,7 +19,7 @@ BlackPearl is an experimental, open-source Go service that exposes a virtual med
 - A portable NFS frontend and macOS Docker Desktop Compose profile that need no
   FUSE mount propagation.
 
-BlackPearl now proves provider-neutral progressive range retrieval and rolling eviction through strict HTTP and TorBox torrent-file gateways. The TorBox profile includes a localhost setup page that discovers eligible completed MP4/MKV files and atomically publishes a searchable manifest of up to 100 selected movies or TV episodes without restarting the stack. Live macOS acceptance has verified a mixed movie/episode manifest, Plex movie and TV scans, Direct Play, non-sequential seeks, restart recovery, seek-aware read-ahead, bounded next-episode prefetch, and continued reads from logical files that never existed completely on BlackPearl's disk. Read-only Prowlarr search and cached-only TorBox acquisition are implemented behind tested provider-neutral boundaries, but automatic acquisition is not yet exposed through the API/UI and has not mutated a live TorBox account. Automatic metadata/watchlist ingestion also remains a later milestone.
+BlackPearl now proves provider-neutral progressive range retrieval and rolling eviction through strict HTTP and TorBox torrent-file gateways. The TorBox profile includes a localhost setup page that discovers eligible completed MP4/MKV files and atomically publishes a searchable manifest of up to 100 selected movies or TV episodes without restarting the stack. Live macOS acceptance has verified a mixed movie/episode manifest, Plex movie and TV scans, Direct Play, non-sequential seeks, restart recovery, seek-aware read-ahead, bounded next-episode prefetch, and continued reads from logical files that never existed completely on BlackPearl's disk. Prowlarr search and cached-only TorBox acquisition are exposed through the tested paired API/UI. The bundled Prowlarr container and BlackPearl connection are live locally; adding private indexers and performing the first authorized live acquisition remain operator steps. Automatic metadata/watchlist ingestion also remains a later milestone.
 
 ## Architecture at a glance
 
@@ -98,6 +99,12 @@ The launcher opens a locally paired setup page. Paste a TorBox token, search and
 
 - a Movies library rooted at `/blackpearl/Movies`; and
 - a TV Shows library rooted at `/blackpearl/TV Shows`.
+
+The same stack exposes Prowlarr at `http://localhost:9697`. Complete its
+one-time authentication and authorized-indexer setup. In BlackPearl, select
+**Find something new**, keep the internal URL `http://prowlarr:9696`, and paste
+the API key from Prowlarr Settings. BlackPearl will search and add only a result
+that TorBox already reports as cached.
 
 The token and manifest are stored with private permissions only inside
 the named BlackPearl data volume. It is never returned to the browser after
