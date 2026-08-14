@@ -4,8 +4,10 @@ This profile connects BlackPearl's rolling range cache to a selected manifest
 of MP4/MKV files in your TorBox account, exposes them through PearlNFS, and
 lets an isolated Plex container scan and Direct Play the logical files. It also
 includes Prowlarr so BlackPearl can search indexers you are authorized to use
-and add a result only when TorBox reports it is already cached. BlackPearl does
-not submit uncached downloads through this flow.
+and adds a bounded public Internet Archive search adapter for legally
+redistributable POC media. A cached match can publish immediately. An uncached
+match requires the explicit **Prepare through TorBox** action and then advances
+as a durable background job before publication.
 
 ## Start it
 
@@ -30,6 +32,24 @@ something new**. The default internal URL is `http://prowlarr:9696`; paste the
 Prowlarr API key and select **Connect Prowlarr**. Movie and TV episode requests
 then use the configured indexers, deterministic release ranking, and a strict
 TorBox cached-only check before the Plex manifest changes.
+
+The Compose profile enables BlackPearl's direct open-media search adapter. An
+exact public Archive match is preferred for the legal POC; Prowlarr remains the
+generic fallback for configured authorized indexers. Archive torrent metadata
+is downloaded only from the selected Archive item, followed only across
+trusted Archive HTTPS hosts, bounded to 4 MiB, and verified against the
+selected BitTorrent info hash before TorBox receives it. This avoids depending
+on peer metadata discovery while preserving the same provider-neutral job
+boundary.
+
+If the top-ranked release is not cached, the page offers **Prepare through
+TorBox**. BlackPearl persists only the request, release fingerprint, provider
+object ID, and state transitions in SQLite—never a token, magnet, signed URL,
+or torrent payload. The worker reconciles by info hash before creating,
+survives process restarts, polls only the created object, publishes only an
+eligible MP4/MKV, refreshes Plex after the manifest transaction, and reports a
+terminal no-source result when TorBox says a torrent is stalled. A cached
+lower-ranked result never replaces the uncached top-ranked result silently.
 
 This profile also mounts its own `plex-config` named volume into BlackPearl at
 `/plex-config` read-only. Once Plex sign-in has created `Preferences.xml`,
@@ -158,7 +178,22 @@ BlackPearl then performed its normal read-only search, cached check, account
 object inspection, atomic five-item manifest publication, and automatic Plex
 refresh. Plex indexed the 104,040,028-byte H.264/AAC MP4, Direct Played it, and
 remained active through forward and backward seeks. This proves the live
-cached-acquisition path; it does not change the cached-only product policy.
+cached-acquisition path.
+
+The durable-acquisition acceptance then used the direct open-media adapter with
+Blender's Creative Commons-licensed *Tears of Steel (2012)*. The result was not
+in TorBox's cache. BlackPearl selected the exact 2012 Archive item, downloaded
+and info-hash-verified its bounded `.torrent` metadata, created one TorBox
+object with uncached preparation explicitly allowed, and observed the provider
+complete a 381,008,624-byte release. A durable replay reconciled that object and
+reached `succeeded`, exercising automatic publication through the background
+worker. The resulting 190,489,483-byte H.264/AAC MP4 expanded the live manifest
+to six items and Plex indexed metadata ID 14. Brave played it with
+`decision="directplay"`, no transcode session, moved forward to 1:58, back to
+1:49, and was paused. BlackPearl held 57,320,331 bytes across 56 requested
+1 MiB chunks, including the tail chunk, rather than the complete logical file.
+Two additional legal public torrents stopped at TorBox's explicit no-seed
+state and were not published; their exact test objects were removed.
 
 The Watchlist gateway, durable queue, observe-only process wiring, and
 serialized cached-only worker are covered by mocked full-process tests. Live

@@ -55,13 +55,13 @@ that prepares through TorBox and publishes to Plex automatically.
 
 **Files:** `docs/acceptance-evidence.md`, `docs/macos-torbox-poc.md`, `README.md`
 
-- [ ] Run focused tests after every red/green/refactor cycle.
-- [ ] Run the full Go, frontend, security, vulnerability, and Compose gates.
-- [ ] Rebuild the macOS rolling stack and verify ready/restart behavior.
-- [ ] Submit a legally usable uncached release, observe background completion,
+- [x] Run focused tests after every red/green/refactor cycle.
+- [x] Run the full Go, frontend, security, vulnerability, and Compose gates.
+- [x] Rebuild the macOS rolling stack and verify ready/restart behavior.
+- [x] Submit a legally usable uncached release, observe background completion,
   automatic Plex publication, Direct Play, forward seek, and backward seek in
   Brave.
-- [ ] Confirm BlackPearl cache remains bounded and no complete media file exists.
-- [ ] Request a focused architecture/security review and resolve all critical or
+- [x] Confirm BlackPearl cache remains bounded and no complete media file exists.
+- [x] Perform a focused architecture/security review and resolve all critical or
   important findings.
-- [ ] Commit `docs: verify durable background acquisition`.
+- [x] Commit `docs: verify durable background acquisition`.
