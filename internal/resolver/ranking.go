@@ -11,6 +11,8 @@ import (
 
 type releaseRank struct {
 	intentMatch bool
+	titlePrefix bool
+	yearMatch   bool
 	hasHash     bool
 	seeders     int
 	size        int64
@@ -62,6 +64,8 @@ func rankRelease(request acquisition.SearchRequest, release acquisition.Release)
 	}
 	return releaseRank{
 		intentMatch: releaseMatches(request, release.Title()),
+		titlePrefix: releaseStartsWithTitle(request, release.Title()),
+		yearMatch:   releaseMatchesYear(request, release.Title()),
 		hasHash:     release.Protocol() == acquisition.ReleaseProtocolTorrent && release.InfoHash() != "",
 		seeders:     seeders,
 		size:        release.Size(),
@@ -73,6 +77,12 @@ func rankRelease(request acquisition.SearchRequest, release acquisition.Release)
 func releaseLess(left releaseRank, right releaseRank) bool {
 	if left.intentMatch != right.intentMatch {
 		return left.intentMatch
+	}
+	if left.titlePrefix != right.titlePrefix {
+		return left.titlePrefix
+	}
+	if left.yearMatch != right.yearMatch {
+		return left.yearMatch
 	}
 	if left.hasHash != right.hasHash {
 		return left.hasHash
@@ -87,6 +97,21 @@ func releaseLess(left releaseRank, right releaseRank) bool {
 		return left.provider < right.provider
 	}
 	return left.sourceID < right.sourceID
+}
+
+func releaseStartsWithTitle(request acquisition.SearchRequest, releaseTitle string) bool {
+	title := normalizeComparisonText(request.Title())
+	release := normalizeComparisonText(releaseTitle)
+	return release == title || strings.HasPrefix(release, title+" ")
+}
+
+func releaseMatchesYear(request acquisition.SearchRequest, releaseTitle string) bool {
+	if request.Episode() > 0 {
+		return true
+	}
+	release := " " + normalizeComparisonText(releaseTitle) + " "
+	year := fmt.Sprintf(" %d ", request.Year())
+	return strings.Contains(release, year)
 }
 
 func releaseMatches(request acquisition.SearchRequest, releaseTitle string) bool {

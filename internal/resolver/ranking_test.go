@@ -23,6 +23,20 @@ func TestSearchRanksCompleteMovieTitleMatchFirst(t *testing.T) {
 	require.Equal(t, []string{"match", "partial"}, releaseIDs(actual))
 }
 
+func TestSearchRanksMovieTitlePrefixAndYearAheadOfPreview(t *testing.T) {
+	t.Parallel()
+	request, err := acquisition.NewMovieSearch("Sintel", 2010)
+	require.NoError(t, err)
+	releases := []acquisition.Release{
+		searchTorrent(t, "prowlarr", "preview", "Preview: Sintel (2010) — Coming Next", 15_000_000, "abcdef0123456789abcdef0123456789abcdef01", 1),
+		searchTorrent(t, "prowlarr", "movie", "Sintel (2010)", 139_000_000, "abcdef1123456789abcdef0123456789abcdef01", 1),
+	}
+
+	actual := searchWithReleases(t, request, releases)
+
+	require.Equal(t, []string{"movie", "preview"}, releaseIDs(actual))
+}
+
 func TestSearchDoesNotTreatPartialWordAsCompleteTitleMatch(t *testing.T) {
 	t.Parallel()
 	request, err := acquisition.NewMovieSearch("Movie", 2026)
