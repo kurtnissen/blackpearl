@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -12,6 +13,50 @@ import (
 	"github.com/blackpearl-media/blackpearl/internal/domain"
 	"github.com/stretchr/testify/require"
 )
+
+func TestGatewayCoalescesConcurrentDownloadLinkRequests(t *testing.T) {
+	t.Parallel()
+	cdn := newTestCDN(t, []byte("0123456789abcdef"), nil)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var startOnce sync.Once
+	var linkCalls atomic.Int64
+	api := newTestAPI(t, func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/v1/api/torrents/mylist":
+			writeTorrentMetadata(writer, 17, 3, 16)
+		case "/v1/api/torrents/requestdl":
+			linkCalls.Add(1)
+			startOnce.Do(func() { close(started) })
+			<-release
+			writeEnvelope(writer, true, "ok", fmt.Sprintf("%q", cdn.URL))
+		default:
+			http.NotFound(writer, request)
+		}
+	})
+	gateway := newTestGateway(t, api.URL+"/v1/api/", cdn.Client())
+	backing := domain.BackingRef{Provider: providerName, ObjectID: "17:3"}
+	// Prime metadata so this test isolates download-link coalescing.
+	_, err := gateway.loadMetadata(context.Background(), objectID{TorrentID: 17, FileID: 3})
+	require.NoError(t, err)
+
+	results := make(chan error, 16)
+	for range 16 {
+		go func() {
+			opened, openErr := gateway.Open(context.Background(), backing)
+			if openErr == nil {
+				openErr = opened.Close()
+			}
+			results <- openErr
+		}()
+	}
+	<-started
+	close(release)
+	for range 16 {
+		require.NoError(t, <-results)
+	}
+	require.Equal(t, int64(1), linkCalls.Load())
+}
 
 func TestGatewayOpenMapsCompletedTorrentFile(t *testing.T) {
 	t.Parallel()

@@ -43,6 +43,7 @@ type Gateway struct {
 	mu       sync.Mutex
 	metadata map[objectID]cachedMetadata
 	links    map[string]cachedLink
+	inflight map[string]*linkCall
 }
 
 type fileMetadata struct {
@@ -58,6 +59,12 @@ type cachedMetadata struct {
 type cachedLink struct {
 	url     *url.URL
 	expires time.Time
+}
+
+type linkCall struct {
+	done chan struct{}
+	url  *url.URL
+	err  error
 }
 
 type apiEnvelope[T any] struct {
@@ -103,7 +110,7 @@ func New(options Options, client *http.Client) (*Gateway, error) {
 	return &Gateway{
 		baseURL: parsed, token: options.APIToken, client: &isolatedClient,
 		metadataTTL: options.MetadataTTL, linkTTL: options.LinkTTL, now: time.Now,
-		metadata: make(map[objectID]cachedMetadata), links: make(map[string]cachedLink),
+		metadata: make(map[objectID]cachedMetadata), links: make(map[string]cachedLink), inflight: make(map[string]*linkCall),
 	}, nil
 }
 
@@ -222,7 +229,33 @@ func (g *Gateway) downloadURL(ctx context.Context, identifier objectID, validato
 		g.mu.Unlock()
 		return cached.url, nil
 	}
+	if call, ok := g.inflight[key]; ok {
+		done := call.done
+		g.mu.Unlock()
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-done:
+			return call.url, call.err
+		}
+	}
+	call := &linkCall{done: make(chan struct{})}
+	g.inflight[key] = call
 	g.mu.Unlock()
+	downloadURL, downloadErr := g.requestDownloadURL(ctx, identifier)
+	g.mu.Lock()
+	if downloadErr == nil {
+		g.links[key] = cachedLink{url: downloadURL, expires: g.now().Add(g.linkTTL)}
+	}
+	call.url = downloadURL
+	call.err = downloadErr
+	delete(g.inflight, key)
+	close(call.done)
+	g.mu.Unlock()
+	return downloadURL, downloadErr
+}
+
+func (g *Gateway) requestDownloadURL(ctx context.Context, identifier objectID) (*url.URL, error) {
 	endpoint, err := url.JoinPath(g.baseURL.String(), "torrents/requestdl")
 	if err != nil {
 		return nil, fmt.Errorf("construct TorBox download request URL: %w", err)
@@ -250,9 +283,6 @@ func (g *Gateway) downloadURL(ctx context.Context, identifier objectID, validato
 	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.Fragment != "" {
 		return nil, errors.New("TorBox returned an invalid HTTPS download URL")
 	}
-	g.mu.Lock()
-	g.links[key] = cachedLink{url: parsed, expires: g.now().Add(g.linkTTL)}
-	g.mu.Unlock()
 	return parsed, nil
 }
 
