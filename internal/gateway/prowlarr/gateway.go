@@ -159,8 +159,16 @@ func normalizeRelease(resource releaseResource) (acquisition.Release, bool) {
 	}
 	release, err := acquisition.NewRelease(acquisition.ReleaseInput{
 		Provider: providerName, SourceID: sourceID, Title: resource.Title, Protocol: protocol, Size: resource.Size,
-		Indexer: indexer, InfoHash: infoHash, MagnetURL: resource.MagnetURL,
+		Indexer: indexer, InfoHash: infoHash, MagnetURL: normalizeProwlarrMagnetLocator(resource.MagnetURL),
 		DownloadURL: resource.DownloadURL, Seeders: resource.Seeders,
 	})
 	return release, err == nil
+}
+
+func normalizeProwlarrMagnetLocator(value string) string {
+	parsed, err := url.Parse(strings.TrimSpace(value))
+	if err == nil && (parsed.Scheme == "http" || parsed.Scheme == "https") {
+		return ""
+	}
+	return value
 }

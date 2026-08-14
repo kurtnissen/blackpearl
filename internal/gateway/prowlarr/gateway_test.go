@@ -111,6 +111,31 @@ func TestSearchMapsValidReleasesAndSkipsMalformedRecords(t *testing.T) {
 	require.Equal(t, "https://prowlarr.test/download/episode.nzb?key=signed", releases[1].DownloadURL())
 }
 
+func TestSearchKeepsInfoHashReleaseWhenProwlarrMagnetFieldIsHTTPProxy(t *testing.T) {
+	t.Parallel()
+	const infoHash = "abcdef0123456789abcdef0123456789abcdef01"
+	var server *httptest.Server
+	server = httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		proxyURL := server.URL + "/api/v1/indexer/1/download?link=magnet"
+		_, err := fmt.Fprintf(writer, `[{"guid":"archive-guid","size":209056706,"indexer":"Internet Archive","title":"Big Buck Bunny (2008)","protocol":"torrent","infoHash":%q,"magnetUrl":%q,"downloadUrl":%q,"seeders":1}]`, infoHash, proxyURL, proxyURL)
+		require.NoError(t, err)
+	}))
+	t.Cleanup(server.Close)
+	gateway, err := prowlarr.New(prowlarr.Options{BaseURL: server.URL, APIKey: "key"}, server.Client())
+	require.NoError(t, err)
+	request, err := acquisition.NewMovieSearch("Big Buck Bunny", 2008)
+	require.NoError(t, err)
+
+	releases, err := gateway.Search(context.Background(), request)
+
+	require.NoError(t, err)
+	require.Len(t, releases, 1)
+	require.Equal(t, infoHash, releases[0].InfoHash())
+	require.Empty(t, releases[0].MagnetURL())
+	require.Contains(t, releases[0].DownloadURL(), "/api/v1/indexer/1/download")
+}
+
 func TestSearchMapsAuthorizationFailure(t *testing.T) {
 	t.Parallel()
 	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden} {
