@@ -151,7 +151,7 @@ under `TV Shows/Show (Year)/Season NN/Show (Year) - SnnEnn - Episode.ext`.
 Both filesystems materialize these directory trees from catalog paths and still
 delegate all bytes to the same range-oriented read handle.
 
-PearlNFS publishes each namespace together with the catalog that supplies its bytes. NFS file handles retain an immutable generation snapshot, while new lookups use the newest generation. This keeps active reads stable during browser-driven media replacement, including when a replacement reuses the same Plex path.
+PearlNFS publishes each namespace together with the catalog that supplies its bytes. NFS file handles retain an immutable generation snapshot, while new lookups use the newest generation. This keeps active reads stable during browser-driven media replacement, including when a replacement reuses the same Plex path. Snapshot handles live in a 4,096-entry LRU: protocol reads refresh recency, repeated lookups reuse deterministic identities, and sustained generation churn returns `STALE` only for the least-recently-used handle instead of growing process memory without a bound.
 
 After that atomic publication succeeds, a separate process-lifetime worker
 coalesces refresh signals and asks Plex to rescan every library whose root is

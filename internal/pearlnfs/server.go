@@ -1,6 +1,7 @@
 package pearlnfs
 
 import (
+	"container/list"
 	"context"
 	"crypto/sha256"
 	"errors"
@@ -36,8 +37,10 @@ type stableHandleHandler struct {
 	nfs.Handler
 	live        billy.Filesystem
 	snapshotter handleSnapshotter
-	mu          sync.RWMutex
+	mu          sync.Mutex
 	handles     map[[sha256.Size]byte]stableHandleEntry
+	recency     *list.List
+	positions   map[[sha256.Size]byte]*list.Element
 }
 
 type stableHandleEntry struct {
@@ -54,6 +57,14 @@ func (h *stableHandleHandler) ToHandle(filesystem billy.Filesystem, path []strin
 	pathCopy := append([]string(nil), path...)
 	h.mu.Lock()
 	h.handles[handle] = stableHandleEntry{filesystem: filesystem, path: pathCopy}
+	h.touchLocked(handle)
+	for len(h.handles) > handleCacheSize {
+		oldest := h.recency.Front()
+		oldestHandle := oldest.Value.([sha256.Size]byte)
+		delete(h.handles, oldestHandle)
+		delete(h.positions, oldestHandle)
+		h.recency.Remove(oldest)
+	}
 	h.mu.Unlock()
 	return append([]byte(nil), handle[:]...)
 }
@@ -64,13 +75,29 @@ func (h *stableHandleHandler) FromHandle(value []byte) (billy.Filesystem, []stri
 	}
 	var handle [sha256.Size]byte
 	copy(handle[:], value)
-	h.mu.RLock()
+	h.mu.Lock()
 	entry, ok := h.handles[handle]
-	h.mu.RUnlock()
 	if !ok {
+		h.mu.Unlock()
 		return nil, nil, &nfs.NFSStatusError{NFSStatus: nfs.NFSStatusStale}
 	}
+	h.touchLocked(handle)
+	h.mu.Unlock()
 	return entry.filesystem, append([]string(nil), entry.path...), nil
+}
+
+func (h *stableHandleHandler) touchLocked(handle [sha256.Size]byte) {
+	if h.recency == nil {
+		h.recency = list.New()
+	}
+	if h.positions == nil {
+		h.positions = make(map[[sha256.Size]byte]*list.Element)
+	}
+	if existing, found := h.positions[handle]; found {
+		h.recency.MoveToBack(existing)
+		return
+	}
+	h.positions[handle] = h.recency.PushBack(handle)
 }
 
 func (*stableHandleHandler) InvalidateHandle(billy.Filesystem, []byte) error { return nil }
@@ -107,7 +134,8 @@ func Start(ctx context.Context, address string, filesystem billy.Filesystem) (*S
 	if snapshotter, ok := filesystem.(handleSnapshotter); ok {
 		server.handles = &stableHandleHandler{
 			Handler: baseHandler, live: filesystem, snapshotter: snapshotter,
-			handles: make(map[[sha256.Size]byte]stableHandleEntry),
+			handles: make(map[[sha256.Size]byte]stableHandleEntry), recency: list.New(),
+			positions: make(map[[sha256.Size]byte]*list.Element),
 		}
 		server.handles.registerCurrent()
 		handler = server.handles
