@@ -4,6 +4,7 @@ package internetarchive
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/blackpearl-media/blackpearl/internal/acquisition"
 )
@@ -25,8 +27,9 @@ const (
 
 // Gateway provides read-only open-media search and transient magnet material.
 type Gateway struct {
-	baseURL *url.URL
-	client  *http.Client
+	baseURL        *url.URL
+	client         *http.Client
+	downloadClient *http.Client
 }
 
 type searchEnvelope struct {
@@ -54,7 +57,33 @@ func New(baseURL string, client *http.Client) (*Gateway, error) {
 	}
 	isolated := *client
 	isolated.CheckRedirect = archiveRedirectPolicy(parsed)
-	return &Gateway{baseURL: parsed, client: &isolated}, nil
+	download := isolated
+	transport, ok := client.Transport.(*http.Transport)
+	if !ok {
+		transport = http.DefaultTransport.(*http.Transport)
+	}
+	clone := transport.Clone()
+	clone.ForceAttemptHTTP2 = false
+	if clone.TLSHandshakeTimeout < 30*time.Second {
+		clone.TLSHandshakeTimeout = 30 * time.Second
+	}
+	clone.TLSNextProto = make(map[string]func(string, *tls.Conn) http.RoundTripper)
+	if clone.TLSClientConfig == nil {
+		clone.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+	} else {
+		clone.TLSClientConfig = clone.TLSClientConfig.Clone()
+	}
+	clone.TLSClientConfig.NextProtos = []string{"http/1.1"}
+	download.Transport = clone
+	return &Gateway{baseURL: parsed, client: &isolated, downloadClient: &download}, nil
+}
+
+// Ready validates local gateway state without downloading media content.
+func (g *Gateway) Ready(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("check Internet Archive readiness: %w", err)
+	}
+	return nil
 }
 
 // Name returns the stable provider name used in release fingerprints.
