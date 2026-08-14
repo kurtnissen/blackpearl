@@ -3,6 +3,7 @@ package acquisitionjob_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -44,7 +45,9 @@ func TestWorkerPlansCachedFirstBoundedCandidateSetBeforeAnyProviderMutation(t *t
 	}
 	provider := &fakeJobProvider{
 		releases: releases,
-		cached:   []acquisition.Release{mustJobReleaseAt(t, 2), mustJobReleaseAt(t, 4)},
+		cached: []acquisition.Release{
+			mustJobReleaseAt(t, 2), mustJobReleaseAt(t, 4), mustJobReleaseAt(t, 5),
+		},
 	}
 	worker := newJobWorker(t, repository, provider, &fakeJobPublisher{}, now)
 
@@ -53,7 +56,7 @@ func TestWorkerPlansCachedFirstBoundedCandidateSetBeforeAnyProviderMutation(t *t
 	require.NoError(t, err)
 	require.Equal(t, acquisition.JobStateSelected, state)
 	require.Equal(t, 1, provider.cacheCalls)
-	require.Len(t, provider.cacheInput, acquisition.MaximumJobCandidates)
+	require.Len(t, provider.cacheInput, 6)
 	require.Zero(t, provider.findCalls)
 	require.Zero(t, provider.createCalls)
 	candidates, err := repository.Candidates(ctx, jobID)
@@ -62,14 +65,40 @@ func TestWorkerPlansCachedFirstBoundedCandidateSetBeforeAnyProviderMutation(t *t
 	require.Equal(t, []string{
 		mustJobReleaseAt(t, 2).InfoHash(),
 		mustJobReleaseAt(t, 4).InfoHash(),
+		mustJobReleaseAt(t, 5).InfoHash(),
 		mustJobReleaseAt(t, 0).InfoHash(),
 		mustJobReleaseAt(t, 1).InfoHash(),
-		mustJobReleaseAt(t, 3).InfoHash(),
 	}, candidateHashes(candidates))
 	require.Equal(t, acquisition.CandidateOutcomeSelected, candidates[0].Outcome())
 	for _, candidate := range candidates[1:] {
 		require.Equal(t, acquisition.CandidateOutcomePending, candidate.Outcome())
 	}
+}
+
+func TestWorkerBoundsCacheProbeBeforeProviderMutation(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	repository, now, _ := queuedJob(t, ctx)
+	releases := make([]acquisition.Release, 0, 101)
+	for ordinal := range 101 {
+		release, err := acquisition.NewRelease(acquisition.ReleaseInput{
+			Provider: "prowlarr", SourceID: fmt.Sprintf("result-%d", ordinal), Title: "Example.Movie.2026",
+			Protocol: acquisition.ReleaseProtocolTorrent, Size: int64(100 + ordinal), Indexer: "authorized-indexer",
+			InfoHash: fmt.Sprintf("%040x", ordinal+1), MagnetURL: fmt.Sprintf("magnet:?xt=urn:btih:%040x", ordinal+1),
+		})
+		require.NoError(t, err)
+		releases = append(releases, release)
+	}
+	provider := &fakeJobProvider{releases: releases}
+	worker := newJobWorker(t, repository, provider, &fakeJobPublisher{}, now)
+
+	state, err := worker.ProcessOne(ctx)
+
+	require.NoError(t, err)
+	require.Equal(t, acquisition.JobStateSelected, state)
+	require.Len(t, provider.cacheInput, 100)
+	require.Zero(t, provider.findCalls)
+	require.Zero(t, provider.createCalls)
 }
 
 func TestWorkerDefersCandidatePlanningWhenCacheLookupIsUnavailable(t *testing.T) {

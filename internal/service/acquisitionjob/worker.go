@@ -13,7 +13,10 @@ import (
 	"go.opentelemetry.io/otel"
 )
 
-const durableTransitionTimeout = 5 * time.Second
+const (
+	durableTransitionTimeout    = 5 * time.Second
+	maximumCacheProbeCandidates = 100
+)
 
 // WorkerQueue is the lease and transition boundary consumed by the worker.
 type WorkerQueue interface {
@@ -142,8 +145,8 @@ func (w *Worker) resolve(ctx context.Context, operationContext context.Context, 
 	if err != nil {
 		return w.deferProviderFailure(ctx, claim, err)
 	}
-	eligible := make([]acquisition.Release, 0, acquisition.MaximumJobCandidates)
-	seen := make(map[string]struct{}, acquisition.MaximumJobCandidates)
+	eligible := make([]acquisition.Release, 0, min(len(releases), maximumCacheProbeCandidates))
+	seen := make(map[string]struct{}, min(len(releases), maximumCacheProbeCandidates))
 	for _, release := range releases {
 		if release.Protocol() != acquisition.ReleaseProtocolTorrent || release.InfoHash() == "" {
 			continue
@@ -154,7 +157,7 @@ func (w *Worker) resolve(ctx context.Context, operationContext context.Context, 
 		}
 		seen[hash] = struct{}{}
 		eligible = append(eligible, release)
-		if len(eligible) == acquisition.MaximumJobCandidates {
+		if len(eligible) == maximumCacheProbeCandidates {
 			break
 		}
 	}
@@ -166,6 +169,9 @@ func (w *Worker) resolve(ctx context.Context, operationContext context.Context, 
 		return w.deferProviderFailure(ctx, claim, err)
 	}
 	ordered := cachedFirst(eligible, cached)
+	if len(ordered) > acquisition.MaximumJobCandidates {
+		ordered = ordered[:acquisition.MaximumJobCandidates]
+	}
 	candidates := make([]acquisition.JobCandidate, 0, len(ordered))
 	for ordinal, release := range ordered {
 		selection, selectionErr := acquisition.NewJobSelection(release)
