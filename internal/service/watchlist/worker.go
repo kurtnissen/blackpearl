@@ -28,10 +28,10 @@ type JobManager interface {
 	Get(ctx context.Context, id string) (acquisition.AcquisitionJob, error)
 }
 
-// PublishedMediaIndex finds movie intent already exposed through the active
+// PublishedMediaIndex finds exact intent already exposed through the active
 // Plex manifest. It prevents duplicate provider mutations for published media.
 type PublishedMediaIndex interface {
-	FindPublishedMovie(ctx context.Context, title string, year int) (objectID string, found bool, err error)
+	FindPublished(ctx context.Context, request acquisition.SearchRequest) (objectID string, found bool, err error)
 }
 
 // WorkerOptions bounds serialized automatic acquisition and retry behavior.
@@ -102,8 +102,11 @@ func (w *Worker) ProcessOne(ctx context.Context) (acquisition.WatchlistQueueStat
 }
 
 func (w *Worker) submit(ctx context.Context, claim acquisition.WatchlistClaim, now time.Time) (acquisition.WatchlistQueueState, error) {
-	item := claim.Item()
-	objectID, found, err := w.index.FindPublishedMovie(ctx, item.Title(), item.Year())
+	request, err := claim.SearchRequest()
+	if err != nil {
+		return w.completeDurably(ctx, claim, acquisition.NewWatchlistManualReview())
+	}
+	objectID, found, err := w.index.FindPublished(ctx, request)
 	if err != nil {
 		return "", workerBoundaryError(ctx, "read published media index", err)
 	}
@@ -113,10 +116,6 @@ func (w *Worker) submit(ctx context.Context, claim acquisition.WatchlistClaim, n
 			return w.completeDurably(ctx, claim, acquisition.NewWatchlistManualReview())
 		}
 		return w.completeDurably(ctx, claim, completion)
-	}
-	request, err := item.SearchRequest()
-	if err != nil {
-		return w.completeDurably(ctx, claim, acquisition.NewWatchlistManualReview())
 	}
 	operationContext, cancel := context.WithTimeout(ctx, w.options.OperationTimeout)
 	job, _, submitErr := w.manager.Submit(operationContext, request)

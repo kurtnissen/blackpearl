@@ -23,10 +23,10 @@ type SnapshotGateway interface {
 
 // QueueRepository persists observations and returns privacy-safe counts.
 type QueueRepository interface {
-	UpsertSnapshotPolicy(ctx context.Context, items []acquisitiondomain.WatchlistItem, observedAt time.Time, autoEligible bool) error
+	UpsertObservations(ctx context.Context, observations []acquisitiondomain.WatchlistObservation, observedAt time.Time) error
 	Status(ctx context.Context) (acquisitiondomain.WatchlistQueueStatus, error)
-	AcquisitionEnabled(ctx context.Context) (bool, error)
-	SetAcquisitionEnabled(ctx context.Context, enabled bool) error
+	Policy(ctx context.Context) (acquisitiondomain.WatchlistPolicy, error)
+	SetPolicy(ctx context.Context, policy acquisitiondomain.WatchlistPolicy) error
 }
 
 // ObserverOptions configures serialized observation polling.
@@ -41,6 +41,7 @@ type ObserverStatus struct {
 	Enabled            bool                                   `json:"enabled"`
 	Healthy            bool                                   `json:"healthy"`
 	AcquisitionEnabled bool                                   `json:"acquisitionEnabled"`
+	ShowPolicy         acquisitiondomain.WatchlistShowPolicy  `json:"showPolicy"`
 	LastSyncAt         *time.Time                             `json:"lastSyncAt,omitempty"`
 	Queue              acquisitiondomain.WatchlistQueueStatus `json:"queue"`
 }
@@ -96,15 +97,32 @@ func (o *Observer) Sync(ctx context.Context) error {
 		o.markUnhealthy()
 		return fmt.Errorf("record Plex watchlist: %w", ErrUnavailable)
 	}
-	acquisitionEnabled, err := o.queue.AcquisitionEnabled(ctx)
+	policy, err := o.queue.Policy(ctx)
 	if err != nil {
 		o.markUnhealthy()
 		return publicError(ctx, "read watchlist acquisition policy", err)
 	}
 	o.mu.RLock()
-	autoEligible := o.baselineComplete && acquisitionEnabled
+	baselineComplete := o.baselineComplete
 	o.mu.RUnlock()
-	if err := o.queue.UpsertSnapshotPolicy(ctx, items, observedAt, autoEligible); err != nil {
+	observations := make([]acquisitiondomain.WatchlistObservation, 0, len(items))
+	for _, item := range items {
+		autoEligible := baselineComplete && policy.AcquisitionEnabled()
+		season, episode := 0, 0
+		if item.MediaType() == acquisitiondomain.WatchlistMediaTypeShow {
+			autoEligible = autoEligible && policy.ShowPolicy() == acquisitiondomain.WatchlistShowPolicyPilot
+			if autoEligible {
+				season, episode = 1, 1
+			}
+		}
+		observation, observationErr := acquisitiondomain.NewWatchlistObservation(item, autoEligible, season, episode)
+		if observationErr != nil {
+			o.markUnhealthy()
+			return fmt.Errorf("validate Plex watchlist observation: %w", ErrUnavailable)
+		}
+		observations = append(observations, observation)
+	}
+	if err := o.queue.UpsertObservations(ctx, observations, observedAt); err != nil {
 		o.markUnhealthy()
 		return publicError(ctx, "record Plex watchlist", err)
 	}
@@ -145,13 +163,14 @@ func (o *Observer) Status(ctx context.Context) (ObserverStatus, error) {
 	if err != nil {
 		return ObserverStatus{}, publicError(ctx, "read watchlist status", err)
 	}
-	acquisitionEnabled, err := o.queue.AcquisitionEnabled(ctx)
+	policy, err := o.queue.Policy(ctx)
 	if err != nil {
 		return ObserverStatus{}, publicError(ctx, "read watchlist acquisition policy", err)
 	}
 	o.mu.RLock()
 	status := ObserverStatus{
-		Enabled: true, Healthy: o.healthy, AcquisitionEnabled: acquisitionEnabled, Queue: queueStatus,
+		Enabled: true, Healthy: o.healthy, AcquisitionEnabled: policy.AcquisitionEnabled(),
+		ShowPolicy: policy.ShowPolicy(), Queue: queueStatus,
 	}
 	if o.lastSyncAt != nil {
 		lastSyncAt := *o.lastSyncAt
@@ -161,15 +180,29 @@ func (o *Observer) Status(ctx context.Context) (ObserverStatus, error) {
 	return status, nil
 }
 
-// SetAcquisitionEnabled changes the durable automatic-acquisition policy.
-func (o *Observer) SetAcquisitionEnabled(ctx context.Context, enabled bool) error {
+// SetPolicy changes the durable automatic-acquisition policy.
+func (o *Observer) SetPolicy(ctx context.Context, policy acquisitiondomain.WatchlistPolicy) error {
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("set watchlist acquisition policy: %w", err)
 	}
-	if err := o.queue.SetAcquisitionEnabled(ctx, enabled); err != nil {
+	if err := o.queue.SetPolicy(ctx, policy); err != nil {
 		return publicError(ctx, "set watchlist acquisition policy", err)
 	}
 	return nil
+}
+
+// SetAcquisitionEnabled changes only the master acquisition switch while
+// preserving the current explicit show policy.
+func (o *Observer) SetAcquisitionEnabled(ctx context.Context, enabled bool) error {
+	policy, err := o.queue.Policy(ctx)
+	if err != nil {
+		return publicError(ctx, "read watchlist acquisition policy", err)
+	}
+	updated, err := acquisitiondomain.NewWatchlistPolicy(enabled, policy.ShowPolicy())
+	if err != nil {
+		return fmt.Errorf("set watchlist acquisition policy: %w", ErrUnavailable)
+	}
+	return o.SetPolicy(ctx, updated)
 }
 
 func (o *Observer) markUnhealthy() {

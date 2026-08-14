@@ -89,6 +89,39 @@ func TestServiceFindPublishedMovieReadsCurrentManifest(t *testing.T) {
 	require.Empty(t, objectID)
 }
 
+func TestServiceFindPublishedReadsExactEpisodeFromCurrentManifest(t *testing.T) {
+	t.Parallel()
+	candidate, err := domain.NewMediaCandidate("22:7", "Example.Show.S01E01.mkv", 1024)
+	require.NoError(t, err)
+	episode, err := domain.NewSetupEpisodeConfiguration(candidate, "Example Show", 2026, 1, 1, "Pilot")
+	require.NoError(t, err)
+	manifest, err := domain.NewSetupManifest([]domain.SetupConfiguration{episode})
+	require.NoError(t, err)
+	repository := &fakeSetupRepository{token: "saved-token", manifest: manifest}
+	service := setupservice.New(repository,
+		func(string) (setupservice.Discoverer, error) { return &fakeDiscoverer{}, nil },
+		func(context.Context, string, domain.SetupManifest) (core.CatalogService, error) {
+			return &fakeCatalog{}, nil
+		},
+		&fakePublisher{},
+	)
+	request, err := acquisitiondomain.NewEpisodeSearch("Example Show", 2026, 1, 1)
+	require.NoError(t, err)
+
+	objectID, found, err := service.FindPublished(context.Background(), request)
+
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, episode.ObjectID, objectID)
+
+	nextEpisode, err := acquisitiondomain.NewEpisodeSearch("Example Show", 2026, 1, 2)
+	require.NoError(t, err)
+	objectID, found, err = service.FindPublished(context.Background(), nextEpisode)
+	require.NoError(t, err)
+	require.False(t, found)
+	require.Empty(t, objectID)
+}
+
 func TestServiceFindPublishedMovieTreatsMissingSetupAsEmpty(t *testing.T) {
 	t.Parallel()
 	service := setupservice.New(&fakeSetupRepository{},

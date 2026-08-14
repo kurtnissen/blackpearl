@@ -522,7 +522,8 @@ func TestRunBrowserSetupObservesPlexWatchlistWithoutAcquiring(t *testing.T) {
 		if bytes.Contains(body, []byte("Private Movie")) || bytes.Contains(body, []byte("private-plex-token")) {
 			return false
 		}
-		return json.Unmarshal(body, &watchlistStatus) == nil && watchlistStatus.Healthy
+		return json.Unmarshal(body, &watchlistStatus) == nil && watchlistStatus.Healthy &&
+			watchlistStatus.Queue.PendingMovies == 1 && watchlistStatus.Queue.ObservedShows == 1
 	}, 5*time.Second, 10*time.Millisecond)
 	require.True(t, watchlistStatus.Enabled)
 	require.Equal(t, 1, watchlistStatus.Queue.PendingMovies)

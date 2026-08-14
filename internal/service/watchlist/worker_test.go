@@ -48,10 +48,44 @@ func TestWorkerCompletesAlreadyPublishedMovieWithoutSubmittingJob(t *testing.T) 
 	require.NoError(t, err)
 	require.Equal(t, acquisition.WatchlistQueueStateSucceeded, state)
 	require.Zero(t, manager.submitCalls)
-	require.Equal(t, claim.Item().Title(), index.title)
-	require.Equal(t, claim.Item().Year(), index.year)
+	require.Equal(t, claim.Item().Title(), index.request.Title())
+	require.Equal(t, claim.Item().Year(), index.request.Year())
 	require.Len(t, queue.completions, 1)
 	require.Equal(t, "76429581:3", queue.completions[0].PublishedObjectID())
+}
+
+func TestWorkerSubmitsExactPilotEpisodeIntent(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, time.August, 14, 16, 0, 0, 0, time.UTC)
+	claim := mustShowClaim(t, "plex://show/submit", 1, "")
+	queue := &fakeWorkerQueue{claims: []acquisition.WatchlistClaim{claim}}
+	manager := &fakeJobManager{submitJob: mustJob(t, claim, acquisition.JobStateQueued, acquisition.JobErrorNone)}
+	worker := newWorker(t, queue, manager, now)
+
+	state, err := worker.ProcessOne(context.Background())
+
+	require.NoError(t, err)
+	require.Equal(t, acquisition.WatchlistQueueStateAcquiring, state)
+	require.Equal(t, "Example S01E01", manager.submitted.Query())
+	require.Equal(t, testJobID, queue.attachedJobID)
+}
+
+func TestWorkerCompletesAlreadyPublishedPilotWithoutSubmittingJob(t *testing.T) {
+	t.Parallel()
+	claim := mustShowClaim(t, "plex://show/published", 1, "")
+	queue := &fakeWorkerQueue{claims: []acquisition.WatchlistClaim{claim}}
+	manager := &fakeJobManager{}
+	index := &fakePublishedMediaIndex{objectID: "765:1", found: true}
+	worker := newWorkerWithIndex(t, queue, manager, index, time.Now())
+
+	state, err := worker.ProcessOne(context.Background())
+
+	require.NoError(t, err)
+	require.Equal(t, acquisition.WatchlistQueueStateSucceeded, state)
+	require.Zero(t, manager.submitCalls)
+	require.Equal(t, domain.MediaTypeEpisode, index.request.MediaType())
+	require.Equal(t, 1, index.request.Season())
+	require.Equal(t, 1, index.request.Episode())
 }
 
 func TestWorkerDoesNotSubmitWhenPublishedMediaLookupFails(t *testing.T) {
@@ -248,13 +282,16 @@ type fakePublishedMediaIndex struct {
 	objectID string
 	found    bool
 	err      error
-	title    string
-	year     int
+	request  acquisition.SearchRequest
 }
 
 func (f *fakePublishedMediaIndex) FindPublishedMovie(_ context.Context, title string, year int) (string, bool, error) {
-	f.title = title
-	f.year = year
+	f.request, _ = acquisition.NewMovieSearch(title, year)
+	return f.objectID, f.found, f.err
+}
+
+func (f *fakePublishedMediaIndex) FindPublished(_ context.Context, request acquisition.SearchRequest) (string, bool, error) {
+	f.request = request
 	return f.objectID, f.found, f.err
 }
 
@@ -274,9 +311,24 @@ func mustClaim(t *testing.T, externalID string, attempt int, jobID string) acqui
 	return claim
 }
 
+func mustShowClaim(t *testing.T, externalID string, attempt int, jobID string) acquisition.WatchlistClaim {
+	t.Helper()
+	item := mustObserverMedia(t, externalID, acquisition.WatchlistMediaTypeShow)
+	observation, err := acquisition.NewWatchlistObservation(item, true, 1, 1)
+	require.NoError(t, err)
+	if jobID == "" {
+		claim, claimErr := acquisition.NewWatchlistIntentClaim(observation, int64(attempt), attempt)
+		require.NoError(t, claimErr)
+		return claim
+	}
+	claim, claimErr := acquisition.NewWatchlistIntentJobClaim(observation, int64(attempt), attempt, jobID)
+	require.NoError(t, claimErr)
+	return claim
+}
+
 func mustJob(t *testing.T, claim acquisition.WatchlistClaim, state acquisition.JobState, code acquisition.JobErrorCode) acquisition.AcquisitionJob {
 	t.Helper()
-	request, err := claim.Item().SearchRequest()
+	request, err := claim.SearchRequest()
 	require.NoError(t, err)
 	now := time.Date(2026, time.August, 14, 15, 0, 0, 0, time.UTC)
 	input := acquisition.JobSnapshotInput{ID: testJobID, Request: request, State: state, ErrorCode: code, CreatedAt: now, UpdatedAt: now}

@@ -270,9 +270,9 @@ func (s *Service) PublishAcquired(ctx context.Context, media acquisitiondomain.A
 	return err
 }
 
-// FindPublishedMovie reports whether one movie intent is already present in
-// the durable Plex manifest, without exposing the saved provider credential.
-func (s *Service) FindPublishedMovie(ctx context.Context, title string, year int) (string, bool, error) {
+// FindPublished reports whether exact media intent is already present in the
+// durable Plex manifest, without exposing the saved provider credential.
+func (s *Service) FindPublished(ctx context.Context, request acquisitiondomain.SearchRequest) (string, bool, error) {
 	_, manifest, err := s.repository.LoadManifest(ctx)
 	if err != nil {
 		if errors.Is(err, domain.ErrNotFound) {
@@ -282,11 +282,35 @@ func (s *Service) FindPublishedMovie(ctx context.Context, title string, year int
 	}
 	for index := range manifest.Items {
 		item := manifest.Items[index]
-		if item.MediaType == domain.MediaTypeMovie && item.Title == title && item.Year == year {
+		if publishedMediaMatches(item, request) {
 			return item.ObjectID, true, nil
 		}
 	}
 	return "", false, nil
+}
+
+// FindPublishedMovie is retained for callers that have not yet adopted exact
+// media intent.
+func (s *Service) FindPublishedMovie(ctx context.Context, title string, year int) (string, bool, error) {
+	request, err := acquisitiondomain.NewMovieSearch(title, year)
+	if err != nil {
+		return "", false, err
+	}
+	return s.FindPublished(ctx, request)
+}
+
+func publishedMediaMatches(item domain.SetupConfiguration, request acquisitiondomain.SearchRequest) bool {
+	if item.MediaType != request.MediaType() || item.Year != request.Year() {
+		return false
+	}
+	switch request.MediaType() {
+	case domain.MediaTypeMovie:
+		return item.Title == request.Title()
+	case domain.MediaTypeEpisode:
+		return item.ShowTitle == request.Title() && item.Season == request.Season() && item.Episode == request.Episode()
+	default:
+		return false
+	}
 }
 
 func (s *Service) commitManifest(ctx context.Context, token string, manifest domain.SetupManifest) (domain.SetupManifest, error) {

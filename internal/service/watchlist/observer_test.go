@@ -28,6 +28,7 @@ func TestObserverSyncPersistsSnapshotAndReturnsAggregateStatus(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, status.Enabled)
 	require.False(t, status.AcquisitionEnabled)
+	require.Equal(t, acquisitiondomain.WatchlistShowPolicyOff, status.ShowPolicy)
 	require.True(t, status.Healthy)
 	require.NotNil(t, status.LastSyncAt)
 	require.Equal(t, now, *status.LastSyncAt)
@@ -38,7 +39,7 @@ func TestObserverSyncPersistsSnapshotAndReturnsAggregateStatus(t *testing.T) {
 
 func TestObserverStatusReportsAutomaticAcquisitionPolicy(t *testing.T) {
 	t.Parallel()
-	queue := &fakeQueue{acquisitionEnabled: true}
+	queue := &fakeQueue{policy: mustPolicy(t, true, acquisitiondomain.WatchlistShowPolicyPilot)}
 	observer, err := watchlistservice.NewObserver(&fakeSnapshotGateway{}, queue, watchlistservice.ObserverOptions{
 		PollInterval: time.Hour,
 	})
@@ -48,12 +49,15 @@ func TestObserverStatusReportsAutomaticAcquisitionPolicy(t *testing.T) {
 
 	require.NoError(t, err)
 	require.True(t, status.AcquisitionEnabled)
+	require.Equal(t, acquisitiondomain.WatchlistShowPolicyPilot, status.ShowPolicy)
 }
 
 func TestObserverMakesOnlyPostBaselineItemsEligibleForAutomaticAcquisition(t *testing.T) {
 	t.Parallel()
-	queue := &fakeQueue{acquisitionEnabled: true}
-	observer, err := watchlistservice.NewObserver(&fakeSnapshotGateway{}, queue, watchlistservice.ObserverOptions{
+	queue := &fakeQueue{policy: mustPolicy(t, true, acquisitiondomain.WatchlistShowPolicyOff)}
+	observer, err := watchlistservice.NewObserver(&fakeSnapshotGateway{
+		items: []acquisitiondomain.WatchlistItem{mustObserverItem(t, "plex://movie/post-baseline")},
+	}, queue, watchlistservice.ObserverOptions{
 		PollInterval: time.Hour,
 	})
 	require.NoError(t, err)
@@ -67,16 +71,37 @@ func TestObserverMakesOnlyPostBaselineItemsEligibleForAutomaticAcquisition(t *te
 func TestObserverChangesDurableAutomaticAcquisitionPolicyAtRuntime(t *testing.T) {
 	t.Parallel()
 	queue := &fakeQueue{}
-	observer := newObserver(t, &fakeSnapshotGateway{}, queue, time.Hour, time.Now)
+	observer := newObserver(t, &fakeSnapshotGateway{
+		items: []acquisitiondomain.WatchlistItem{mustObserverItem(t, "plex://movie/policy-change")},
+	}, queue, time.Hour, time.Now)
 	require.NoError(t, observer.Sync(context.Background()))
 
-	require.NoError(t, observer.SetAcquisitionEnabled(context.Background(), true))
+	require.NoError(t, observer.SetPolicy(
+		context.Background(), mustPolicy(t, true, acquisitiondomain.WatchlistShowPolicyOff),
+	))
 	require.NoError(t, observer.Sync(context.Background()))
 	status, err := observer.Status(context.Background())
 
 	require.NoError(t, err)
 	require.True(t, status.AcquisitionEnabled)
 	require.Equal(t, []bool{false, true}, queue.autoEligibility)
+}
+
+func TestObserverMakesOnlyPostBaselineShowsEligibleForPilot(t *testing.T) {
+	t.Parallel()
+	show := mustObserverMedia(t, "plex://show/pilot", acquisitiondomain.WatchlistMediaTypeShow)
+	queue := &fakeQueue{policy: mustPolicy(t, true, acquisitiondomain.WatchlistShowPolicyPilot)}
+	observer := newObserver(t, &fakeSnapshotGateway{items: []acquisitiondomain.WatchlistItem{show}}, queue, time.Hour, time.Now)
+
+	require.NoError(t, observer.Sync(context.Background()))
+	require.NoError(t, observer.Sync(context.Background()))
+
+	require.Len(t, queue.observationBatches, 2)
+	require.False(t, queue.observationBatches[0][0].AutoEligible())
+	require.Zero(t, queue.observationBatches[0][0].Season())
+	require.True(t, queue.observationBatches[1][0].AutoEligible())
+	require.Equal(t, 1, queue.observationBatches[1][0].Season())
+	require.Equal(t, 1, queue.observationBatches[1][0].Episode())
 }
 
 func TestObserverSyncSanitizesProviderAndRepositoryFailures(t *testing.T) {
@@ -177,12 +202,32 @@ func newObserver(
 
 func mustObserverItem(t *testing.T, externalID string) acquisitiondomain.WatchlistItem {
 	t.Helper()
+	return mustObserverMedia(t, externalID, acquisitiondomain.WatchlistMediaTypeMovie)
+}
+
+func mustObserverMedia(
+	t *testing.T,
+	externalID string,
+	mediaType acquisitiondomain.WatchlistMediaType,
+) acquisitiondomain.WatchlistItem {
+	t.Helper()
 	item, err := acquisitiondomain.NewWatchlistItem(acquisitiondomain.WatchlistItemInput{
-		Source: "plex-watchlist", ExternalID: externalID, MediaType: acquisitiondomain.WatchlistMediaTypeMovie,
+		Source: "plex-watchlist", ExternalID: externalID, MediaType: mediaType,
 		Title: "Example", Year: 2026,
 	})
 	require.NoError(t, err)
 	return item
+}
+
+func mustPolicy(
+	t *testing.T,
+	enabled bool,
+	showPolicy acquisitiondomain.WatchlistShowPolicy,
+) acquisitiondomain.WatchlistPolicy {
+	t.Helper()
+	policy, err := acquisitiondomain.NewWatchlistPolicy(enabled, showPolicy)
+	require.NoError(t, err)
+	return policy
 }
 
 type fakeSnapshotGateway struct {
@@ -214,8 +259,9 @@ type fakeQueue struct {
 	status             acquisitiondomain.WatchlistQueueStatus
 	statusErr          error
 	autoEligibility    []bool
-	acquisitionEnabled bool
+	policy             acquisitiondomain.WatchlistPolicy
 	policyErr          error
+	observationBatches [][]acquisitiondomain.WatchlistObservation
 }
 
 func (f *fakeQueue) UpsertSnapshot(_ context.Context, items []acquisitiondomain.WatchlistItem, observedAt time.Time) error {
@@ -244,10 +290,49 @@ func (f *fakeQueue) Status(context.Context) (acquisitiondomain.WatchlistQueueSta
 	return f.status, f.statusErr
 }
 
+func (f *fakeQueue) UpsertObservations(
+	_ context.Context,
+	observations []acquisitiondomain.WatchlistObservation,
+	observedAt time.Time,
+) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.items = make([]acquisitiondomain.WatchlistItem, 0, len(observations))
+	for _, observation := range observations {
+		f.items = append(f.items, observation.Item())
+		f.autoEligibility = append(f.autoEligibility, observation.AutoEligible())
+	}
+	f.observedAt = observedAt
+	f.observationBatches = append(f.observationBatches, append([]acquisitiondomain.WatchlistObservation(nil), observations...))
+	return f.upsertErr
+}
+
+func (f *fakeQueue) Policy(context.Context) (acquisitiondomain.WatchlistPolicy, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.policyErr != nil {
+		return acquisitiondomain.WatchlistPolicy{}, f.policyErr
+	}
+	if f.policy.ShowPolicy() == "" {
+		return acquisitiondomain.NewWatchlistPolicy(false, acquisitiondomain.WatchlistShowPolicyOff)
+	}
+	return f.policy, nil
+}
+
+func (f *fakeQueue) SetPolicy(_ context.Context, policy acquisitiondomain.WatchlistPolicy) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.policyErr != nil {
+		return f.policyErr
+	}
+	f.policy = policy
+	return nil
+}
+
 func (f *fakeQueue) AcquisitionEnabled(context.Context) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.acquisitionEnabled, f.policyErr
+	return f.policy.AcquisitionEnabled(), f.policyErr
 }
 
 func (f *fakeQueue) SetAcquisitionEnabled(_ context.Context, enabled bool) error {
@@ -256,6 +341,6 @@ func (f *fakeQueue) SetAcquisitionEnabled(_ context.Context, enabled bool) error
 	if f.policyErr != nil {
 		return f.policyErr
 	}
-	f.acquisitionEnabled = enabled
+	f.policy, _ = acquisitiondomain.NewWatchlistPolicy(enabled, acquisitiondomain.WatchlistShowPolicyOff)
 	return nil
 }
