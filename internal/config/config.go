@@ -109,8 +109,8 @@ func (c Config) validate() error {
 	default:
 		return fmt.Errorf("BLACKPEARL_FILESYSTEM_MODE must be fuse or nfs: %q", c.FilesystemMode)
 	}
-	if c.SetupEnabled && (c.StorageMode != domain.StorageModeRolling || c.RangeProvider != "torbox-torrent" || c.FilesystemMode != "nfs") {
-		return errors.New("BLACKPEARL_SETUP_ENABLED requires rolling storage, torbox-torrent provider, and nfs filesystem mode")
+	if c.SetupEnabled && ((c.StorageMode != domain.StorageModeRolling && c.StorageMode != domain.StorageModePersistent) || c.RangeProvider != "torbox-torrent" || c.FilesystemMode != "nfs") {
+		return errors.New("BLACKPEARL_SETUP_ENABLED requires persistent or rolling storage, torbox-torrent provider, and nfs filesystem mode")
 	}
 	if c.SetupEnabled {
 		decoded, err := hex.DecodeString(c.SetupBootstrapToken)
@@ -176,6 +176,12 @@ func (c Config) validate() error {
 	}
 	switch c.StorageMode {
 	case domain.StorageModePersistent:
+		if c.SetupEnabled {
+			if err := c.validatePersistentBrowserCache(); err != nil {
+				return err
+			}
+			break
+		}
 		if c.CacheMaxBytes < 0 {
 			return errors.New("BLACKPEARL_CACHE_MAX_BYTES must not be negative")
 		}
@@ -291,6 +297,38 @@ func (c Config) validate() error {
 		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
 			return fmt.Errorf("BLACKPEARL_PLEX_URL must be an absolute HTTP URL: %q", c.Plex.URL)
 		}
+	}
+	return nil
+}
+
+func (c Config) validatePersistentBrowserCache() error {
+	if c.CacheMaxBytes != 0 {
+		return errors.New("BLACKPEARL_CACHE_MAX_BYTES must be zero in persistent browser setup mode")
+	}
+	if c.CacheChunkBytes <= 0 {
+		return errors.New("BLACKPEARL_CACHE_CHUNK_BYTES must be positive in persistent browser setup mode")
+	}
+	if c.CacheReadAheadChunks < 0 || c.CacheReadAheadChunks > 64 {
+		return errors.New("BLACKPEARL_CACHE_READ_AHEAD_CHUNKS must be between 0 and 64 in persistent browser setup mode")
+	}
+	if c.CacheNextEpisodeChunks < 0 || c.CacheNextEpisodeChunks > 256 {
+		return errors.New("BLACKPEARL_CACHE_NEXT_EPISODE_CHUNKS must be between 0 and 256 in persistent browser setup mode")
+	}
+	if c.RangeTimeout <= 0 {
+		return errors.New("BLACKPEARL_RANGE_TIMEOUT must be positive in persistent browser setup mode")
+	}
+	if c.POCSource != "" {
+		return errors.New("BLACKPEARL_POC_SOURCE must be empty in persistent browser setup mode")
+	}
+	if c.RangeOriginURL != "" {
+		return errors.New("BLACKPEARL_RANGE_ORIGIN_URL must be empty with BLACKPEARL_RANGE_PROVIDER=torbox-torrent")
+	}
+	if c.TorBoxAPIToken != "" || c.TorBoxAPITokenFile != "" || c.RangeObjectID != "" {
+		return errors.New("browser setup mode requires TorBox token and object ID to be absent from environment")
+	}
+	torboxURL, err := url.Parse(c.TorBoxAPIURL)
+	if err != nil || torboxURL.Scheme != "https" || torboxURL.Host == "" || torboxURL.User != nil || torboxURL.RawQuery != "" || torboxURL.Fragment != "" {
+		return errors.New("BLACKPEARL_TORBOX_API_URL must be an absolute HTTPS URL without credentials, query, or fragment")
 	}
 	return nil
 }

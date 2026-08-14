@@ -382,7 +382,49 @@ func TestParseAcceptsBrowserSetupModeWithoutCredentialOrSelection(t *testing.T) 
 	require.Empty(t, cfg.TorBoxAPIToken)
 }
 
-func TestParseRejectsBrowserSetupOutsideRollingTorBoxNFS(t *testing.T) {
+func TestParseAcceptsPersistentBrowserSetupMode(t *testing.T) {
+	t.Parallel()
+	environment := browserSetupEnvironment()
+	environment["BLACKPEARL_STORAGE_MODE"] = "persistent"
+	environment["BLACKPEARL_CACHE_MAX_BYTES"] = "0"
+	environment["BLACKPEARL_CACHE_READ_AHEAD_CHUNKS"] = "4"
+	environment["BLACKPEARL_CACHE_NEXT_EPISODE_CHUNKS"] = "16"
+
+	cfg, err := config.Parse(environment)
+
+	require.NoError(t, err)
+	require.Equal(t, domain.StorageModePersistent, cfg.StorageMode)
+	require.Zero(t, cfg.CacheMaxBytes)
+	require.Equal(t, 4, cfg.CacheReadAheadChunks)
+	require.Equal(t, 16, cfg.CacheNextEpisodeChunks)
+}
+
+func TestParseRejectsUnsafePersistentBrowserCacheConfiguration(t *testing.T) {
+	t.Parallel()
+	tests := []struct{ name, variable, value, message string }{
+		{name: "quota", variable: "BLACKPEARL_CACHE_MAX_BYTES", value: "1048576", message: "CACHE_MAX_BYTES"},
+		{name: "zero chunk", variable: "BLACKPEARL_CACHE_CHUNK_BYTES", value: "0", message: "CACHE_CHUNK_BYTES"},
+		{name: "excessive read ahead", variable: "BLACKPEARL_CACHE_READ_AHEAD_CHUNKS", value: "65", message: "CACHE_READ_AHEAD_CHUNKS"},
+		{name: "excessive next episode", variable: "BLACKPEARL_CACHE_NEXT_EPISODE_CHUNKS", value: "257", message: "CACHE_NEXT_EPISODE_CHUNKS"},
+		{name: "zero timeout", variable: "BLACKPEARL_RANGE_TIMEOUT", value: "0s", message: "RANGE_TIMEOUT"},
+		{name: "local fixture", variable: "BLACKPEARL_POC_SOURCE", value: "/fixture/full.mp4", message: "POC_SOURCE"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			environment := browserSetupEnvironment()
+			environment["BLACKPEARL_STORAGE_MODE"] = "persistent"
+			environment["BLACKPEARL_CACHE_MAX_BYTES"] = "0"
+			environment[test.variable] = test.value
+
+			_, err := config.Parse(environment)
+
+			require.ErrorContains(t, err, test.message)
+		})
+	}
+}
+
+func TestParseRejectsBrowserSetupOutsideTorBoxNFS(t *testing.T) {
 	t.Parallel()
 	base := map[string]string{
 		"BLACKPEARL_STORAGE_MODE":          "rolling",
@@ -393,7 +435,6 @@ func TestParseRejectsBrowserSetupOutsideRollingTorBoxNFS(t *testing.T) {
 		"BLACKPEARL_SETUP_BOOTSTRAP_TOKEN": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 	}
 	tests := []struct{ name, key, value string }{
-		{name: "persistent", key: "BLACKPEARL_STORAGE_MODE", value: "persistent"},
 		{name: "HTTP range", key: "BLACKPEARL_RANGE_PROVIDER", value: "http-range"},
 		{name: "FUSE", key: "BLACKPEARL_FILESYSTEM_MODE", value: "fuse"},
 	}

@@ -355,14 +355,27 @@ func runBrowserSetup(ctx context.Context, cfg config.Config, logger *slog.Logger
 			return fmt.Errorf("configure Plex credential source: %w", err)
 		}
 	}
-	rollingPool, err := cache.NewRollingPool(ctx, cache.RollingOptions{
-		Root: cfg.CacheDir, MaxBytes: cfg.CacheMaxBytes,
-		ChunkBytes: cfg.CacheChunkBytes, ReadAheadChunks: cfg.CacheReadAheadChunks,
-		NextEpisodePrefetchChunks: cfg.CacheNextEpisodeChunks,
-		FetchTimeout:              cfg.RangeTimeout,
-	})
+	var rangePool *cache.RollingPool
+	switch cfg.StorageMode {
+	case domain.StorageModePersistent:
+		rangePool, err = cache.NewPersistentRangePool(ctx, cache.PersistentRangeOptions{
+			Root: cfg.CacheDir, ChunkBytes: cfg.CacheChunkBytes,
+			ReadAheadChunks:           cfg.CacheReadAheadChunks,
+			NextEpisodePrefetchChunks: cfg.CacheNextEpisodeChunks,
+			FetchTimeout:              cfg.RangeTimeout,
+		})
+	case domain.StorageModeRolling:
+		rangePool, err = cache.NewRollingPool(ctx, cache.RollingOptions{
+			Root: cfg.CacheDir, MaxBytes: cfg.CacheMaxBytes,
+			ChunkBytes: cfg.CacheChunkBytes, ReadAheadChunks: cfg.CacheReadAheadChunks,
+			NextEpisodePrefetchChunks: cfg.CacheNextEpisodeChunks,
+			FetchTimeout:              cfg.RangeTimeout,
+		})
+	default:
+		return fmt.Errorf("unsupported browser storage mode: %q", cfg.StorageMode)
+	}
 	if err != nil {
-		return fmt.Errorf("open shared browser rolling cache: %w", err)
+		return fmt.Errorf("open shared browser range cache: %w", err)
 	}
 	newTorBoxGateway := func(token string) (*torbox.Gateway, error) {
 		client := *deps.torBoxClient
@@ -385,11 +398,11 @@ func runBrowserSetup(ctx context.Context, cfg config.Config, logger *slog.Logger
 		if gatewayErr != nil {
 			return nil, fmt.Errorf("configure selected TorBox source: %w", gatewayErr)
 		}
-		rolling, rollingErr := rollingPool.Source(gateway)
-		if rollingErr != nil {
-			return nil, fmt.Errorf("open selected rolling cache: %w", rollingErr)
+		rangeSource, rangeErr := rangePool.Source(gateway)
+		if rangeErr != nil {
+			return nil, fmt.Errorf("open selected range cache: %w", rangeErr)
 		}
-		catalog := core.NewCatalog(state.NewMemory(), nil, rolling)
+		catalog := core.NewCatalog(state.NewMemory(), nil, rangeSource)
 		for index := range manifest.Items {
 			configuration := manifest.Items[index]
 			backing, backingErr := domain.NewBackingRef("torbox-torrent", configuration.ObjectID)

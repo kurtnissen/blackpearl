@@ -466,7 +466,15 @@ func TestRunBrowserSetupObservesPlexWatchlistWithoutAcquiring(t *testing.T) {
 	t.Cleanup(cancel)
 	result := make(chan error, 1)
 	go func() { result <- run(ctx, cfg, testLogger(), deps) }()
-	address := <-httpAddress
+	var address string
+	select {
+	case address = <-httpAddress:
+	case runErr := <-result:
+		require.NoError(t, runErr)
+		require.FailNow(t, "browser setup stopped before HTTP startup")
+	case <-time.After(5 * time.Second):
+		require.FailNow(t, "browser setup did not start HTTP")
+	}
 	select {
 	case <-requested:
 	case <-time.After(5 * time.Second):
@@ -738,7 +746,15 @@ func TestRunBrowserSetupConfiguresSearchAndAcquiresCachedMovie(t *testing.T) {
 	t.Cleanup(cancel)
 	result := make(chan error, 1)
 	go func() { result <- run(ctx, cfg, testLogger(), deps) }()
-	address := <-httpAddress
+	var address string
+	select {
+	case address = <-httpAddress:
+	case runErr := <-result:
+		require.NoError(t, runErr)
+		require.FailNow(t, "browser setup stopped before HTTP startup")
+	case <-time.After(5 * time.Second):
+		require.FailNow(t, "browser setup did not start HTTP")
+	}
 	client := &http.Client{Timeout: 5 * time.Second}
 	statusResponse, err := client.Get("http://" + address + "/api/setup/status")
 	require.NoError(t, err)
@@ -788,9 +804,18 @@ func TestRunBrowserSetupConfiguresSearchAndAcquiresCachedMovie(t *testing.T) {
 	require.Len(t, persisted.Items, 2)
 }
 
-func TestRunBrowserSetupSelectedMediaSurvivesApplyRequestCancellation(t *testing.T) {
+func TestRunBrowserSetupSelectedMediaUsesConfiguredRangeRetention(t *testing.T) {
+	for _, storageMode := range []domain.StorageMode{domain.StorageModeRolling, domain.StorageModePersistent} {
+		t.Run(string(storageMode), func(t *testing.T) {
+			testRunBrowserSetupSelectedMediaUsesConfiguredRangeRetention(t, storageMode)
+		})
+	}
+}
+
+func testRunBrowserSetupSelectedMediaUsesConfiguredRangeRetention(t *testing.T, storageMode domain.StorageMode) {
 	root := t.TempDir()
 	content := []byte("0123456789abcdef")
+	var contentRangeCalls atomic.Int32
 	var provider *httptest.Server
 	provider = httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
@@ -814,6 +839,7 @@ func TestRunBrowserSetupSelectedMediaSurvivesApplyRequestCancellation(t *testing
 				start, end = 0, 0
 			} else {
 				require.Equal(t, "bytes=8-11", request.Header.Get("Range"))
+				contentRangeCalls.Add(1)
 			}
 			writer.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/16", start, end))
 			writer.Header().Set("Content-Length", fmt.Sprintf("%d", end-start+1))
@@ -827,8 +853,12 @@ func TestRunBrowserSetupSelectedMediaSurvivesApplyRequestCancellation(t *testing
 	t.Cleanup(provider.Close)
 
 	cfg := testConfig(root, "")
-	cfg.StorageMode = domain.StorageModeRolling
-	cfg.CacheMaxBytes = 8
+	cfg.StorageMode = storageMode
+	if storageMode == domain.StorageModeRolling {
+		cfg.CacheMaxBytes = 8
+	} else {
+		cfg.CacheMaxBytes = 0
+	}
 	cfg.CacheChunkBytes = 4
 	cfg.RangeProvider = "torbox-torrent"
 	cfg.FilesystemMode = "nfs"
@@ -859,7 +889,15 @@ func TestRunBrowserSetupSelectedMediaSurvivesApplyRequestCancellation(t *testing
 	t.Cleanup(cancel)
 	result := make(chan error, 1)
 	go func() { result <- run(ctx, cfg, testLogger(), deps) }()
-	address := <-httpAddress
+	var address string
+	select {
+	case address = <-httpAddress:
+	case runErr := <-result:
+		require.NoError(t, runErr)
+		require.FailNow(t, "browser setup stopped before HTTP startup")
+	case <-time.After(5 * time.Second):
+		require.FailNow(t, "browser setup did not start HTTP")
+	}
 	client := &http.Client{Timeout: 5 * time.Second}
 	statusResponse, err := client.Get("http://" + address + "/api/setup/status")
 	require.NoError(t, err)
@@ -895,6 +933,36 @@ func TestRunBrowserSetupSelectedMediaSurvivesApplyRequestCancellation(t *testing
 	require.Equal(t, 4, read)
 	require.Equal(t, content[8:12], buffer)
 	require.NoError(t, handle.Close())
+	require.Equal(t, int32(1), contentRangeCalls.Load())
+
+	secondRequest, err := http.NewRequest(http.MethodPut, "http://"+address+"/api/setup/configuration", bytes.NewBufferString(`{"token":"browser-token","objectId":"17:3","title":"Example","year":2026}`))
+	require.NoError(t, err)
+	secondRequest.Header.Set("Content-Type", "application/json")
+	secondRequest.Header.Set("Origin", "http://"+address)
+	secondRequest.Header.Set("X-BlackPearl-CSRF", status.CSRFToken)
+	secondRequest.Header.Set("X-BlackPearl-Bootstrap", cfg.SetupBootstrapToken)
+	secondResponse, err := client.Do(secondRequest)
+	require.NoError(t, err)
+	secondBody, err := io.ReadAll(secondResponse.Body)
+	require.NoError(t, err)
+	require.NoError(t, secondResponse.Body.Close())
+	require.Equal(t, http.StatusOK, secondResponse.StatusCode, string(secondBody))
+
+	items, err = activeCatalog.List(context.Background())
+	require.NoError(t, err)
+	handle, err = activeCatalog.Open(context.Background(), items[0].VirtualPath)
+	require.NoError(t, err)
+	buffer = make([]byte, 4)
+	read, err = handle.ReadAt(context.Background(), buffer, 8)
+	require.NoError(t, err)
+	require.Equal(t, content[8:12], buffer)
+	require.NoError(t, handle.Close())
+	require.Equal(t, int32(1), contentRangeCalls.Load())
+	cacheNamespace := "rolling"
+	if storageMode == domain.StorageModePersistent {
+		cacheNamespace = "persistent"
+	}
+	require.DirExists(t, filepath.Join(cfg.CacheDir, cacheNamespace))
 
 	cancel()
 	require.NoError(t, <-result)
