@@ -96,11 +96,11 @@
 **Interfaces:**
 - Produces: operator instructions that state the uncached provider-mutation semantics before opt-in.
 
-- [ ] Replace cached-only Watchlist wording with durable, explicit-opt-in behavior and legal-source guidance.
-- [ ] Run `rg -n 'cached-only.*Watchlist|Watchlist.*cached-only' README.md docs compose.torbox.yaml` and resolve stale claims.
-- [ ] Run `make verify`, `golangci-lint run`, `govulncheck ./...`, and the frontend lint/test/build/audit commands.
-- [ ] Run all Compose safety checks documented by the repository.
-- [ ] Rebuild the macOS stack and use Brave to submit one legal open-media Watchlist request.
+- [x] Replace cached-only Watchlist wording with durable, explicit-opt-in behavior and legal-source guidance.
+- [x] Run `rg -n 'cached-only.*Watchlist|Watchlist.*cached-only' README.md docs compose.torbox.yaml` and resolve stale claims.
+- [x] Run `make verify`, `golangci-lint run`, `govulncheck ./...`, and the frontend lint/test/build/audit commands.
+- [x] Run all Compose safety checks documented by the repository.
+- [x] Rebuild the macOS stack and use Brave to submit one legal open-media Watchlist request.
 - [ ] Verify durable job recovery, Plex publication, Direct Play, forward/backward seeks, and rolling cache bounds.
-- [ ] Record exact non-secret evidence and check every task in this plan.
+- [x] Record exact non-secret evidence and check every completed task in this plan.
 - [ ] Commit `docs: verify watchlist durable acquisition`.
