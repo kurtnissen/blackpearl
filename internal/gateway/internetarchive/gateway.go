@@ -36,11 +36,11 @@ type searchEnvelope struct {
 }
 
 type searchDocument struct {
-	Identifier string `json:"identifier"`
-	Title      string `json:"title"`
-	Year       int    `json:"year"`
-	ItemSize   int64  `json:"item_size"`
-	InfoHash   string `json:"btih"`
+	Identifier string          `json:"identifier"`
+	Title      string          `json:"title"`
+	Year       json.RawMessage `json:"year"`
+	ItemSize   int64           `json:"item_size"`
+	InfoHash   string          `json:"btih"`
 }
 
 // New constructs an Internet Archive search gateway without network I/O.
@@ -196,12 +196,13 @@ func quoteSearch(value string) string {
 func archiveRelease(baseURL *url.URL, document searchDocument, search acquisition.SearchRequest) (acquisition.Release, error) {
 	title := strings.TrimSpace(document.Title)
 	if search.Episode() == 0 {
-		if document.Year != search.Year() {
+		year, err := archiveDocumentYear(document.Year)
+		if err != nil || year != search.Year() {
 			return acquisition.Release{}, errors.New("internet Archive result year does not match the request")
 		}
-		year := strconv.Itoa(document.Year)
-		if !strings.Contains(title, year) {
-			title += " (" + year + ")"
+		yearText := strconv.Itoa(year)
+		if !strings.Contains(title, yearText) {
+			title += " (" + yearText + ")"
 		}
 	}
 	values := url.Values{}
@@ -223,6 +224,22 @@ func archiveRelease(baseURL *url.URL, document searchDocument, search acquisitio
 	}
 	input.DownloadURL = downloadURL
 	return acquisition.NewRelease(input)
+}
+
+func archiveDocumentYear(raw json.RawMessage) (int, error) {
+	var numeric int
+	if err := json.Unmarshal(raw, &numeric); err == nil && numeric > 0 {
+		return numeric, nil
+	}
+	var text string
+	if err := json.Unmarshal(raw, &text); err != nil {
+		return 0, errors.New("invalid Internet Archive result year")
+	}
+	numeric, err := strconv.Atoi(text)
+	if err != nil || numeric <= 0 || strconv.Itoa(numeric) != text {
+		return 0, errors.New("invalid Internet Archive result year")
+	}
+	return numeric, nil
 }
 
 func archiveTorrentURL(baseURL *url.URL, identifier string) (string, error) {
