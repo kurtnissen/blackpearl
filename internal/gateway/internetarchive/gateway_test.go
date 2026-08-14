@@ -58,13 +58,16 @@ func TestGatewaySearchNormalizesArchiveBitTorrentResults(t *testing.T) {
 	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		require.Equal(t, "/advancedsearch.php", request.URL.Path)
-		require.Equal(t, `title:"Tears of Steel" AND title:2012 AND format:"Archive BitTorrent"`, request.URL.Query().Get("q"))
+		require.Equal(t, `title:"Tears of Steel" AND year:2012 AND format:"Archive BitTorrent"`, request.URL.Query().Get("q"))
+		require.Contains(t, request.URL.Query()["fl[]"], "year")
 		require.Equal(t, "100", request.URL.Query().Get("rows"))
 		writer.Header().Set("Content-Type", "application/json")
 		_, err := writer.Write([]byte(`{"response":{"docs":[
-			{"identifier":"tears-of-steel_202604","title":"Tears of Steel (2012)","item_size":382260309,"btih":"97542f391e9b4c574e721bf95757fe897b0b43fe"},
-			{"identifier":"invalid","title":"Invalid","item_size":0,"btih":"not-a-hash"},
-			{"identifier":"../outside","title":"Outside (2012)","item_size":1,"btih":"97542f391e9b4c574e721bf95757fe897b0b43fe"}
+			{"identifier":"tears-of-steel_202604","title":"Tears of Steel","year":2012,"item_size":382260309,"btih":"97542f391e9b4c574e721bf95757fe897b0b43fe"},
+			{"identifier":"wrong-year","title":"Tears of Steel","year":2011,"item_size":1,"btih":"97542f391e9b4c574e721bf95757fe897b0b43fe"},
+			{"identifier":"missing-year","title":"Tears of Steel","item_size":1,"btih":"97542f391e9b4c574e721bf95757fe897b0b43fe"},
+			{"identifier":"invalid","title":"Invalid","year":2012,"item_size":0,"btih":"not-a-hash"},
+			{"identifier":"../outside","title":"Outside","year":2012,"item_size":1,"btih":"97542f391e9b4c574e721bf95757fe897b0b43fe"}
 		]}}`))
 		require.NoError(t, err)
 	}))

@@ -38,6 +38,7 @@ type searchEnvelope struct {
 type searchDocument struct {
 	Identifier string `json:"identifier"`
 	Title      string `json:"title"`
+	Year       int    `json:"year"`
 	ItemSize   int64  `json:"item_size"`
 	InfoHash   string `json:"btih"`
 }
@@ -81,6 +82,7 @@ func (g *Gateway) Search(ctx context.Context, search acquisition.SearchRequest) 
 	query.Set("q", archiveQuery(search))
 	query.Add("fl[]", "identifier")
 	query.Add("fl[]", "title")
+	query.Add("fl[]", "year")
 	query.Add("fl[]", "item_size")
 	query.Add("fl[]", "btih")
 	query.Set("sort", "-downloads")
@@ -115,7 +117,7 @@ func (g *Gateway) Search(ctx context.Context, search acquisition.SearchRequest) 
 	}
 	releases := make([]acquisition.Release, 0, len(envelope.Response.Docs))
 	for _, document := range envelope.Response.Docs {
-		release, releaseErr := archiveRelease(g.baseURL, document)
+		release, releaseErr := archiveRelease(g.baseURL, document, search)
 		if releaseErr == nil {
 			releases = append(releases, release)
 		}
@@ -183,7 +185,7 @@ func archiveQuery(search acquisition.SearchRequest) string {
 		episode := fmt.Sprintf("S%02dE%02d", search.Season(), search.Episode())
 		return fmt.Sprintf(`title:%s AND title:%q AND format:"Archive BitTorrent"`, title, episode)
 	}
-	return fmt.Sprintf(`title:%s AND title:%d AND format:"Archive BitTorrent"`, title, search.Year())
+	return fmt.Sprintf(`title:%s AND year:%d AND format:"Archive BitTorrent"`, title, search.Year())
 }
 
 func quoteSearch(value string) string {
@@ -191,12 +193,22 @@ func quoteSearch(value string) string {
 	return `"` + escaped + `"`
 }
 
-func archiveRelease(baseURL *url.URL, document searchDocument) (acquisition.Release, error) {
+func archiveRelease(baseURL *url.URL, document searchDocument, search acquisition.SearchRequest) (acquisition.Release, error) {
+	title := strings.TrimSpace(document.Title)
+	if search.Episode() == 0 {
+		if document.Year != search.Year() {
+			return acquisition.Release{}, errors.New("internet Archive result year does not match the request")
+		}
+		year := strconv.Itoa(document.Year)
+		if !strings.Contains(title, year) {
+			title += " (" + year + ")"
+		}
+	}
 	values := url.Values{}
 	values.Set("xt", "urn:btih:"+document.InfoHash)
 	values.Set("dn", document.Identifier)
 	input := acquisition.ReleaseInput{
-		Provider: providerName, SourceID: document.Identifier, Title: document.Title,
+		Provider: providerName, SourceID: document.Identifier, Title: title,
 		Protocol: acquisition.ReleaseProtocolTorrent, Size: document.ItemSize,
 		Indexer: internetArchiveTag, InfoHash: document.InfoHash,
 		MagnetURL: "magnet:?" + values.Encode(),
