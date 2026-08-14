@@ -29,25 +29,26 @@ func (p Plex) Enabled() bool {
 
 // Config contains all process configuration.
 type Config struct {
-	DataDir         string             `env:"BLACKPEARL_DATA_DIR" envDefault:"/var/lib/blackpearl"`
-	DBPath          string             `env:"BLACKPEARL_DB_PATH" envDefault:"/var/lib/blackpearl/blackpearl.db"`
-	CacheDir        string             `env:"BLACKPEARL_CACHE_DIR" envDefault:"/var/lib/blackpearl/cache"`
-	MountPath       string             `env:"BLACKPEARL_MOUNT_PATH" envDefault:"/mnt/blackpearl"`
-	POCSource       string             `env:"BLACKPEARL_POC_SOURCE"`
-	HTTPAddr        string             `env:"BLACKPEARL_HTTP_ADDR" envDefault:":8080"`
-	LogLevel        string             `env:"BLACKPEARL_LOG_LEVEL" envDefault:"info"`
-	StorageMode     domain.StorageMode `env:"BLACKPEARL_STORAGE_MODE" envDefault:"persistent"`
-	CacheMaxBytes   int64              `env:"BLACKPEARL_CACHE_MAX_BYTES" envDefault:"0"`
-	CacheChunkBytes int64              `env:"BLACKPEARL_CACHE_CHUNK_BYTES" envDefault:"262144"`
-	RangeProvider   string             `env:"BLACKPEARL_RANGE_PROVIDER" envDefault:"http-range"`
-	RangeOriginURL  string             `env:"BLACKPEARL_RANGE_ORIGIN_URL"`
-	RangeObjectID   string             `env:"BLACKPEARL_RANGE_OBJECT_ID"`
-	RangeTimeout    time.Duration      `env:"BLACKPEARL_RANGE_TIMEOUT" envDefault:"30s"`
-	TorBoxAPIURL    string             `env:"BLACKPEARL_TORBOX_API_URL" envDefault:"https://api.torbox.app/v1/api/"`
-	TorBoxAPIToken  string             `env:"BLACKPEARL_TORBOX_API_TOKEN"`
-	FilesystemMode  string             `env:"BLACKPEARL_FILESYSTEM_MODE" envDefault:"fuse"`
-	NFSAddr         string             `env:"BLACKPEARL_NFS_ADDR" envDefault:":2049"`
-	Plex            Plex
+	DataDir            string             `env:"BLACKPEARL_DATA_DIR" envDefault:"/var/lib/blackpearl"`
+	DBPath             string             `env:"BLACKPEARL_DB_PATH" envDefault:"/var/lib/blackpearl/blackpearl.db"`
+	CacheDir           string             `env:"BLACKPEARL_CACHE_DIR" envDefault:"/var/lib/blackpearl/cache"`
+	MountPath          string             `env:"BLACKPEARL_MOUNT_PATH" envDefault:"/mnt/blackpearl"`
+	POCSource          string             `env:"BLACKPEARL_POC_SOURCE"`
+	HTTPAddr           string             `env:"BLACKPEARL_HTTP_ADDR" envDefault:":8080"`
+	LogLevel           string             `env:"BLACKPEARL_LOG_LEVEL" envDefault:"info"`
+	StorageMode        domain.StorageMode `env:"BLACKPEARL_STORAGE_MODE" envDefault:"persistent"`
+	CacheMaxBytes      int64              `env:"BLACKPEARL_CACHE_MAX_BYTES" envDefault:"0"`
+	CacheChunkBytes    int64              `env:"BLACKPEARL_CACHE_CHUNK_BYTES" envDefault:"262144"`
+	RangeProvider      string             `env:"BLACKPEARL_RANGE_PROVIDER" envDefault:"http-range"`
+	RangeOriginURL     string             `env:"BLACKPEARL_RANGE_ORIGIN_URL"`
+	RangeObjectID      string             `env:"BLACKPEARL_RANGE_OBJECT_ID"`
+	RangeTimeout       time.Duration      `env:"BLACKPEARL_RANGE_TIMEOUT" envDefault:"30s"`
+	TorBoxAPIURL       string             `env:"BLACKPEARL_TORBOX_API_URL" envDefault:"https://api.torbox.app/v1/api/"`
+	TorBoxAPIToken     string             `env:"BLACKPEARL_TORBOX_API_TOKEN"`
+	TorBoxAPITokenFile string             `env:"BLACKPEARL_TORBOX_API_TOKEN_FILE"`
+	FilesystemMode     string             `env:"BLACKPEARL_FILESYSTEM_MODE" envDefault:"fuse"`
+	NFSAddr            string             `env:"BLACKPEARL_NFS_ADDR" envDefault:":2049"`
+	Plex               Plex
 }
 
 // Load parses configuration from the current process environment.
@@ -94,7 +95,7 @@ func (c Config) validate() error {
 		if c.CacheMaxBytes < 0 {
 			return errors.New("BLACKPEARL_CACHE_MAX_BYTES must not be negative")
 		}
-		if c.TorBoxAPIToken != "" || c.RangeProvider != "http-range" {
+		if c.TorBoxAPIToken != "" || c.TorBoxAPITokenFile != "" || c.RangeProvider != "http-range" {
 			return errors.New("BLACKPEARL_TORBOX_API_TOKEN and non-default BLACKPEARL_RANGE_PROVIDER require rolling mode")
 		}
 		if c.RangeOriginURL != "" || c.RangeObjectID != "" {
@@ -118,8 +119,8 @@ func (c Config) validate() error {
 		}
 		switch c.RangeProvider {
 		case "http-range":
-			if c.TorBoxAPIToken != "" {
-				return errors.New("BLACKPEARL_TORBOX_API_TOKEN requires BLACKPEARL_RANGE_PROVIDER=torbox-torrent")
+			if c.TorBoxAPIToken != "" || c.TorBoxAPITokenFile != "" {
+				return errors.New("BLACKPEARL_TORBOX_API_TOKEN and BLACKPEARL_TORBOX_API_TOKEN_FILE require BLACKPEARL_RANGE_PROVIDER=torbox-torrent")
 			}
 			origin, err := url.Parse(c.RangeOriginURL)
 			if err != nil || (origin.Scheme != "http" && origin.Scheme != "https") || origin.Host == "" {
@@ -129,8 +130,16 @@ func (c Config) validate() error {
 			if c.RangeOriginURL != "" {
 				return errors.New("BLACKPEARL_RANGE_ORIGIN_URL must be empty with BLACKPEARL_RANGE_PROVIDER=torbox-torrent")
 			}
-			if strings.TrimSpace(c.TorBoxAPIToken) == "" || strings.TrimSpace(c.TorBoxAPIToken) != c.TorBoxAPIToken {
+			hasInlineToken := c.TorBoxAPIToken != ""
+			hasTokenFile := c.TorBoxAPITokenFile != ""
+			if hasInlineToken == hasTokenFile {
+				return errors.New("exactly one of BLACKPEARL_TORBOX_API_TOKEN or BLACKPEARL_TORBOX_API_TOKEN_FILE is required")
+			}
+			if hasInlineToken && (strings.TrimSpace(c.TorBoxAPIToken) == "" || strings.TrimSpace(c.TorBoxAPIToken) != c.TorBoxAPIToken) {
 				return errors.New("BLACKPEARL_TORBOX_API_TOKEN is required without surrounding whitespace")
+			}
+			if hasTokenFile && !filepath.IsAbs(c.TorBoxAPITokenFile) {
+				return errors.New("BLACKPEARL_TORBOX_API_TOKEN_FILE must be an absolute path")
 			}
 			torboxURL, err := url.Parse(c.TorBoxAPIURL)
 			if err != nil || torboxURL.Scheme != "https" || torboxURL.Host == "" || torboxURL.User != nil || torboxURL.RawQuery != "" || torboxURL.Fragment != "" {

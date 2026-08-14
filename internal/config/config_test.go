@@ -116,6 +116,65 @@ func TestParseAcceptsCompleteRollingTorBoxConfiguration(t *testing.T) {
 	require.Empty(t, cfg.RangeOriginURL)
 }
 
+func TestParseAcceptsRollingTorBoxSecretFile(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := config.Parse(map[string]string{
+		"BLACKPEARL_STORAGE_MODE":          "rolling",
+		"BLACKPEARL_CACHE_MAX_BYTES":       "42949672960",
+		"BLACKPEARL_RANGE_PROVIDER":        "torbox-torrent",
+		"BLACKPEARL_RANGE_OBJECT_ID":       "17:3",
+		"BLACKPEARL_TORBOX_API_TOKEN_FILE": "/run/secrets/torbox_api_token",
+	})
+
+	require.NoError(t, err)
+	require.Empty(t, cfg.TorBoxAPIToken)
+	require.Equal(t, "/run/secrets/torbox_api_token", cfg.TorBoxAPITokenFile)
+}
+
+func TestParseRejectsInvalidTorBoxSecretFileConfiguration(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name        string
+		environment map[string]string
+		message     string
+	}{
+		{
+			name: "inline and file token",
+			environment: map[string]string{
+				"BLACKPEARL_STORAGE_MODE":          "rolling",
+				"BLACKPEARL_CACHE_MAX_BYTES":       "1048576",
+				"BLACKPEARL_RANGE_PROVIDER":        "torbox-torrent",
+				"BLACKPEARL_RANGE_OBJECT_ID":       "17:3",
+				"BLACKPEARL_TORBOX_API_TOKEN":      "secret-token",
+				"BLACKPEARL_TORBOX_API_TOKEN_FILE": "/run/secrets/torbox_api_token",
+			},
+			message: "exactly one",
+		},
+		{
+			name: "relative file",
+			environment: map[string]string{
+				"BLACKPEARL_STORAGE_MODE":          "rolling",
+				"BLACKPEARL_CACHE_MAX_BYTES":       "1048576",
+				"BLACKPEARL_RANGE_PROVIDER":        "torbox-torrent",
+				"BLACKPEARL_RANGE_OBJECT_ID":       "17:3",
+				"BLACKPEARL_TORBOX_API_TOKEN_FILE": "secrets/torbox_api_token",
+			},
+			message: "absolute path",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := config.Parse(test.environment)
+
+			require.ErrorContains(t, err, test.message)
+			require.NotContains(t, err.Error(), "secret-token")
+		})
+	}
+}
+
 func TestParseRejectsInvalidRollingTorBoxConfiguration(t *testing.T) {
 	t.Parallel()
 	valid := map[string]string{

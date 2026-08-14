@@ -20,8 +20,9 @@ export BLACKPEARL_RANGE_OBJECT_ID='torrent-id:file-id'
 ```
 
 BlackPearl keeps the API token and temporary CDN links out of SQLite, cache
-paths, application logs, and telemetry. Docker necessarily receives the token
-as a container environment variable, so do not commit it to an env file.
+paths, application logs, telemetry, and the container environment. Compose
+creates a read-only in-memory secret from the shell variable and mounts it at
+`/run/secrets/torbox_api_token`; do not commit the token to an env file.
 
 ## Run it
 

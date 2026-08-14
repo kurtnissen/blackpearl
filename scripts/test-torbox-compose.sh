@@ -23,7 +23,10 @@ assert blackpearl["build"]["target"] == "runtime"
 assert environment["BLACKPEARL_STORAGE_MODE"] == "rolling"
 assert environment["BLACKPEARL_RANGE_PROVIDER"] == "torbox-torrent"
 assert environment["BLACKPEARL_RANGE_OBJECT_ID"] == "17:3"
-assert environment["BLACKPEARL_TORBOX_API_TOKEN"] == "test-token"
+assert environment["BLACKPEARL_TORBOX_API_TOKEN_FILE"] == "/run/secrets/torbox_api_token"
+assert "BLACKPEARL_TORBOX_API_TOKEN" not in environment
+assert any(secret["target"] == "/run/secrets/torbox_api_token" for secret in blackpearl["secrets"])
+assert model["secrets"]["torbox_api_token"]["environment"] == "BLACKPEARL_TORBOX_API_TOKEN"
 assert "BLACKPEARL_RANGE_ORIGIN_URL" not in environment
 assert all(volume.get("type") == "volume" for volume in blackpearl.get("volumes", []))
 assert not blackpearl.get("devices")

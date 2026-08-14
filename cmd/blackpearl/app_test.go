@@ -297,6 +297,41 @@ func TestDefaultDependenciesKeepTorBoxTrafficOutOfInstrumentedClient(t *testing.
 	require.Equal(t, fmt.Sprintf("%T", http.DefaultTransport), fmt.Sprintf("%T", deps.torBoxClient.Transport))
 }
 
+func TestResolveTorBoxTokenReadsDockerSecretWithoutReturningNewline(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "torbox-token")
+	require.NoError(t, os.WriteFile(path, []byte("file-secret\n"), 0o600))
+	cfg := config.Config{TorBoxAPITokenFile: path}
+
+	token, err := resolveTorBoxToken(context.Background(), cfg)
+
+	require.NoError(t, err)
+	require.Equal(t, "file-secret", token)
+}
+
+func TestResolveTorBoxTokenRejectsUnsafeSecretFilesWithoutExposingContents(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		content []byte
+	}{
+		{name: "surrounding whitespace", content: []byte(" secret-value\n")},
+		{name: "oversized", content: bytes.Repeat([]byte("x"), 4097)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			path := filepath.Join(t.TempDir(), "torbox-token")
+			require.NoError(t, os.WriteFile(path, test.content, 0o600))
+
+			_, err := resolveTorBoxToken(context.Background(), config.Config{TorBoxAPITokenFile: path})
+
+			require.Error(t, err)
+			require.NotContains(t, err.Error(), "secret-value")
+		})
+	}
+}
+
 func TestRunValidatesModeAndDependenciesBeforeCreatingPaths(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()

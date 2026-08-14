@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"os"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -146,9 +148,13 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger, deps depen
 		case "torbox-torrent":
 			torBoxClient := *deps.torBoxClient
 			torBoxClient.Timeout = cfg.RangeTimeout
+			torBoxToken, tokenErr := resolveTorBoxToken(ctx, cfg)
+			if tokenErr != nil {
+				return tokenErr
+			}
 			torboxGateway, gatewayErr := torbox.New(torbox.Options{
 				APIBaseURL:  cfg.TorBoxAPIURL,
-				APIToken:    cfg.TorBoxAPIToken,
+				APIToken:    torBoxToken,
 				MetadataTTL: time.Minute,
 				LinkTTL:     2 * time.Hour,
 			}, &torBoxClient)
@@ -271,6 +277,32 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger, deps depen
 		}
 	}
 	return runErr
+}
+
+func resolveTorBoxToken(ctx context.Context, cfg config.Config) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", fmt.Errorf("read TorBox API token: %w", err)
+	}
+	if cfg.TorBoxAPITokenFile == "" {
+		return cfg.TorBoxAPIToken, nil
+	}
+	file, err := os.Open(cfg.TorBoxAPITokenFile)
+	if err != nil {
+		return "", errors.New("open BLACKPEARL_TORBOX_API_TOKEN_FILE")
+	}
+	defer func() { _ = file.Close() }()
+	content, err := io.ReadAll(io.LimitReader(file, 4097))
+	if err != nil {
+		return "", errors.New("read BLACKPEARL_TORBOX_API_TOKEN_FILE")
+	}
+	if len(content) > 4096 {
+		return "", errors.New("BLACKPEARL_TORBOX_API_TOKEN_FILE exceeds 4096 bytes")
+	}
+	token := strings.TrimSuffix(string(content), "\n")
+	if token == "" || strings.TrimSpace(token) != token {
+		return "", errors.New("BLACKPEARL_TORBOX_API_TOKEN_FILE must contain one token without surrounding whitespace")
+	}
+	return token, nil
 }
 
 type readyCatalog interface {
