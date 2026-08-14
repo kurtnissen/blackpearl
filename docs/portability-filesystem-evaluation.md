@@ -161,10 +161,11 @@ adapter or deployment constraint; **no** fails a critical requirement.
 |---|---|---|
 | macOS Docker Desktop | Confirmed | Compose NFS-volume probe, official Plex scan, and original-media range response passed. |
 | Windows Docker Desktop, Linux containers | Architecturally compatible; unconfirmed | The mount occurs in Docker Desktop's Linux daemon/WSL2 environment, not on the Windows host. Run the acceptance suite on a Windows machine before claiming support. |
-| Native Linux Docker | Supported by Docker's documented local NFS volume mechanism; locally unconfirmed | Run the same Compose and Plex acceptance suite on the target distro/kernel. |
+| Native Linux Docker | Confirmed server-side on Ubuntu 24.04 AMD64 | A disposable hosted run mounted PearlFS into the official Plex container, indexed the fixture, matched a non-sequential Plex-served range, logged `Direct play OK`, and verified clean unmount. A human-visible remote client session was outside that runner's scope. |
 
-The Windows and native-Linux rows are deliberately not marked confirmed until
-they have runtime evidence.
+Windows remains deliberately unconfirmed until it has Docker Desktop runtime
+evidence. Native Linux has server-side runtime evidence; its remaining client
+gate is kept distinct rather than inferred from the Plex decision log.
 
 ## Production design constraints
 

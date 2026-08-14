@@ -167,7 +167,9 @@ failures retry in the background and never roll back a published manifest.
 Docker Desktop uses the default host endpoint
 `http://host.docker.internal:32402`; native Linux deployments should override
 `BLACKPEARL_PLEX_REFRESH_URL` with an endpoint reachable from the BlackPearl
-container. Windows Docker Desktop and native Linux remain unverified.
+container. The native Ubuntu server path has passed isolated hosted acceptance;
+Windows Docker Desktop and a human-visible client session against the hosted
+Ubuntu server remain unverified.
 
 The token and manifest are stored with private permissions only inside
 the named BlackPearl data volume. It is never returned to the browser after
@@ -199,8 +201,10 @@ cd web && bun install --frozen-lockfile && bun run lint && bun run test && bun r
 
 The GitHub Actions workflow additionally validates every Compose profile, runs
 the privileged Linux FUSE smoke test, and builds both Linux AMD64 and ARM64
-images. Local Buildx success is recorded separately from hosted CI, and neither
-is presented as Windows Docker Desktop or native-Linux Plex acceptance.
+images. A separate disposable hosted-Ubuntu acceptance run proves the native
+Linux FUSE-to-Plex server path. Neither image-build evidence nor that
+server-side run is presented as Windows Docker Desktop acceptance or as a
+human-visible remote Plex client session.
 
 ## Ubuntu Plex POC
 
