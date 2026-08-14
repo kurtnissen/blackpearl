@@ -9,10 +9,12 @@ Tested from `main` on an Apple Silicon Mac with Docker Desktop's Linux ARM64 VM.
 | Gate | Result | Evidence |
 |---|---|---|
 | Go race tests | Pass | `go test -race ./...` |
-| Go coverage | Pass | 81.6% of project statements from `go test -coverprofile=coverage.out ./...`; generated Go code inside `web/node_modules` is excluded from the project floor |
-| Static analysis | Pass | `go vet ./...` |
+| Go coverage | Pass | 82.0% of project statements from `go test -coverprofile=coverage.out ./...`; generated Go code inside `web/node_modules` is excluded from the project floor |
+| Static analysis | Pass | `go vet ./...`, Actionlint 1.7.7, and golangci-lint 2.12.2 with zero findings |
+| Dependency security | Pass locally | Go 1.26.6 plus updated OpenTelemetry, gRPC, Go networking, and go-billy modules produced `No vulnerabilities found` from govulncheck 1.7.0; `bun audit --production` also reported no vulnerabilities. |
 | Compose isolation | Pass | Rendered configuration checked by `scripts/test-compose-paths.sh`; every bind is under `runtime/`, Plex media is read-only `rslave`, and only BlackPearl receives FUSE privileges |
 | POC image build | Pass | `blackpearl:poc` built for local Linux ARM64 |
+| Portable runtime image matrix | Pass locally | Docker Buildx completed the `runtime` target for both `linux/amd64` and `linux/arm64` using the pinned Go 1.26.6 builder. This is local evidence, not hosted CI evidence. |
 | Fixture media profile | Pass | 1280x720 H.264 `yuv420p` video, AAC 48 kHz mono audio, MP4 fast-start fixture |
 | Packaged FUSE bytes | Pass | The exact POC image mounted FUSE in a privileged Linux container; fixture and virtual SHA-256 matched and non-sequential range hashes matched |
 | Large logical object regression | Pass | PearlFS test read the final four bytes of a generated 1 TiB logical object without storing the object |
@@ -68,6 +70,7 @@ Tested from `main` on an Apple Silicon Mac with Docker Desktop's Linux ARM64 VM.
 | Automatic Plex library refresh | Pass in race tests and live macOS Compose | After a BlackPearl rebuild restored the published manifest, Plex recorded HTTP 200 refresh requests for movie section 2 and TV section 3. The gateway matches only the two exact BlackPearl roots, keeps the token in a request header, refuses redirects, and the coalescing worker retries independently of publication. Brave then confirmed both libraries remained visible; the known H.264/AAC movie played and a forward seek advanced from 18:45 to 19:18 before playback was paused. |
 | Provider-backed persistent retention | Pass in race tests and live macOS Compose | Persistent browser setup retained verified provider chunks without eviction in a namespace separate from rolling cache data. Through the Plex NFS mount, 1 MiB reads at blocks 0, 177, and 352 of a 371,277,147-byte logical movie produced identical SHA-256 values before and after a BlackPearl restart; repeating those reads left the recovered cache at 115 chunks and 114,916 KiB. Brave played the known H.264/AAC movie and a forward seek advanced from 19:26 to 19:59 before playback was paused. The stack was then restored to its normal 40 GiB rolling profile. |
 | Playback-aware read-ahead | Pass in repeated race tests and live macOS Brave | Five consecutive cache race runs prove a discontinuous seek and handle close cancel blocked stale read-ahead, sequential reads retain their useful window, and a second foreground reader retries instead of receiving the cancellation. After rebuilding the normal rolling stack, Brave advanced the known Direct Play-compatible movie from about 20:27 to 40:41 through a far seek and continued to 40:48 before playback was paused. Rolling storage remained 749,836 KiB against a 40 GiB hard quota. |
+| Patched release-candidate regression | Pass locally on macOS | Candidate `244fcbc` rebuilt with Go 1.26.6, restored the saved manifest, and returned healthy/ready. Brave resumed the known Direct Play-compatible movie, remained playing through four 30-second forward seeks, and was paused after verification. The rolling cache held 767 chunks and 782,604 KiB against its 40 GiB quota. The existing Plex session retained its previously recorded `MDE=1000,Direct play OK` decision; hosted CI, Windows, and native-Linux runtime acceptance remain separate. |
 | Cross-container Plex mount | Pending Ubuntu | Docker Desktop bind propagation cannot prove this Linux-host behavior |
 
 The current result includes locally verified FUSE and portable NFS adapters, persistent and rolling macOS Plex playback, strict random-range retrieval, a live hard-quota test, eviction, and refetch evidence. The rolling client test completed the eight-second fixture; explicit rolling-client forward/backward seek evidence remains to be captured with a longer fixture. Windows and native-Linux portability remain unverified.
@@ -82,7 +85,10 @@ The current result includes locally verified FUSE and portable NFS adapters, per
 - [x] Race tests pass.
 - [x] Coverage is at least 80%.
 - [x] `go vet` passes.
+- [x] golangci-lint and Actionlint pass locally with zero findings.
+- [x] Govulncheck and the production Bun dependency audit report no vulnerabilities.
 - [x] Compose safety checks pass.
+- [x] Local Docker Buildx produces Linux AMD64 and ARM64 runtime images.
 - [x] Kernel-mounted FUSE reads exact complete bytes and arbitrary offsets.
 - [x] Containerized fixture has the intended H.264/AAC profile.
 - [x] Portable Docker profile mounts PearlNFS into an unmodified Plex image.

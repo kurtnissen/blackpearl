@@ -154,6 +154,23 @@ BLACKPEARL_RANGE_OBJECT_ID='torrent-id:file-id' \
 See [the macOS TorBox runbook](docs/macos-torbox-poc.md) for object selection,
 cache sizing, Plex setup, and cleanup.
 
+## Release verification
+
+The repository pins Go 1.26.6 for local, container, and kernel-FUSE builds. Run
+the complete local release checks before publishing a candidate:
+
+```bash
+make verify
+go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2 run
+go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...
+cd web && bun install --frozen-lockfile && bun run lint && bun run test && bun run build && bun audit --production
+```
+
+The GitHub Actions workflow additionally validates every Compose profile, runs
+the privileged Linux FUSE smoke test, and builds both Linux AMD64 and ARM64
+images. Local Buildx success is recorded separately from hosted CI, and neither
+is presented as Windows Docker Desktop or native-Linux Plex acceptance.
+
 ## Ubuntu Plex POC
 
 Use a fresh Ubuntu Server and the isolated acceptance stack. Do not point these files at production media or Plex configuration.
