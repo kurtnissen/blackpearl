@@ -144,6 +144,9 @@ func (w *Worker) ProcessOne(ctx context.Context) (acquisition.JobState, error) {
 	if (providers.DirectResolver == nil) != (providers.RangePreparer == nil) {
 		return w.deferProviderFailure(ctx, claim, errors.New("direct range provider set is incomplete"))
 	}
+	if claim.Job().State() != acquisition.JobStateQueued && claim.Job().Selection().Kind() == acquisition.SelectionKindRange && providers.RangePreparer == nil {
+		return w.deferProviderFailure(ctx, claim, errors.New("direct range provider is disabled"))
+	}
 	switch claim.Job().State() {
 	case acquisition.JobStateQueued:
 		return w.resolve(ctx, operationContext, claim, providers)
@@ -295,6 +298,12 @@ func (w *Worker) prepare(ctx context.Context, operationContext context.Context, 
 			}
 			return w.fail(ctx, claim, acquisition.JobErrorNoPlayableMedia, false)
 		}
+		if errors.Is(err, acquisition.ErrRangeUnplayable) {
+			if _, planned := claim.Job().SelectedCandidateOrdinal(); planned {
+				return w.abandonCandidate(ctx, operationContext, claim, providers.Preparer, acquisition.CandidateOutcomeMissing, acquisition.JobErrorNoPlayableMedia, true)
+			}
+			return w.fail(ctx, claim, acquisition.JobErrorNoPlayableMedia, false)
+		}
 		return w.deferProviderFailure(ctx, claim, err)
 	}
 	if selection.Kind() != acquisition.SelectionKindTorrent {
@@ -409,6 +418,12 @@ func (w *Worker) publishRange(ctx context.Context, operationContext context.Cont
 	if errors.Is(err, domain.ErrNotFound) {
 		if _, planned := claim.Job().SelectedCandidateOrdinal(); planned {
 			return w.abandonCandidate(ctx, operationContext, claim, providers.Preparer, acquisition.CandidateOutcomeMissing, acquisition.JobErrorNoPlayableMedia, true)
+		}
+		return w.fail(ctx, claim, acquisition.JobErrorNoPlayableMedia, false)
+	}
+	if errors.Is(err, acquisition.ErrRangeUnplayable) {
+		if _, planned := claim.Job().SelectedCandidateOrdinal(); planned {
+			return w.abandonCandidate(ctx, operationContext, claim, providers.Preparer, acquisition.CandidateOutcomeUnplayable, acquisition.JobErrorNoPlayableMedia, true)
 		}
 		return w.fail(ctx, claim, acquisition.JobErrorNoPlayableMedia, false)
 	}

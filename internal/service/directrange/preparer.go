@@ -52,7 +52,7 @@ func (p *Preparer) Inspect(
 		return acquisition.PreparationInspection{}, errors.New("direct range inspection requires a range selection")
 	}
 	if candidate.Media().Backing() != created.Backing() {
-		return acquisition.PreparationInspection{}, errors.New("direct range provider object does not match the selection")
+		return acquisition.PreparationInspection{}, fmt.Errorf("direct range provider object does not match the selection: %w", acquisition.ErrRangeUnplayable)
 	}
 	if err := p.verify(ctx, candidate); err != nil {
 		return acquisition.PreparationInspection{}, err
@@ -76,6 +76,9 @@ func (p *Preparer) verify(ctx context.Context, candidate acquisition.RangeCandid
 		if errors.Is(err, domain.ErrNotFound) {
 			return fmt.Errorf("open direct range media: %w", domain.ErrNotFound)
 		}
+		if errors.Is(err, acquisition.ErrRangeUnplayable) {
+			return fmt.Errorf("open direct range media: %w", acquisition.ErrRangeUnplayable)
+		}
 		return errors.New("open direct range media is unavailable")
 	}
 	defer func() {
@@ -84,10 +87,10 @@ func (p *Preparer) verify(ctx context.Context, candidate acquisition.RangeCandid
 		}
 	}()
 	if source.Size() != candidate.Media().Size {
-		return fmt.Errorf("direct range media size changed: got %d want %d", source.Size(), candidate.Media().Size)
+		return fmt.Errorf("direct range media size changed: got %d want %d: %w", source.Size(), candidate.Media().Size, acquisition.ErrRangeUnplayable)
 	}
 	if strings.TrimSpace(source.Validator()) == "" {
-		return errors.New("direct range media requires an immutable validator")
+		return fmt.Errorf("direct range media requires an immutable validator: %w", acquisition.ErrRangeUnplayable)
 	}
 	return nil
 }

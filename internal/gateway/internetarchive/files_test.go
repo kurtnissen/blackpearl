@@ -51,7 +51,15 @@ func TestGatewayListsLicensedExactMediaFilesInStableOrder(t *testing.T) {
 
 func TestGatewayRejectsMissingOrUnsupportedArchiveLicense(t *testing.T) {
 	t.Parallel()
-	for _, license := range []string{"", "https://example.test/all-rights-reserved"} {
+	for _, license := range []string{
+		"",
+		"https://example.test/all-rights-reserved",
+		"https://creativecommons.org/licenses/not-a-license",
+		"https://creativecommons.org/licenses/by/banana",
+		"https://creativecommons.org/licenses/by/4.0/extra",
+		"https://creativecommons.org/publicdomain/nope/1.0/",
+		"https://creativecommons.org:444/licenses/by/4.0/",
+	} {
 		license := license
 		t.Run(fmt.Sprintf("license-%d", len(license)), func(t *testing.T) {
 			t.Parallel()

@@ -178,6 +178,81 @@ func TestWorkerAdvancesMissingDirectRangeWithoutDeletingRemoteMedia(t *testing.T
 	require.Zero(t, provider.deleteCalls)
 }
 
+func TestWorkerAdvancesPermanentlyUnplayableDirectRange(t *testing.T) {
+	t.Parallel()
+	for _, stage := range []string{"selected", "preparing"} {
+		stage := stage
+		t.Run(stage, func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+			repository, now, jobID := queuedJob(t, ctx)
+			provider := &fakeJobProvider{releases: []acquisition.Release{mustJobRelease(t)}}
+			candidate := mustWorkerRangeCandidate(t)
+			created, err := acquisition.NewCreatedObject(candidate.Media().Backing().Provider, candidate.Media().ObjectID)
+			require.NoError(t, err)
+			direct := &fakeDirectWorkerProvider{resolved: []acquisition.RangeCandidate{candidate}, created: created}
+			worker := newDirectJobWorker(t, repository, provider, direct, &fakeJobPublisher{}, now)
+			state, err := worker.ProcessOne(ctx)
+			require.NoError(t, err)
+			require.Equal(t, acquisition.JobStateSelected, state)
+			if stage == "preparing" {
+				state, err = worker.ProcessOne(ctx)
+				require.NoError(t, err)
+				require.Equal(t, acquisition.JobStatePreparing, state)
+				direct.inspectErr = acquisition.ErrRangeUnplayable
+			} else {
+				direct.prepareErr = acquisition.ErrRangeUnplayable
+			}
+
+			state, err = worker.ProcessOne(ctx)
+
+			require.NoError(t, err)
+			require.Equal(t, acquisition.JobStateSelected, state)
+			next, err := repository.Get(ctx, jobID)
+			require.NoError(t, err)
+			require.Equal(t, acquisition.SelectionKindTorrent, next.Selection().Kind())
+			require.Zero(t, provider.deleteCalls)
+		})
+	}
+}
+
+func TestWorkerDefersPersistedDirectRangeWhenOptionalProviderIsDisabled(t *testing.T) {
+	t.Parallel()
+	for _, stage := range []string{"selected", "preparing"} {
+		stage := stage
+		t.Run(stage, func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+			repository, now, jobID := queuedJob(t, ctx)
+			provider := &fakeJobProvider{releases: []acquisition.Release{mustJobRelease(t)}}
+			candidate := mustWorkerRangeCandidate(t)
+			created, err := acquisition.NewCreatedObject(candidate.Media().Backing().Provider, candidate.Media().ObjectID)
+			require.NoError(t, err)
+			direct := &fakeDirectWorkerProvider{resolved: []acquisition.RangeCandidate{candidate}, created: created}
+			directWorker := newDirectJobWorker(t, repository, provider, direct, &fakeJobPublisher{}, now)
+			state, err := directWorker.ProcessOne(ctx)
+			require.NoError(t, err)
+			require.Equal(t, acquisition.JobStateSelected, state)
+			if stage == "preparing" {
+				state, err = directWorker.ProcessOne(ctx)
+				require.NoError(t, err)
+				require.Equal(t, acquisition.JobStatePreparing, state)
+			}
+
+			state, err = newJobWorker(t, repository, provider, &fakeJobPublisher{}, now).ProcessOne(ctx)
+
+			require.NoError(t, err)
+			require.Equal(t, map[string]acquisition.JobState{
+				"selected":  acquisition.JobStateSelected,
+				"preparing": acquisition.JobStatePreparing,
+			}[stage], state)
+			deferred, err := repository.Get(ctx, jobID)
+			require.NoError(t, err)
+			require.Equal(t, acquisition.JobErrorProviderUnavailable, deferred.ErrorCode())
+		})
+	}
+}
+
 func TestWorkerDefersTransientDirectRangePreparation(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

@@ -34,7 +34,7 @@ func (g *Gateway) Open(ctx context.Context, backing domain.BackingRef) (_ acquis
 		return nil, err
 	}
 	if !supportedLicense(metadata.Metadata.LicenseURL) {
-		return nil, errors.New("internet Archive item no longer declares a supported open license")
+		return nil, fmt.Errorf("internet Archive item no longer declares a supported open license: %w", acquisition.ErrRangeUnplayable)
 	}
 	file, err := findExactFile(metadata.Files, filename)
 	if err != nil {
@@ -42,7 +42,7 @@ func (g *Gateway) Open(ctx context.Context, backing domain.BackingRef) (_ acquis
 	}
 	downloadURL, err := g.fileDownloadURL(metadata, identifier, filename)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("resolve Internet Archive file location: %w", acquisition.ErrRangeUnplayable)
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodHead, downloadURL, nil)
 	if err != nil {
@@ -60,11 +60,14 @@ func (g *Gateway) Open(ctx context.Context, backing domain.BackingRef) (_ acquis
 			resultErr = errors.Join(resultErr, errors.New("close Internet Archive file metadata response"))
 		}
 	}()
+	if response.StatusCode == http.StatusNotFound || response.StatusCode == http.StatusGone {
+		return nil, fmt.Errorf("internet Archive file metadata is unavailable: %w", domain.ErrNotFound)
+	}
 	if response.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("internet Archive file metadata requires status 200: got %d", response.StatusCode)
 	}
 	if response.ContentLength != file.size {
-		return nil, fmt.Errorf("internet Archive file size changed: got %d want %d", response.ContentLength, file.size)
+		return nil, fmt.Errorf("internet Archive file size changed: got %d want %d: %w", response.ContentLength, file.size, acquisition.ErrRangeUnplayable)
 	}
 	etag := strings.TrimSpace(response.Header.Get("ETag"))
 	if strings.HasPrefix(etag, "W/") {
@@ -72,7 +75,7 @@ func (g *Gateway) Open(ctx context.Context, backing domain.BackingRef) (_ acquis
 	}
 	lastModified := strings.TrimSpace(response.Header.Get("Last-Modified"))
 	if etag == "" && lastModified == "" {
-		return nil, errors.New("internet Archive file metadata requires a strong ETag or Last-Modified validator")
+		return nil, fmt.Errorf("internet Archive file metadata requires a strong ETag or Last-Modified validator: %w", acquisition.ErrRangeUnplayable)
 	}
 	return &Source{
 		client: g.downloadClient, objectURL: downloadURL, size: file.size, sha1: file.sha1,

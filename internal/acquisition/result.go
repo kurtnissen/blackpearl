@@ -17,6 +17,9 @@ var (
 	// ErrAmbiguousProviderObjects indicates that reconciliation found multiple
 	// account objects for one stable content fingerprint.
 	ErrAmbiguousProviderObjects = errors.New("multiple provider objects match the selected content")
+	// ErrRangeUnplayable indicates that a persisted direct-range candidate has
+	// changed permanently and must not be retried as a transient outage.
+	ErrRangeUnplayable = errors.New("direct range media is no longer playable")
 )
 
 // CreatedObject identifies one provider account object created by an

@@ -61,7 +61,7 @@ func TestPreparerRejectsChangedObjectSizeOrMissingValidator(t *testing.T) {
 
 			_, err = preparer.Inspect(context.Background(), selection, created)
 
-			require.Error(t, err)
+			require.ErrorIs(t, err, acquisition.ErrRangeUnplayable)
 		})
 	}
 }

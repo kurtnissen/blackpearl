@@ -114,6 +114,9 @@ func (g *Gateway) fetchMetadata(ctx context.Context, identifier string) (_ archi
 			resultErr = errors.Join(resultErr, errors.New("close Internet Archive metadata response"))
 		}
 	}()
+	if response.StatusCode == http.StatusNotFound || response.StatusCode == http.StatusGone {
+		return archiveMetadataEnvelope{}, fmt.Errorf("internet Archive metadata is unavailable: %w", domain.ErrNotFound)
+	}
 	if response.StatusCode != http.StatusOK {
 		return archiveMetadataEnvelope{}, fmt.Errorf("internet Archive metadata returned HTTP status %d", response.StatusCode)
 	}
@@ -141,19 +144,39 @@ func supportedLicense(raw json.RawMessage) bool {
 	}
 	for _, value := range values {
 		parsed, err := url.Parse(strings.TrimSpace(value))
-		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.User != nil || parsed.Port() != "" || parsed.RawPath != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
 			continue
 		}
 		host := strings.ToLower(parsed.Hostname())
 		if host != "creativecommons.org" && host != "www.creativecommons.org" {
 			continue
 		}
-		cleanPath := strings.ToLower(path.Clean(parsed.Path)) + "/"
-		if strings.HasPrefix(cleanPath, "/licenses/") || strings.HasPrefix(cleanPath, "/publicdomain/") {
+		segments := strings.Split(strings.Trim(strings.ToLower(path.Clean(parsed.Path)), "/"), "/")
+		if len(segments) != 3 {
+			continue
+		}
+		if segments[0] == "licenses" && supportedCreativeCommonsLicense(segments[1], segments[2]) {
+			return true
+		}
+		if segments[0] == "publicdomain" && (segments[1] == "mark" || segments[1] == "zero") && segments[2] == "1.0" {
 			return true
 		}
 	}
 	return false
+}
+
+func supportedCreativeCommonsLicense(family string, version string) bool {
+	switch family {
+	case "by", "by-sa", "by-nd", "by-nc", "by-nc-sa", "by-nc-nd":
+	default:
+		return false
+	}
+	switch version {
+	case "1.0", "2.0", "2.5", "3.0", "4.0":
+		return true
+	default:
+		return false
+	}
 }
 
 func eligibleExactFiles(files []archiveFile) []exactFile {
@@ -249,7 +272,7 @@ func findExactFile(files []archiveFile, filename string) (exactFile, error) {
 			return file, nil
 		}
 	}
-	return exactFile{}, errors.New("archive file is no longer available")
+	return exactFile{}, fmt.Errorf("archive file is no longer available: %w", domain.ErrNotFound)
 }
 
 func (g *Gateway) fileDownloadURL(metadata archiveMetadataEnvelope, identifier string, filename string) (string, error) {

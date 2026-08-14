@@ -8,6 +8,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/blackpearl-media/blackpearl/internal/acquisition"
+	"github.com/blackpearl-media/blackpearl/internal/domain"
 	"github.com/blackpearl-media/blackpearl/internal/gateway/internetarchive"
 	"github.com/stretchr/testify/require"
 )
@@ -143,6 +145,55 @@ func TestGatewayOpenRejectsChangedSizeAndMissingHTTPValidator(t *testing.T) {
 			_, err = gateway.Open(context.Background(), candidates[0].Media().Backing())
 
 			require.ErrorContains(t, err, test.wantError)
+			require.ErrorIs(t, err, acquisition.ErrRangeUnplayable)
+		})
+	}
+}
+
+func TestGatewayOpenClassifiesRemovedLicenseAndFile(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name      string
+		metadata  string
+		wantError error
+	}{
+		{
+			name:      "license removed",
+			metadata:  `{"metadata":{"licenseurl":"https://example.test/removed"},"files":[{"name":"movie.mp4","size":16,"sha1":"1111111111111111111111111111111111111111","source":"original"}]}`,
+			wantError: acquisition.ErrRangeUnplayable,
+		},
+		{
+			name:      "file removed",
+			metadata:  `{"metadata":{"licenseurl":"https://creativecommons.org/licenses/by/4.0/"},"files":[]}`,
+			wantError: domain.ErrNotFound,
+		},
+	} {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			metadata := `{"metadata":{"licenseurl":"https://creativecommons.org/licenses/by/4.0/"},"files":[{"name":"movie.mp4","size":16,"sha1":"1111111111111111111111111111111111111111","source":"original"}]}`
+			server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				switch request.URL.Path {
+				case "/metadata/fixture":
+					_, err := writer.Write([]byte(metadata))
+					require.NoError(t, err)
+				case "/download/fixture/movie.mp4":
+					writer.Header().Set("Content-Length", "16")
+					writer.Header().Set("ETag", `"fixture-etag"`)
+				default:
+					http.NotFound(writer, request)
+				}
+			}))
+			t.Cleanup(server.Close)
+			gateway, err := internetarchive.New(server.URL+"/", server.Client())
+			require.NoError(t, err)
+			candidates, err := gateway.ListRangeCandidates(context.Background(), archiveFixtureRelease(t, server.URL))
+			require.NoError(t, err)
+			metadata = test.metadata
+
+			_, err = gateway.Open(context.Background(), candidates[0].Media().Backing())
+
+			require.ErrorIs(t, err, test.wantError)
 		})
 	}
 }
