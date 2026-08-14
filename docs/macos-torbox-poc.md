@@ -33,23 +33,29 @@ Prowlarr API key and select **Connect Prowlarr**. Movie and TV episode requests
 then use the configured indexers, deterministic release ranking, and a strict
 TorBox cached-only check before the Plex manifest changes.
 
-The Compose profile enables BlackPearl's direct open-media search adapter. An
-exact public Archive match is preferred for the legal POC; Prowlarr remains the
-generic fallback for configured authorized indexers. Archive torrent metadata
-is downloaded only from the selected Archive item, followed only across
-trusted Archive HTTPS hosts, bounded to 4 MiB, and verified against the
+The Compose profile enables BlackPearl's direct open-media search adapter.
+BlackPearl combines public Archive and configured Prowlarr results, tolerates a
+failure from either source when the other succeeds, and persists at most five
+deduplicated torrent candidates. Complete title/year or title/episode matching
+is an eligibility boundary before TorBox cache status can affect ordering, so
+an already-cached preview cannot outrank the requested movie. Archive torrent
+metadata is downloaded only from the selected Archive item, followed only
+across trusted Archive HTTPS hosts, bounded to 4 MiB, and verified against the
 selected BitTorrent info hash before TorBox receives it. This avoids depending
 on peer metadata discovery while preserving the same provider-neutral job
 boundary.
 
 If the top-ranked release is not cached, the page offers **Prepare through
-TorBox**. BlackPearl persists only the request, release fingerprint, provider
-object ID, and state transitions in SQLite—never a token, magnet, signed URL,
-or torrent payload. The worker reconciles by info hash before creating,
-survives process restarts, polls only the created object, publishes only an
-eligible MP4/MKV, refreshes Plex after the manifest transaction, and reports a
-terminal no-source result when TorBox says a torrent is stalled. A cached
-lower-ranked result never replaces the uncached top-ranked result silently.
+TorBox**. BlackPearl persists only the request, up to five locator-free release
+fingerprints, candidate outcomes, provider object ID, ownership provenance, and
+state transitions in SQLite—never a token, magnet, signed URL, or torrent
+payload. Cached eligible candidates are tried first while preserving resolver
+rank within cached and uncached groups. The worker reconciles each hash before
+creating, survives process restarts, polls only the attached object, publishes
+only an eligible MP4/MKV, and refreshes Plex after the manifest transaction. If
+an owned object stalls, disappears, or has no playable media, BlackPearl
+deletes that exact object once and atomically advances. It never deletes an
+existing account object, and uncertain cleanup stops in manual review.
 
 This profile also mounts its own `plex-config` named volume into BlackPearl at
 `/plex-config` read-only. Once Plex sign-in has created `Preferences.xml`,

@@ -50,25 +50,40 @@ only validated movie or episode intent, and the backend owns ranking, cache
 selection, creation, inspection, and publication.
 
 An explicit cache miss may instead become a durable acquisition job. SQLite
-stores the validated intent, ranked provider/source fingerprint, info hash,
-created provider object ID, lease/version state, and public error code. It never
+stores the validated intent, up to five ordered provider/source fingerprints,
+candidate outcomes, the selected ordinal, created provider object ID and
+ownership provenance, lease/version state, and public error code. It never
 stores credentials, magnets, download URLs, signed media URLs, or torrent-file
-bytes. A serialized process-lifetime worker resolves once, reconciles by hash
-before any mutation, materializes bounded transient provider input, creates at
-most one TorBox object with uncached preparation explicitly allowed, and polls
-that exact object. Not-ready state is deferred; a provider-reported incomplete
-stall is terminal; a completed-but-not-yet-present object remains retryable;
-missing or ambiguous post-mutation objects require manual review. Publication
-uses the existing manifest transaction and Plex refresh boundary.
+bytes. A serialized process-lifetime worker combines authorized search
+providers, rejects results that do not satisfy the complete movie/episode
+intent, deduplicates stable hashes, and moves TorBox-cached candidates ahead of
+uncached candidates only after that eligibility boundary. Planning and first
+selection are one SQLite transaction before provider mutation.
+
+For each selected candidate, the worker reconciles by hash before mutation,
+materializes bounded transient provider input when absent, records whether the
+job created the exact account object, and polls only that object. Not-ready
+state is deferred. A provider-reported incomplete stall, a disappeared object,
+or completed content without playable media records the candidate outcome and
+atomically selects the next release. BlackPearl deletes an abandoned object
+only when the same job durably owns it; an ambiguous cleanup response is never
+retried and enters manual review. Existing account objects and published
+objects are never fallback-cleaned. Candidate exhaustion fails the job with a
+public-safe code. Publication uses the existing manifest transaction and Plex
+refresh boundary.
 
 The optional `internet-archive` gateway is a legal-POC search provider, not a
 filesystem source. It queries only the public Archive metadata endpoint,
 returns stable item identifiers and info hashes, and materializes the selected
 item's bounded `.torrent` file. Redirects are limited to the configured origin
 or official Archive HTTPS hosts, and the bencoded info dictionary must hash to
-the selected fingerprint. A preferred-search composition may short-circuit an
-exact open-media match; Prowlarr remains the generic authorized-indexer
-fallback. Both feed the same provider-neutral release and job contracts.
+the selected fingerprint. The durable worker combines Archive and Prowlarr
+results so a partial provider outage does not discard the other source. Movie
+results must begin with the complete requested title and include the requested
+year; episode results must contain the complete title and `SnnEnn` token. This
+prevents a cached preview, trailer, or unrelated title hit from bypassing
+intent correctness. Both gateways feed the same provider-neutral release and
+job contracts.
 
 ## Invariants established in Milestone 1
 
