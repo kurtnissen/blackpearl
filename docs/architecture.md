@@ -29,8 +29,16 @@ torrent/NZB locators into immutable release values. Resolver policy tolerates a
 partial provider outage, sanitizes all-provider failures, rejects malformed
 results, deduplicates stable identities, and ranks complete intent matches
 before provider-specific acquisition. Release locators are neither catalog
-backing references nor persisted setup state. The following milestone will
-consume them through an explicit TorBox mutation policy.
+backing references nor persisted setup state.
+
+The cached TorBox acquisition service consumes only ranked torrent releases
+with stable hashes. It performs a read-only cache lookup, then creates exactly
+one account object with TorBox's cached-only guard enabled. A bounded inspection
+policy waits for that object to expose eligible video files, selects the exact
+episode or best movie candidate, and hands a provider-neutral acquired-media
+value to setup's existing durable manifest transaction. Provider creation is
+not retried after an ambiguous response, and no automatic-acquisition route is
+registered yet.
 
 ## Invariants established in Milestone 1
 
@@ -96,7 +104,7 @@ SQLite owns catalog metadata only. Cache bytes and the optional FUSE mount live 
 
 ## Extension roadmap
 
-1. Connect the implemented Prowlarr search/ranking foundation to explicit TorBox cached acquisition and atomic catalog publication.
+1. Expose the implemented Prowlarr search and cached-only TorBox acquisition path through the paired local API/UI, including secure Prowlarr configuration.
 2. Add automatic movie and episode metadata/watchlist ingestion without coupling Plex metadata to provider locators.
 3. Add adaptive throughput-based read scheduling. Seek-aware read-ahead is implemented.
 4. Extend the implemented bounded next-episode prefix prefetch with playback-aware cancellation and prioritization.
@@ -108,4 +116,6 @@ Each stage needs its own acceptance evidence. A generic interface alone is not e
 The first provider adapter is `torbox-torrent`. It maps an already-complete
 `torrent-id:file-id` account object to a short-lived HTTPS CDN link, validates
 its size, and exposes strict ranges without persisting the API token or URL.
-Creating TorBox account downloads remains a separate, explicitly gated milestone.
+The cached-only TorBox creation contract is implemented and proven against
+mocked TLS endpoints, including atomic catalog publication. Live account
+mutation and browser/API wiring remain separate acceptance milestones.
