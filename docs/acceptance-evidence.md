@@ -4,7 +4,7 @@ Evidence states are deliberately separate. Unit tests, a container build, a kern
 
 ## Current verified evidence — 2026-08-14
 
-Tested from `main` on an Apple Silicon Mac with Docker Desktop's Linux ARM64 VM.
+Primary local acceptance was tested from `main` on an Apple Silicon Mac with Docker Desktop's Linux ARM64 VM. Hosted rows identify their separate Linux environment and commit explicitly.
 
 | Gate | Result | Evidence |
 |---|---|---|
@@ -15,7 +15,7 @@ Tested from `main` on an Apple Silicon Mac with Docker Desktop's Linux ARM64 VM.
 | Compose isolation | Pass | Rendered configuration checked by `scripts/test-compose-paths.sh`; every bind is under `runtime/`, Plex media is read-only `rslave`, and only BlackPearl receives FUSE privileges |
 | POC image build | Pass | `blackpearl:poc` built for local Linux ARM64 |
 | Portable runtime image matrix | Pass locally | Docker Buildx completed the `runtime` target for both `linux/amd64` and `linux/arm64` using the pinned Go 1.26.6 builder. This is local evidence, not hosted CI evidence. |
-| Public hosted CI | Pass | [GitHub Actions run 31842843917](https://github.com/kurtnissen/blackpearl/actions/runs/31842843917) completed on commit `50db03b8cd853b077e7621adca2a751055643adf`. All eight jobs passed: secret-history scan, race tests and 80.7% coverage, static lint, dependency vulnerability scan, setup UI, Compose safety, privileged Linux FUSE smoke, and the Linux image matrix. |
+| Public hosted CI | Pass | [GitHub Actions run 31844697861](https://github.com/kurtnissen/blackpearl/actions/runs/31844697861) completed on commit `fbe23a7854a175a21e44c6a32ce9e8c45a32676d`. All eight jobs passed: secret-history scan, race tests and 80.7% coverage, static lint, dependency vulnerability scan, setup UI, Compose safety, privileged Linux FUSE smoke, and the Linux image matrix. |
 | Hosted image matrix | Pass | The same public CI run built the complete `poc` target for both `linux/amd64` and `linux/arm64`. Architecture-independent frontend and fixture stages run on the build platform, while Go cross-compiles the target binary and each final runtime layer is built for its requested platform. |
 | Fixture media profile | Pass | 1280x720 H.264 `yuv420p` video, AAC 48 kHz mono audio, MP4 fast-start fixture |
 | Packaged FUSE bytes | Pass | The exact POC image mounted FUSE in a privileged Linux container; fixture and virtual SHA-256 matched and non-sequential range hashes matched |
@@ -84,11 +84,12 @@ Tested from `main` on an Apple Silicon Mac with Docker Desktop's Linux ARM64 VM.
 | Automatic Plex library refresh | Pass in race tests and live macOS Compose | After a BlackPearl rebuild restored the published manifest, Plex recorded HTTP 200 refresh requests for movie section 2 and TV section 3. The gateway matches only the two exact BlackPearl roots, keeps the token in a request header, refuses redirects, and the coalescing worker retries independently of publication. Brave then confirmed both libraries remained visible; the known H.264/AAC movie played and a forward seek advanced from 18:45 to 19:18 before playback was paused. |
 | Provider-backed persistent retention | Pass in race tests and live macOS Compose | Persistent browser setup retained verified provider chunks without eviction in a namespace separate from rolling cache data. Through the Plex NFS mount, 1 MiB reads at blocks 0, 177, and 352 of a 371,277,147-byte logical movie produced identical SHA-256 values before and after a BlackPearl restart; repeating those reads left the recovered cache at 115 chunks and 114,916 KiB. Brave played the known H.264/AAC movie and a forward seek advanced from 19:26 to 19:59 before playback was paused. The stack was then restored to its normal 40 GiB rolling profile. |
 | Playback-aware read-ahead | Pass in repeated race tests and live macOS Brave | Five consecutive cache race runs prove a discontinuous seek and handle close cancel blocked stale read-ahead, sequential reads retain their useful window, and a second foreground reader retries instead of receiving the cancellation. After rebuilding the normal rolling stack, Brave advanced the known Direct Play-compatible movie from about 20:27 to 40:41 through a far seek and continued to 40:48 before playback was paused. Rolling storage remained 749,836 KiB against a 40 GiB hard quota. |
-| Patched release-candidate regression | Pass locally on macOS | Candidate `244fcbc` rebuilt with Go 1.26.6, restored the saved manifest, and returned healthy/ready. Brave resumed the known Direct Play-compatible movie, remained playing through four 30-second forward seeks, and was paused after verification. The rolling cache held 767 chunks and 782,604 KiB against its 40 GiB quota. The existing Plex session retained its previously recorded `MDE=1000,Direct play OK` decision; hosted CI, Windows, and native-Linux runtime acceptance remain separate. |
+| Patched release-candidate regression | Pass locally on macOS | Candidate `244fcbc` rebuilt with Go 1.26.6, restored the saved manifest, and returned healthy/ready. Brave resumed the known Direct Play-compatible movie, remained playing through four 30-second forward seeks, and was paused after verification. The rolling cache held 767 chunks and 782,604 KiB against its 40 GiB quota. The existing Plex session retained its previously recorded `MDE=1000,Direct play OK` decision. Hosted CI and native-Linux server acceptance later passed separately; Windows remains unverified. |
 | Longer rolling bidirectional seek | Pass locally on macOS Brave | On the provider-backed rolling movie, Plex advanced from 2,603,842 ms to 2,664,899 ms after two 30-second forward controls, then moved back to 2,628,002 ms after four 10-second backward controls. Playback remained active after both discontinuous directions and was paused after verification. |
-| Cross-container Plex mount | Pending Ubuntu | Docker Desktop bind propagation cannot prove this Linux-host behavior |
+| Cross-container Plex mount | Pass on hosted Ubuntu 24.04.4 AMD64 | [Disposable acceptance run 31846027157](https://github.com/kurtnissen/blackpearl/actions/runs/31846027157) prepared a shared host mount with Docker Engine 28.0.4 and Compose 2.38.2, mounted PearlFS through kernel FUSE, and read the exact 3,221,617-byte file from the unmodified official Plex container through its read-only `rslave` bind. The temporary branch was not merged. |
+| Native Ubuntu Plex server acceptance | Pass server-side | The same isolated run created only the `BlackPearl POC` movie library, indexed `BlackPearl POC (2026)` as rating key 1, matched a Plex-served non-sequential 64 KiB range to the generated fixture, and logged `MDE=1000,Direct play OK` for both the original and HLS Web-profile decisions. Cleanup stopped both containers, unmounted PearlFS, and a final `mountpoint` assertion confirmed the host mount was absent. This proves the native-Linux Plex server path; a human-visible client session against that disposable runner is not claimed. |
 
-The current result includes locally verified FUSE and portable NFS adapters, persistent and rolling macOS Plex playback, strict random-range retrieval, a live hard-quota test, eviction, refetch, and longer forward/backward client seek evidence. Windows and native-Linux portability remain unverified.
+The current result includes verified FUSE and portable NFS adapters, persistent and rolling macOS Plex playback, a native Ubuntu FUSE-to-Plex server run, strict random-range retrieval, a live hard-quota test, eviction, refetch, and longer forward/backward client seek evidence. Windows Docker Desktop runtime acceptance remains unverified.
 
 ## Acceptance checklist
 
@@ -137,34 +138,35 @@ The current result includes locally verified FUSE and portable NFS adapters, per
 - [x] A newly Watchlisted authorized show completes exact S01E01 provider preparation, publication, Plex scan, Direct Play, and seek acceptance.
 - [x] CI passes after publishing the repository.
 - [x] Both Linux AMD64 and ARM64 image builds pass in CI.
-- [ ] Ubuntu host propagation makes the file readable in the Plex container.
-- [ ] Plex scans `BlackPearl POC (2026)`.
-- [ ] Plex begins Direct Play and seeking succeeds.
-- [ ] Stack shutdown unmounts PearlFS cleanly on the Ubuntu host.
+- [x] Ubuntu host propagation makes the file readable in the Plex container.
+- [x] Plex scans `BlackPearl POC (2026)`.
+- [x] Plex's Web profile selects Direct Play and Plex serves exact non-sequential bytes through the Ubuntu mount.
+- [ ] A human-visible Plex client session against the Ubuntu server begins playback and seeks.
+- [x] Stack shutdown unmounts PearlFS cleanly on the Ubuntu host.
 
 ## Ubuntu/Plex evidence record
 
-Fill this section during the acceptance run.
+Recorded during the disposable hosted-Ubuntu acceptance run.
 
 ```text
-Date:
-Operator:
-Git commit:
-Ubuntu release:
-Architecture:
-Docker version:
-Compose version:
+Date: 2026-08-14
+Operator: disposable GitHub-hosted acceptance runner
+Git commit: product fbe23a7854a175a21e44c6a32ce9e8c45a32676d; disposable harness b685425e52e7fd23a3aa23b386ded287ee0a4bf2
+Ubuntu release: 24.04.4 LTS
+Architecture: AMD64
+Docker version: 28.0.4
+Compose version: 2.38.2
 Plex image: plexinc/pms-docker:1.43.0.10492-121068a07
 
-scripts/test-compose-paths.sh: PASS / FAIL
-scripts/prepare-ubuntu-poc.sh: PASS / FAIL
-scripts/verify-fuse.sh: PASS / FAIL
-Virtual file visible inside Plex container: PASS / FAIL
-Plex scan title/result:
-Plex Dashboard video decision:
-Plex Dashboard audio decision:
-Seek result:
-Clean shutdown/unmount: PASS / FAIL
+scripts/test-compose-paths.sh: PASS in the accompanying full CI run
+scripts/prepare-ubuntu-poc.sh: PASS; shared propagation reported
+scripts/verify-fuse.sh: PASS; exact bytes and offset read
+Virtual file visible inside Plex container: PASS; read-only bind
+Plex scan title/result: BlackPearl POC (2026), rating key 1, 3,221,617 bytes
+Plex Dashboard video decision: server log MDE=1000, Direct play OK
+Plex Dashboard audio decision: copied inside the direct-play media decision; no separate client dashboard claim
+Seek result: Plex part endpoint returned the requested 64 KiB non-sequential range and matched the fixture
+Clean shutdown/unmount: PASS; final mountpoint assertion reported absent
 
-Notes or captured log/screenshot locations:
+Notes or captured log/screenshot locations: https://github.com/kurtnissen/blackpearl/actions/runs/31846027157
 ```
