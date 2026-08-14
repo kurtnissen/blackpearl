@@ -89,6 +89,29 @@ func TestSearchReturnsRankedResultsWhenAnotherProviderFails(t *testing.T) {
 	require.Equal(t, request, broken.received)
 }
 
+func TestReadySearcherDelegatesReadinessAndCombinesSearchProviders(t *testing.T) {
+	t.Parallel()
+	request, err := acquisition.NewMovieSearch("Movie", 2026)
+	require.NoError(t, err)
+	release := mustSearchRelease(t, acquisition.ReleaseInput{
+		Provider: "open-media", SourceID: "one", Title: "Movie (2026)",
+		Protocol: acquisition.ReleaseProtocolTorrent, Size: 100, Indexer: "open",
+		InfoHash: "abcdef0123456789abcdef0123456789abcdef01",
+	})
+	primary := &fakeReadySearchProvider{fakeSearchProvider: fakeSearchProvider{name: "primary"}}
+	additional := &fakeSearchProvider{name: "open-media", releases: []acquisition.Release{release}}
+	searcher, err := resolver.NewReadySearcher(primary, additional)
+	require.NoError(t, err)
+
+	require.NoError(t, searcher.Ready(context.Background()))
+	actual, err := searcher.Search(context.Background(), request)
+
+	require.NoError(t, err)
+	require.Equal(t, []acquisition.Release{release}, actual)
+	require.Equal(t, 1, primary.readyCalls)
+	require.Equal(t, primary.Name(), searcher.Name())
+}
+
 func TestSearchReturnsEmptySuccessWhenProviderHasNoResults(t *testing.T) {
 	t.Parallel()
 	request, err := acquisition.NewMovieSearch("Movie", 2026)
@@ -154,6 +177,17 @@ type fakeSearchProvider struct {
 	err      error
 	received acquisition.SearchRequest
 	search   func(context.Context, acquisition.SearchRequest) ([]acquisition.Release, error)
+}
+
+type fakeReadySearchProvider struct {
+	fakeSearchProvider
+	readyCalls int
+	readyErr   error
+}
+
+func (f *fakeReadySearchProvider) Ready(context.Context) error {
+	f.readyCalls++
+	return f.readyErr
 }
 
 func (f *fakeSearchProvider) Name() string { return f.name }

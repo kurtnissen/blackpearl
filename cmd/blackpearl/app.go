@@ -20,6 +20,7 @@ import (
 	"github.com/blackpearl-media/blackpearl/internal/core"
 	"github.com/blackpearl-media/blackpearl/internal/domain"
 	"github.com/blackpearl-media/blackpearl/internal/gateway/httporigin"
+	"github.com/blackpearl-media/blackpearl/internal/gateway/internetarchive"
 	"github.com/blackpearl-media/blackpearl/internal/gateway/plexwatchlist"
 	"github.com/blackpearl-media/blackpearl/internal/gateway/prowlarr"
 	"github.com/blackpearl-media/blackpearl/internal/gateway/torbox"
@@ -61,6 +62,12 @@ type nfsServer interface {
 
 type publicationNotifier interface {
 	Notify()
+}
+
+type materializerFunc func(context.Context, acquisitiondomain.Release) (acquisitiondomain.TorrentInput, error)
+
+func (function materializerFunc) Materialize(ctx context.Context, release acquisitiondomain.Release) (acquisitiondomain.TorrentInput, error) {
+	return function(ctx, release)
 }
 
 type setupPublisher struct {
@@ -460,13 +467,26 @@ func runBrowserSetup(ctx context.Context, cfg config.Config, logger *slog.Logger
 		publisher.notifier = plexRefreshWorker
 	}
 	service := setupservice.New(setupRepository, gatewayFactory, runtimeFactory, publisher, cfg.SetupBootstrapToken)
+	var openMediaGateway *internetarchive.Gateway
+	if cfg.OpenMediaSearchEnabled {
+		client := *deps.httpClient
+		client.Timeout = cfg.AcquisitionOperationTimeout
+		openMediaGateway, err = internetarchive.New(cfg.OpenMediaSearchURL, &client)
+		if err != nil {
+			return fmt.Errorf("configure open-media search gateway: %w", err)
+		}
+	}
 	searchFactory := func(settings acquisitiondomain.SearchProviderSettings) (acquisitionservice.ReadySearchProvider, error) {
 		if settings.Provider() != "prowlarr" {
 			return nil, errors.New("unsupported acquisition search provider")
 		}
 		client := *deps.httpClient
 		client.Timeout = cfg.AcquisitionOperationTimeout
-		return prowlarr.New(prowlarr.Options{BaseURL: settings.Endpoint(), APIKey: settings.Credential()}, &client)
+		primary, gatewayErr := prowlarr.New(prowlarr.Options{BaseURL: settings.Endpoint(), APIKey: settings.Credential()}, &client)
+		if gatewayErr != nil || openMediaGateway == nil {
+			return primary, gatewayErr
+		}
+		return resolver.NewReadySearcher(primary, openMediaGateway)
 	}
 	cachedGatewayFactory := func(token string) (acquisitionservice.CachedGateway, error) {
 		return newTorBoxGateway(token)
@@ -506,8 +526,19 @@ func runBrowserSetup(ctx context.Context, cfg config.Config, logger *slog.Logger
 		if gatewayErr != nil {
 			return acquisitionjobservice.Providers{}, fmt.Errorf("configure background preparation gateway: %w", gatewayErr)
 		}
+		searchProviders := []resolver.SearchProvider{searchGateway}
+		var materializer acquisitionjobservice.Materializer = searchGateway
+		if openMediaGateway != nil {
+			searchProviders = append(searchProviders, openMediaGateway)
+			materializer = materializerFunc(func(materialContext context.Context, release acquisitiondomain.Release) (acquisitiondomain.TorrentInput, error) {
+				if release.Provider() == openMediaGateway.Name() {
+					return openMediaGateway.Materialize(materialContext, release)
+				}
+				return searchGateway.Materialize(materialContext, release)
+			})
+		}
 		return acquisitionjobservice.Providers{
-			Searcher: resolver.NewSearcher(searchGateway), Materializer: searchGateway, Preparer: preparationGateway,
+			Searcher: resolver.NewSearcher(searchProviders...), Materializer: materializer, Preparer: preparationGateway,
 		}, nil
 	}
 	jobOperationTimeout := cfg.AcquisitionOperationTimeout

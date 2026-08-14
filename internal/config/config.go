@@ -47,6 +47,8 @@ type Config struct {
 	RangeObjectID               string             `env:"BLACKPEARL_RANGE_OBJECT_ID"`
 	RangeTimeout                time.Duration      `env:"BLACKPEARL_RANGE_TIMEOUT" envDefault:"30s"`
 	AcquisitionOperationTimeout time.Duration      `env:"BLACKPEARL_ACQUISITION_OPERATION_TIMEOUT" envDefault:"2m"`
+	OpenMediaSearchEnabled      bool               `env:"BLACKPEARL_OPEN_MEDIA_SEARCH_ENABLED" envDefault:"false"`
+	OpenMediaSearchURL          string             `env:"BLACKPEARL_OPEN_MEDIA_SEARCH_URL" envDefault:"https://archive.org/"`
 	TorBoxAPIURL                string             `env:"BLACKPEARL_TORBOX_API_URL" envDefault:"https://api.torbox.app/v1/api/"`
 	TorBoxAPIToken              string             `env:"BLACKPEARL_TORBOX_API_TOKEN"`
 	TorBoxAPITokenFile          string             `env:"BLACKPEARL_TORBOX_API_TOKEN_FILE"`
@@ -121,8 +123,16 @@ func (c Config) validate() error {
 		if c.AcquisitionOperationTimeout < 10*time.Second || c.AcquisitionOperationTimeout > 10*time.Minute {
 			return errors.New("BLACKPEARL_ACQUISITION_OPERATION_TIMEOUT must be between 10s and 10m")
 		}
+		if c.OpenMediaSearchEnabled {
+			openMediaURL, parseErr := url.Parse(c.OpenMediaSearchURL)
+			if parseErr != nil || openMediaURL.Scheme != "https" || openMediaURL.Host == "" || openMediaURL.User != nil || openMediaURL.RawQuery != "" || openMediaURL.Fragment != "" {
+				return errors.New("BLACKPEARL_OPEN_MEDIA_SEARCH_URL must be an absolute HTTPS URL without credentials, query, or fragment")
+			}
+		}
 	} else if c.SetupBootstrapToken != "" {
 		return errors.New("BLACKPEARL_SETUP_BOOTSTRAP_TOKEN requires BLACKPEARL_SETUP_ENABLED=true")
+	} else if c.OpenMediaSearchEnabled {
+		return errors.New("BLACKPEARL_OPEN_MEDIA_SEARCH_ENABLED requires BLACKPEARL_SETUP_ENABLED=true")
 	}
 	if c.WatchlistEnabled {
 		if !c.SetupEnabled {

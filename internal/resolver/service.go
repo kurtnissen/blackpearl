@@ -25,6 +25,20 @@ type SearchProvider interface {
 	Search(ctx context.Context, request acquisition.SearchRequest) ([]acquisition.Release, error)
 }
 
+// ReadySearchProvider is a configured primary search provider with a
+// read-only readiness probe.
+type ReadySearchProvider interface {
+	SearchProvider
+	Ready(ctx context.Context) error
+}
+
+// ReadySearcher preserves a primary provider's configuration probe while
+// combining its searches with optional provider-neutral sources.
+type ReadySearcher struct {
+	primary  ReadySearchProvider
+	searcher *Service
+}
+
 // Service combines normalized candidates from configured providers.
 type Service struct {
 	providers       []Provider
@@ -39,6 +53,37 @@ func New(providers ...Provider) *Service {
 // NewSearcher constructs a resolver from zero or more authorized search providers.
 func NewSearcher(providers ...SearchProvider) *Service {
 	return &Service{searchProviders: append([]SearchProvider(nil), providers...)}
+}
+
+// NewReadySearcher constructs a readiness-preserving multi-provider searcher.
+func NewReadySearcher(primary ReadySearchProvider, additional ...SearchProvider) (*ReadySearcher, error) {
+	if primary == nil {
+		return nil, errors.New("primary ready search provider is required")
+	}
+	providers := []SearchProvider{primary}
+	providers = append(providers, additional...)
+	for _, provider := range providers {
+		if provider == nil {
+			return nil, errors.New("ready search providers must not be nil")
+		}
+	}
+	return &ReadySearcher{primary: primary, searcher: NewSearcher(providers...)}, nil
+}
+
+// Name returns the configured primary provider name.
+func (s *ReadySearcher) Name() string { return s.primary.Name() }
+
+// Capabilities returns the configured primary provider capabilities.
+func (s *ReadySearcher) Capabilities() acquisition.ProviderCapabilities {
+	return s.primary.Capabilities()
+}
+
+// Ready probes only the configured credential-bearing primary provider.
+func (s *ReadySearcher) Ready(ctx context.Context) error { return s.primary.Ready(ctx) }
+
+// Search combines the primary and optional provider-neutral sources.
+func (s *ReadySearcher) Search(ctx context.Context, request acquisition.SearchRequest) ([]acquisition.Release, error) {
+	return s.searcher.Search(ctx, request)
 }
 
 // Resolve returns provider-neutral candidates without applying acquisition policy.

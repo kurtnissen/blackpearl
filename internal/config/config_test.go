@@ -29,6 +29,8 @@ func TestParseUsesIsolatedContainerDefaults(t *testing.T) {
 	require.Equal(t, "https://api.torbox.app/v1/api/", cfg.TorBoxAPIURL)
 	require.Equal(t, 30*time.Second, cfg.RangeTimeout)
 	require.Equal(t, 2*time.Minute, cfg.AcquisitionOperationTimeout)
+	require.False(t, cfg.OpenMediaSearchEnabled)
+	require.Equal(t, "https://archive.org/", cfg.OpenMediaSearchURL)
 	require.False(t, cfg.Plex.Enabled())
 	require.Equal(t, "fuse", cfg.FilesystemMode)
 	require.Equal(t, ":2049", cfg.NFSAddr)
@@ -45,6 +47,35 @@ func TestParseUsesIsolatedContainerDefaults(t *testing.T) {
 	require.Equal(t, 15*time.Minute, cfg.WatchlistRetryCooldown)
 	require.False(t, cfg.PlexRefreshEnabled)
 	require.Empty(t, cfg.PlexRefreshURL)
+}
+
+func TestParseAcceptsBoundedOpenMediaSearchForBrowserSetup(t *testing.T) {
+	t.Parallel()
+	environment := browserSetupEnvironment()
+	environment["BLACKPEARL_OPEN_MEDIA_SEARCH_ENABLED"] = "true"
+	environment["BLACKPEARL_OPEN_MEDIA_SEARCH_URL"] = "https://archive.example.test/"
+
+	cfg, err := config.Parse(environment)
+
+	require.NoError(t, err)
+	require.True(t, cfg.OpenMediaSearchEnabled)
+	require.Equal(t, "https://archive.example.test/", cfg.OpenMediaSearchURL)
+}
+
+func TestParseRejectsUnsafeOpenMediaSearchConfiguration(t *testing.T) {
+	t.Parallel()
+	for _, endpoint := range []string{"http://archive.example.test/", "https://user:pass@archive.example.test/", "https://archive.example.test/?key=secret"} {
+		t.Run(endpoint, func(t *testing.T) {
+			t.Parallel()
+			environment := browserSetupEnvironment()
+			environment["BLACKPEARL_OPEN_MEDIA_SEARCH_ENABLED"] = "true"
+			environment["BLACKPEARL_OPEN_MEDIA_SEARCH_URL"] = endpoint
+
+			_, err := config.Parse(environment)
+
+			require.ErrorContains(t, err, "BLACKPEARL_OPEN_MEDIA_SEARCH_URL")
+		})
+	}
 }
 
 func TestParseValidatesBrowserAcquisitionOperationTimeout(t *testing.T) {
