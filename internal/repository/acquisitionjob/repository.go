@@ -220,12 +220,12 @@ func (r *Repository) Select(ctx context.Context, claim acquisition.AcquisitionJo
 	}
 	return r.transition(ctx, claim, acquisition.JobStateQueued, now, `
 		state = 'selected', selected_provider = ?, selected_title = ?, selected_size = ?,
-		selected_indexer = ?, selected_kind = ?, selected_identity = ?, selected_info_hash = ?,
+		selected_indexer = ?, selected_kind = ?, selected_identity = ?, selected_validator = ?, selected_info_hash = ?,
 		selected_seeders = ?, selected_has_seeders = ?,
 		selected_candidate_ordinal = -1, created_by_job = 0,
 		error_code = '', progress = 0, next_attempt_unix_ms = 0
 	`, validated.Provider(), validated.Title(), validated.Size(), validated.Indexer(), validated.Kind(),
-		validated.Identity(), validated.InfoHash(), seeders, hasSeeders)
+		validated.Identity(), persistedValidator(validated), validated.InfoHash(), seeders, hasSeeders)
 }
 
 // Plan atomically persists a bounded ordered candidate set and selects its
@@ -253,10 +253,10 @@ func (r *Repository) Plan(
 		if _, err := transaction.ExecContext(ctx, `
 			INSERT INTO acquisition_job_candidates (
 				job_id, ordinal, selection_kind, provider, title, size, indexer, selection_identity,
-				seeders, has_seeders, outcome
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				validator, seeders, has_seeders, outcome
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`, claim.Job().ID(), validated[index].Ordinal(), selection.Kind(), selection.Provider(), selection.Title(),
-			selection.Size(), selection.Indexer(), selection.Identity(), seeders, hasSeeders,
+			selection.Size(), selection.Indexer(), selection.Identity(), persistedValidator(selection), seeders, hasSeeders,
 			validated[index].Outcome()); err != nil {
 			return errors.Join(fmt.Errorf("insert acquisition job candidate: %w", err), transaction.Rollback())
 		}
@@ -266,13 +266,13 @@ func (r *Repository) Plan(
 	result, err := transaction.ExecContext(ctx, `
 		UPDATE acquisition_jobs SET
 			state = 'selected', selected_provider = ?, selected_title = ?, selected_size = ?,
-			selected_indexer = ?, selected_kind = ?, selected_identity = ?, selected_info_hash = ?,
+			selected_indexer = ?, selected_kind = ?, selected_identity = ?, selected_validator = ?, selected_info_hash = ?,
 			selected_seeders = ?, selected_has_seeders = ?,
 			selected_candidate_ordinal = 0, created_provider = '', created_object_id = '',
 			created_by_job = 0, error_code = '', progress = 0, next_attempt_unix_ms = 0,
 			lease_until_unix_ms = 0, updated_unix_ms = ?
 		WHERE id = ? AND lease_version = ? AND lease_until_unix_ms > ? AND state = 'queued'
-	`, first.Provider(), first.Title(), first.Size(), first.Indexer(), first.Kind(), first.Identity(), first.InfoHash(), seeders, hasSeeders,
+	`, first.Provider(), first.Title(), first.Size(), first.Indexer(), first.Kind(), first.Identity(), persistedValidator(first), first.InfoHash(), seeders, hasSeeders,
 		now.UTC().UnixMilli(), claim.Job().ID(), claim.LeaseVersion(), now.UTC().UnixMilli())
 	if err != nil {
 		return errors.Join(fmt.Errorf("select acquisition candidate plan: %w", err), transaction.Rollback())
@@ -368,7 +368,7 @@ func (r *Repository) Advance(
 		return false, errors.Join(ErrStaleClaim, transaction.Rollback())
 	}
 	next, err := queryCandidate(transaction.QueryRowContext(ctx, `
-		SELECT ordinal, selection_kind, provider, title, size, indexer, selection_identity, seeders, has_seeders, outcome
+		SELECT ordinal, selection_kind, provider, title, size, indexer, selection_identity, validator, seeders, has_seeders, outcome
 		FROM acquisition_job_candidates
 		WHERE job_id = ? AND outcome = 'pending'
 		ORDER BY ordinal LIMIT 1
@@ -388,14 +388,14 @@ func (r *Repository) Advance(
 		result, err = transaction.ExecContext(ctx, `
 			UPDATE acquisition_jobs SET
 				state = 'selected', selected_provider = ?, selected_title = ?, selected_size = ?,
-				selected_indexer = ?, selected_kind = ?, selected_identity = ?, selected_info_hash = ?,
+				selected_indexer = ?, selected_kind = ?, selected_identity = ?, selected_validator = ?, selected_info_hash = ?,
 				selected_seeders = ?, selected_has_seeders = ?,
 				selected_candidate_ordinal = ?, created_provider = '', created_object_id = '', created_by_job = 0,
 				error_code = '', progress = 0, next_attempt_unix_ms = 0,
 				lease_until_unix_ms = 0, updated_unix_ms = ?
 			WHERE id = ? AND lease_version = ? AND lease_until_unix_ms > ? AND state = ?
 		`, selection.Provider(), selection.Title(), selection.Size(), selection.Indexer(), selection.Kind(), selection.Identity(),
-			selection.InfoHash(), seeders, hasSeeders, next.Ordinal(), now.UTC().UnixMilli(), claim.Job().ID(),
+			persistedValidator(selection), selection.InfoHash(), seeders, hasSeeders, next.Ordinal(), now.UTC().UnixMilli(), claim.Job().ID(),
 			claim.LeaseVersion(), now.UTC().UnixMilli(), state)
 		if err != nil {
 			return false, errors.Join(fmt.Errorf("advance acquisition job selection: %w", err), transaction.Rollback())
@@ -404,7 +404,7 @@ func (r *Repository) Advance(
 		result, err = transaction.ExecContext(ctx, `
 			UPDATE acquisition_jobs SET
 				state = 'failed', selected_provider = '', selected_title = '', selected_size = 0,
-				selected_indexer = '', selected_kind = '', selected_identity = '', selected_info_hash = '',
+				selected_indexer = '', selected_kind = '', selected_identity = '', selected_validator = '', selected_info_hash = '',
 				selected_seeders = 0, selected_has_seeders = 0,
 				selected_candidate_ordinal = -1, created_provider = '', created_object_id = '', created_by_job = 0,
 				error_code = ?, progress = 0, next_attempt_unix_ms = 0,
@@ -580,7 +580,7 @@ func (r *Repository) Candidates(ctx context.Context, jobID string) (result []acq
 		return nil, errors.New("invalid acquisition job ID")
 	}
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT ordinal, selection_kind, provider, title, size, indexer, selection_identity, seeders, has_seeders, outcome
+		SELECT ordinal, selection_kind, provider, title, size, indexer, selection_identity, validator, seeders, has_seeders, outcome
 		FROM acquisition_job_candidates WHERE job_id = ? ORDER BY ordinal
 	`, jobID)
 	if err != nil {
@@ -636,7 +636,7 @@ func (r *Repository) Close() error {
 const jobColumns = `
 	id, media_type, title, release_year, season, episode, state,
 	selected_provider, selected_title, selected_size, selected_indexer,
-	selected_kind, selected_identity, selected_info_hash, selected_seeders, selected_has_seeders,
+	selected_kind, selected_identity, selected_validator, selected_info_hash, selected_seeders, selected_has_seeders,
 	created_provider, created_object_id, selected_candidate_ordinal, created_by_job,
 	published_object_id, error_code,
 	attempt_count, progress, created_unix_ms, updated_unix_ms`
@@ -649,7 +649,7 @@ type rowScanner interface {
 
 func queryJob(row rowScanner) (acquisition.AcquisitionJob, error) {
 	var id, mediaType, title, state string
-	var selectedProvider, selectedTitle, selectedIndexer, selectedKind, selectedIdentity, selectedHash string
+	var selectedProvider, selectedTitle, selectedIndexer, selectedKind, selectedIdentity, selectedValidator, selectedHash string
 	var createdProvider, createdObjectID, publishedObjectID, errorCode string
 	var year, season, episode, selectedSeeders, selectedHasSeeders, attempt, progress int
 	var selectedCandidateOrdinal, createdByJob int
@@ -657,7 +657,7 @@ func queryJob(row rowScanner) (acquisition.AcquisitionJob, error) {
 	if err := row.Scan(
 		&id, &mediaType, &title, &year, &season, &episode, &state,
 		&selectedProvider, &selectedTitle, &selectedSize, &selectedIndexer,
-		&selectedKind, &selectedIdentity, &selectedHash, &selectedSeeders, &selectedHasSeeders,
+		&selectedKind, &selectedIdentity, &selectedValidator, &selectedHash, &selectedSeeders, &selectedHasSeeders,
 		&createdProvider, &createdObjectID, &selectedCandidateOrdinal, &createdByJob,
 		&publishedObjectID, &errorCode,
 		&attempt, &progress, &createdMillis, &updatedMillis,
@@ -703,7 +703,7 @@ func queryJob(row rowScanner) (acquisition.AcquisitionJob, error) {
 			if mediaErr != nil {
 				return acquisition.AcquisitionJob{}, fmt.Errorf("validate persisted range media: %w", mediaErr)
 			}
-			candidate, candidateErr := acquisition.NewRangeCandidate(media, selectedIndexer)
+			candidate, candidateErr := acquisition.NewRangeCandidate(media, selectedIndexer, restoredRangeValidator(selectedValidator))
 			if candidateErr != nil {
 				return acquisition.AcquisitionJob{}, fmt.Errorf("validate persisted range candidate: %w", candidateErr)
 			}
@@ -739,10 +739,10 @@ func queryJob(row rowScanner) (acquisition.AcquisitionJob, error) {
 }
 
 func queryCandidate(row rowScanner) (acquisition.JobCandidate, error) {
-	var kind, provider, title, indexer, identity, outcome string
+	var kind, provider, title, indexer, identity, validator, outcome string
 	var ordinal, seeders, hasSeeders int
 	var size int64
-	if err := row.Scan(&ordinal, &kind, &provider, &title, &size, &indexer, &identity, &seeders, &hasSeeders, &outcome); err != nil {
+	if err := row.Scan(&ordinal, &kind, &provider, &title, &size, &indexer, &identity, &validator, &seeders, &hasSeeders, &outcome); err != nil {
 		return acquisition.JobCandidate{}, err
 	}
 	var selection acquisition.JobSelection
@@ -772,7 +772,7 @@ func queryCandidate(row rowScanner) (acquisition.JobCandidate, error) {
 		if mediaErr != nil {
 			return acquisition.JobCandidate{}, fmt.Errorf("validate persisted range candidate media: %w", mediaErr)
 		}
-		candidate, candidateErr := acquisition.NewRangeCandidate(media, indexer)
+		candidate, candidateErr := acquisition.NewRangeCandidate(media, indexer, restoredRangeValidator(validator))
 		if candidateErr != nil {
 			return acquisition.JobCandidate{}, fmt.Errorf("validate persisted range candidate: %w", candidateErr)
 		}
@@ -839,6 +839,21 @@ func persistedSeeders(selection acquisition.JobSelection) (int, int) {
 		return selection.Seeders(), 1
 	}
 	return 0, 0
+}
+
+func persistedValidator(selection acquisition.JobSelection) string {
+	candidate, ok := selection.RangeCandidate()
+	if !ok {
+		return ""
+	}
+	return candidate.Validator()
+}
+
+func restoredRangeValidator(value string) string {
+	if value == "" {
+		return "blackpearl:legacy-unverified"
+	}
+	return value
 }
 
 func validateTransitionInput(claim acquisition.AcquisitionJobClaim, now time.Time) error {

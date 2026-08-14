@@ -82,7 +82,7 @@ func (g *Gateway) ListRangeCandidates(ctx context.Context, release acquisition.R
 		if mediaErr != nil {
 			continue
 		}
-		candidate, candidateErr := acquisition.NewRangeCandidate(media, internetArchiveTag)
+		candidate, candidateErr := acquisition.NewRangeCandidate(media, internetArchiveTag, "internet-archive:sha1:"+file.sha1)
 		if candidateErr == nil {
 			result = append(result, candidate)
 		}

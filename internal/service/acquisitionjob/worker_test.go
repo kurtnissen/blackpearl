@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"path/filepath"
 	"testing"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/blackpearl-media/blackpearl/internal/domain"
 	acquisitionjobrepo "github.com/blackpearl-media/blackpearl/internal/repository/acquisitionjob"
 	acquisitionjobservice "github.com/blackpearl-media/blackpearl/internal/service/acquisitionjob"
+	"github.com/blackpearl-media/blackpearl/internal/service/directrange"
 	"github.com/stretchr/testify/require"
 )
 
@@ -212,6 +214,45 @@ func TestWorkerAdvancesPermanentlyUnplayableDirectRange(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, acquisition.SelectionKindTorrent, next.Selection().Kind())
 			require.Zero(t, provider.deleteCalls)
+		})
+	}
+}
+
+func TestWorkerAdvancesSameNameAndSizeDirectRangeWhenContentValidatorChanges(t *testing.T) {
+	t.Parallel()
+	for _, stage := range []string{"selected", "preparing"} {
+		stage := stage
+		t.Run(stage, func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+			repository, now, jobID := queuedJob(t, ctx)
+			torrentProvider := &fakeJobProvider{releases: []acquisition.Release{mustJobRelease(t)}}
+			candidate := mustWorkerRangeCandidate(t)
+			opener := &changingRangeOpener{size: candidate.Media().Size, validator: candidate.Validator()}
+			preparer, err := directrange.NewPreparer(opener)
+			require.NoError(t, err)
+			directProvider := &validatingDirectWorkerProvider{resolved: []acquisition.RangeCandidate{candidate}, preparer: preparer}
+			worker := newDirectJobWorker(t, repository, torrentProvider, directProvider, &fakeJobPublisher{}, now)
+
+			state, err := worker.ProcessOne(ctx)
+			require.NoError(t, err)
+			require.Equal(t, acquisition.JobStateSelected, state)
+			if stage == "preparing" {
+				state, err = worker.ProcessOne(ctx)
+				require.NoError(t, err)
+				require.Equal(t, acquisition.JobStatePreparing, state)
+			}
+			opener.validator = "sha1:same-name-and-size-replacement"
+
+			state, err = worker.ProcessOne(ctx)
+
+			require.NoError(t, err)
+			require.Equal(t, acquisition.JobStateSelected, state)
+			next, err := repository.Get(ctx, jobID)
+			require.NoError(t, err)
+			require.Equal(t, acquisition.SelectionKindTorrent, next.Selection().Kind())
+			require.Equal(t, mustJobRelease(t).InfoHash(), next.Selection().Identity())
+			require.Zero(t, torrentProvider.deleteCalls)
 		})
 	}
 }
@@ -806,7 +847,7 @@ func newDirectJobWorker(
 	t *testing.T,
 	repository *acquisitionjobrepo.Repository,
 	provider *fakeJobProvider,
-	direct *fakeDirectWorkerProvider,
+	direct directWorkerProvider,
 	publisher *fakeJobPublisher,
 	now time.Time,
 ) *acquisitionjobservice.Worker {
@@ -819,6 +860,11 @@ func newDirectJobWorker(
 	}, publisher, workerOptions(now))
 	require.NoError(t, err)
 	return worker
+}
+
+type directWorkerProvider interface {
+	acquisitionjobservice.DirectResolver
+	acquisitionjobservice.RangePreparer
 }
 
 func workerOptions(now time.Time) acquisitionjobservice.WorkerOptions {
@@ -866,6 +912,46 @@ type fakeDirectWorkerProvider struct {
 	inspectErr   error
 	inspectCalls int
 }
+
+type validatingDirectWorkerProvider struct {
+	resolved []acquisition.RangeCandidate
+	preparer *directrange.Preparer
+}
+
+func (p *validatingDirectWorkerProvider) Resolve(context.Context, acquisition.SearchRequest) ([]acquisition.RangeCandidate, error) {
+	return append([]acquisition.RangeCandidate(nil), p.resolved...), nil
+}
+
+func (p *validatingDirectWorkerProvider) Prepare(ctx context.Context, candidate acquisition.RangeCandidate) (acquisition.CreatedObject, error) {
+	return p.preparer.Prepare(ctx, candidate)
+}
+
+func (p *validatingDirectWorkerProvider) Inspect(ctx context.Context, selection acquisition.JobSelection, created acquisition.CreatedObject) (acquisition.PreparationInspection, error) {
+	return p.preparer.Inspect(ctx, selection, created)
+}
+
+type changingRangeOpener struct {
+	size      int64
+	validator string
+}
+
+func (o *changingRangeOpener) Open(context.Context, domain.BackingRef) (acquisition.RangeSource, error) {
+	return &changingRangeSource{size: o.size, validator: o.validator}, nil
+}
+
+func (o *changingRangeOpener) Ready(context.Context) error { return nil }
+
+type changingRangeSource struct {
+	size      int64
+	validator string
+}
+
+func (s *changingRangeSource) ReadAt(context.Context, []byte, int64) (int, error) {
+	return 0, io.EOF
+}
+func (s *changingRangeSource) Size() int64       { return s.size }
+func (s *changingRangeSource) Validator() string { return s.validator }
+func (s *changingRangeSource) Close() error      { return nil }
 
 func (f *fakeDirectWorkerProvider) Resolve(context.Context, acquisition.SearchRequest) ([]acquisition.RangeCandidate, error) {
 	return append([]acquisition.RangeCandidate(nil), f.resolved...), f.resolveErr
@@ -1009,7 +1095,7 @@ func mustWorkerRangeCandidate(t *testing.T) acquisition.RangeCandidate {
 		175_099_607,
 	)
 	require.NoError(t, err)
-	candidate, err := acquisition.NewRangeCandidate(media, "Internet Archive")
+	candidate, err := acquisition.NewRangeCandidate(media, "Internet Archive", "sha1:fixture")
 	require.NoError(t, err)
 	return candidate
 }

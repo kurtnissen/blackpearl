@@ -21,8 +21,9 @@ func TestJobSelectionSupportsTorrentAndRangeVariants(t *testing.T) {
 		175_099_607,
 	)
 	require.NoError(t, err)
-	rangeCandidate, err := acquisition.NewRangeCandidate(media, "internet-archive")
+	rangeCandidate, err := acquisition.NewRangeCandidate(media, "internet-archive", "sha1:fixture")
 	require.NoError(t, err)
+	require.Equal(t, "sha1:fixture", rangeCandidate.Validator())
 	rangeSelection, err := acquisition.NewRangeJobSelection(rangeCandidate)
 	require.NoError(t, err)
 
@@ -58,9 +59,11 @@ func TestRangeCandidateAndSelectionRejectInvalidVariantState(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	_, err = acquisition.NewRangeCandidate(domain.MediaCandidate{}, "internet-archive")
+	_, err = acquisition.NewRangeCandidate(domain.MediaCandidate{}, "internet-archive", "sha1:fixture")
 	require.Error(t, err)
-	_, err = acquisition.NewRangeCandidate(validMedia, "")
+	_, err = acquisition.NewRangeCandidate(validMedia, "", "sha1:fixture")
+	require.Error(t, err)
+	_, err = acquisition.NewRangeCandidate(validMedia, "internet-archive", "")
 	require.Error(t, err)
 	_, err = acquisition.NewRangeJobSelection(acquisition.RangeCandidate{})
 	require.Error(t, err)
@@ -78,7 +81,7 @@ func TestRangeJobSelectionSurvivesCandidateAndSnapshotValidation(t *testing.T) {
 		2048,
 	)
 	require.NoError(t, err)
-	rangeCandidate, err := acquisition.NewRangeCandidate(media, "internet-archive")
+	rangeCandidate, err := acquisition.NewRangeCandidate(media, "internet-archive", "sha1:fixture")
 	require.NoError(t, err)
 	selection, err := acquisition.NewRangeJobSelection(rangeCandidate)
 	require.NoError(t, err)

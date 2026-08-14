@@ -355,6 +355,11 @@ func TestRepositoryPersistsMixedTorrentAndRangePlanAcrossRestart(t *testing.T) {
 	require.Equal(t, acquisition.SelectionKindTorrent, stored[0].Selection().Kind())
 	require.Equal(t, acquisition.SelectionKindRange, stored[1].Selection().Kind())
 	require.Equal(t, rangeSelection.Identity(), stored[1].Selection().Identity())
+	storedRange, ok := stored[1].Selection().RangeCandidate()
+	require.True(t, ok)
+	expectedRange, ok := rangeSelection.RangeCandidate()
+	require.True(t, ok)
+	require.Equal(t, expectedRange.Validator(), storedRange.Validator())
 
 	selectedClaim, err := repository.Claim(ctx, at.Add(2*time.Second), time.Minute)
 	require.NoError(t, err)
@@ -371,6 +376,9 @@ func TestRepositoryPersistsMixedTorrentAndRangePlanAcrossRestart(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, acquisition.SelectionKindRange, next.Selection().Kind())
 	require.Equal(t, rangeSelection.Identity(), next.Selection().Identity())
+	nextRange, ok := next.Selection().RangeCandidate()
+	require.True(t, ok)
+	require.Equal(t, expectedRange.Validator(), nextRange.Validator())
 
 	rangeClaim, err := repository.Claim(ctx, at.Add(4*time.Second), time.Minute)
 	require.NoError(t, err)
@@ -540,7 +548,7 @@ func mustRangeSelection(t *testing.T) acquisition.JobSelection {
 		175_099_607,
 	)
 	require.NoError(t, err)
-	candidate, err := acquisition.NewRangeCandidate(media, "internet-archive")
+	candidate, err := acquisition.NewRangeCandidate(media, "internet-archive", "sha1:fixture")
 	require.NoError(t, err)
 	selection, err := acquisition.NewRangeJobSelection(candidate)
 	require.NoError(t, err)

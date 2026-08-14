@@ -15,7 +15,7 @@ import (
 func TestPreparerUsesMetadataOnlyAndInspectsRestartSafeRangeSelection(t *testing.T) {
 	t.Parallel()
 	candidate := directCandidate(t, "object", "Example.Movie.2026.mp4", 16)
-	source := &preparerSource{size: 16, validator: "sha1:fixture"}
+	source := &preparerSource{size: 16, validator: "sha1:fixture-object"}
 	opener := &preparerOpener{source: source}
 	preparer, err := directrange.NewPreparer(opener)
 	require.NoError(t, err)
@@ -28,7 +28,7 @@ func TestPreparerUsesMetadataOnlyAndInspectsRestartSafeRangeSelection(t *testing
 
 	selection, err := acquisition.NewRangeJobSelection(candidate)
 	require.NoError(t, err)
-	opener.source = &preparerSource{size: 16, validator: "sha1:fixture"}
+	opener.source = &preparerSource{size: 16, validator: "sha1:fixture-object"}
 	inspection, err := preparer.Inspect(context.Background(), selection, created)
 	require.NoError(t, err)
 	require.Equal(t, 100, inspection.Progress())
@@ -47,9 +47,10 @@ func TestPreparerRejectsChangedObjectSizeOrMissingValidator(t *testing.T) {
 		source    *preparerSource
 		createdID string
 	}{
-		{name: "size", source: &preparerSource{size: 15, validator: "sha1:fixture"}, createdID: "object"},
+		{name: "size", source: &preparerSource{size: 15, validator: "sha1:fixture-object"}, createdID: "object"},
 		{name: "validator", source: &preparerSource{size: 16}, createdID: "object"},
-		{name: "object", source: &preparerSource{size: 16, validator: "sha1:fixture"}, createdID: "different"},
+		{name: "changed validator", source: &preparerSource{size: 16, validator: "sha1:replacement"}, createdID: "object"},
+		{name: "object", source: &preparerSource{size: 16, validator: "sha1:fixture-object"}, createdID: "different"},
 	} {
 		test := test
 		t.Run(test.name, func(t *testing.T) {

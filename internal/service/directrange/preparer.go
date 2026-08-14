@@ -26,7 +26,7 @@ func NewPreparer(opener cache.RangeOpener) (*Preparer, error) {
 
 // Prepare verifies the selected exact file and returns its non-owned backing.
 func (p *Preparer) Prepare(ctx context.Context, candidate acquisition.RangeCandidate) (acquisition.CreatedObject, error) {
-	validated, err := acquisition.NewRangeCandidate(candidate.Media(), candidate.Indexer())
+	validated, err := acquisition.NewRangeCandidate(candidate.Media(), candidate.Indexer(), candidate.Validator())
 	if err != nil {
 		return acquisition.CreatedObject{}, fmt.Errorf("validate direct range candidate: %w", err)
 	}
@@ -89,8 +89,12 @@ func (p *Preparer) verify(ctx context.Context, candidate acquisition.RangeCandid
 	if source.Size() != candidate.Media().Size {
 		return fmt.Errorf("direct range media size changed: got %d want %d: %w", source.Size(), candidate.Media().Size, acquisition.ErrRangeUnplayable)
 	}
-	if strings.TrimSpace(source.Validator()) == "" {
+	actualValidator := strings.TrimSpace(source.Validator())
+	if actualValidator == "" {
 		return fmt.Errorf("direct range media requires an immutable validator: %w", acquisition.ErrRangeUnplayable)
+	}
+	if actualValidator != candidate.Validator() {
+		return fmt.Errorf("direct range media validator changed: got %q want %q: %w", actualValidator, candidate.Validator(), acquisition.ErrRangeUnplayable)
 	}
 	return nil
 }

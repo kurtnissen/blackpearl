@@ -16,6 +16,8 @@ var jobIDPattern = regexp.MustCompile(`^[0-9a-f]{32}$`)
 // MaximumJobCandidates caps automatic provider mutations for one durable job.
 const MaximumJobCandidates = 5
 
+const maximumRangeValidatorBytes = 512
+
 // JobState is the durable lifecycle stage of one explicitly requested
 // background acquisition.
 type JobState string
@@ -57,12 +59,13 @@ const (
 // RangeCandidate is safe, durable metadata for one exact range-readable file.
 // Its backing object ID is provider-opaque and must not contain a source URL.
 type RangeCandidate struct {
-	media   domain.MediaCandidate
-	indexer string
+	media     domain.MediaCandidate
+	indexer   string
+	validator string
 }
 
 // NewRangeCandidate validates one exact provider-backed media file.
-func NewRangeCandidate(media domain.MediaCandidate, indexer string) (RangeCandidate, error) {
+func NewRangeCandidate(media domain.MediaCandidate, indexer string, validator string) (RangeCandidate, error) {
 	validated, err := domain.NewProviderMediaCandidate(media.Backing(), media.Name, media.Size)
 	if err != nil {
 		return RangeCandidate{}, fmt.Errorf("validate range media candidate: %w", err)
@@ -74,7 +77,27 @@ func NewRangeCandidate(media domain.MediaCandidate, indexer string) (RangeCandid
 	if err != nil {
 		return RangeCandidate{}, err
 	}
-	return RangeCandidate{media: validated, indexer: cleanIndexer}, nil
+	cleanValidator, err := validateRangeValidator(validator)
+	if err != nil {
+		return RangeCandidate{}, err
+	}
+	return RangeCandidate{media: validated, indexer: cleanIndexer, validator: cleanValidator}, nil
+}
+
+func validateRangeValidator(value string) (string, error) {
+	clean := strings.TrimSpace(value)
+	if clean == "" || clean != value {
+		return "", errors.New("range candidate validator requires non-whitespace text without surrounding whitespace")
+	}
+	if len(clean) > maximumRangeValidatorBytes {
+		return "", fmt.Errorf("range candidate validator must not exceed %d bytes", maximumRangeValidatorBytes)
+	}
+	for _, character := range clean {
+		if unicode.IsControl(character) {
+			return "", errors.New("range candidate validator must not contain control characters")
+		}
+	}
+	return clean, nil
 }
 
 func (c RangeCandidate) isZero() bool {
@@ -86,6 +109,9 @@ func (c RangeCandidate) Media() domain.MediaCandidate { return c.media }
 
 // Indexer returns the safe catalog or index display name.
 func (c RangeCandidate) Indexer() string { return c.indexer }
+
+// Validator returns the immutable content fingerprint selected by the resolver.
+func (c RangeCandidate) Validator() string { return c.validator }
 
 // JobSelection is the safe, durable union of torrent and exact-file candidates.
 // It intentionally contains no source URL, magnet, download URL, or credential.
@@ -171,7 +197,7 @@ func NewTorrentJobSelection(release Release) (JobSelection, error) {
 
 // NewRangeJobSelection stores exact-file metadata without a source URL.
 func NewRangeJobSelection(candidate RangeCandidate) (JobSelection, error) {
-	validated, err := NewRangeCandidate(candidate.Media(), candidate.Indexer())
+	validated, err := NewRangeCandidate(candidate.Media(), candidate.Indexer(), candidate.Validator())
 	if err != nil {
 		return JobSelection{}, fmt.Errorf("validate durable range selection: %w", err)
 	}

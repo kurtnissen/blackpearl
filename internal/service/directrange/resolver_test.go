@@ -157,7 +157,7 @@ func directCandidate(t *testing.T, objectID string, name string, size int64) acq
 		domain.BackingRef{Provider: "internet-archive-file", ObjectID: objectID}, name, size,
 	)
 	require.NoError(t, err)
-	candidate, err := acquisition.NewRangeCandidate(media, "Internet Archive")
+	candidate, err := acquisition.NewRangeCandidate(media, "Internet Archive", "sha1:fixture-"+objectID)
 	require.NoError(t, err)
 	return candidate
 }
