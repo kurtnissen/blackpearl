@@ -9,13 +9,13 @@ Primary local acceptance was tested from `main` on an Apple Silicon Mac with Doc
 | Gate | Result | Evidence |
 |---|---|---|
 | Go race tests | Pass | `go test -race ./...` |
-| Go coverage | Pass | 80.7% of project statements from `go test -coverprofile=coverage.out ./...`; generated Go code inside `web/node_modules` is excluded from the project floor |
+| Go coverage | Pass | 80.6% of project statements from `go test -coverprofile=coverage.out ./...`; generated Go code inside `web/node_modules` is excluded from the project floor |
 | Static analysis | Pass | `go vet ./...`, Actionlint 1.7.7, and golangci-lint 2.12.2 with zero findings |
 | Dependency security | Pass locally | Go 1.26.6 plus updated OpenTelemetry, gRPC, Go networking, and go-billy modules produced `No vulnerabilities found` from govulncheck 1.7.0; `bun audit --production` also reported no vulnerabilities. |
 | Compose isolation | Pass | Rendered configuration checked by `scripts/test-compose-paths.sh`; every bind is under `runtime/`, Plex media is read-only `rslave`, and only BlackPearl receives FUSE privileges |
 | POC image build | Pass | `blackpearl:poc` built for local Linux ARM64 |
 | Portable runtime image matrix | Pass locally | Docker Buildx completed the `runtime` target for both `linux/amd64` and `linux/arm64` using the pinned Go 1.26.6 builder. This is local evidence, not hosted CI evidence. |
-| Public hosted CI | Pass | [GitHub Actions run 31844697861](https://github.com/kurtnissen/blackpearl/actions/runs/31844697861) completed on commit `fbe23a7854a175a21e44c6a32ce9e8c45a32676d`. All eight jobs passed: secret-history scan, race tests and 80.7% coverage, static lint, dependency vulnerability scan, setup UI, Compose safety, privileged Linux FUSE smoke, and the Linux image matrix. |
+| Public hosted CI | Pass | [GitHub Actions run 31850790368](https://github.com/kurtnissen/blackpearl/actions/runs/31850790368) completed on commit `ccfce18856028f06769dca336e434e217457bca6`. All nine jobs passed: secret-history scan, race tests and 80.6% coverage, static lint, dependency vulnerability scan, setup UI, Compose safety, privileged Linux FUSE smoke, and separate Linux AMD64 and ARM64 image builds. |
 | Hosted image matrix | Pass | The same public CI run built the complete `poc` target for both `linux/amd64` and `linux/arm64`. Architecture-independent frontend and fixture stages run on the build platform, while Go cross-compiles the target binary and each final runtime layer is built for its requested platform. |
 | Fixture media profile | Pass | 1280x720 H.264 `yuv420p` video, AAC 48 kHz mono audio, MP4 fast-start fixture |
 | Packaged FUSE bytes | Pass | The exact POC image mounted FUSE in a privileged Linux container; fixture and virtual SHA-256 matched and non-sequential range hashes matched |
