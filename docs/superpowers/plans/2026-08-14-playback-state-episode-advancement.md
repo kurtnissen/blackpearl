@@ -84,7 +84,7 @@ git commit -m "feat: model bounded episode playback evidence"
 - Consumes: consumer-defined `TokenSource { Token(context.Context) (string, error) }` and `domain.NewEpisodePlayback`.
 - Produces: `Gateway.Snapshot(ctx context.Context) ([]domain.EpisodePlayback, error)` and `ErrUnavailable`.
 
-- [ ] **Step 1: Write failing HTTP contract tests**
+- [x] **Step 1: Write failing HTTP contract tests**
 
 Use `httptest.Server` and a fake token source. Cover a real-shaped `/status/sessions` JSON response, header-only authentication, exact `/blackpearl` prefix stripping, playing and paused states, multiple selected parts, movies, foreign roots, malformed session isolation, envelope size/count mismatch, 401/403, redirects, oversized body, cancellation, and sanitized errors.
 
@@ -97,13 +97,13 @@ require.Equal(t, "plex://show/5d9c086ce98e47001eb0f520", actual[0].ExternalShowI
 require.Equal(t, "TV Shows/MariposaHD (2006)/Season 01/MariposaHD (2006) - S01E01 - Episode 1.mp4", actual[0].VirtualPath())
 ```
 
-- [ ] **Step 2: Run the gateway test and verify RED**
+- [x] **Step 2: Run the gateway test and verify RED**
 
 Run: `go test ./internal/gateway/plexplayback -count=1`
 
 Expected: build failure because the package does not exist.
 
-- [ ] **Step 3: Implement the strict gateway**
+- [x] **Step 3: Implement the strict gateway**
 
 Use these hard bounds:
 
@@ -116,7 +116,7 @@ const (
 
 Clone the HTTP client and set `CheckRedirect` to return `http.ErrUseLastResponse`. Build the URL with `url.JoinPath(baseURL, "status", "sessions")`; put the token only in `X-Plex-Token`; accept only one selected episode part; and return normalized domain values. Map 401/403 to `domain.ErrUnauthorized` and all other non-context failures to `ErrUnavailable` without response bodies.
 
-- [ ] **Step 4: Run gateway and full affected race tests**
+- [x] **Step 4: Run gateway and full affected race tests**
 
 Run:
 
@@ -126,7 +126,7 @@ go test -race ./internal/domain ./internal/gateway/plexplayback -count=1
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit the playback adapter**
+- [x] **Step 5: Commit the playback adapter**
 
 ```bash
 git add internal/gateway/plexplayback
