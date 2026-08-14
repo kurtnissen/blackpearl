@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"syscall"
 	"testing"
 
 	"github.com/blackpearl-media/blackpearl/internal/domain"
@@ -154,7 +155,14 @@ func TestServerReplacementDoesNotRaceWithIssuedNFSFileHandleReads(t *testing.T) 
 
 func mountTarget(t *testing.T, address string) *nfsclient.Target {
 	t.Helper()
-	client, err := rpc.DialTCP("tcp", address, false)
+	var client *rpc.Client
+	var err error
+	for range 10 {
+		client, err = rpc.DialTCP("tcp", address, false)
+		if !errors.Is(err, syscall.EADDRINUSE) {
+			break
+		}
+	}
 	require.NoError(t, err)
 	mount := &nfsclient.Mount{Client: client}
 	t.Cleanup(func() { mount.Close() })
