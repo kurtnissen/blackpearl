@@ -166,6 +166,133 @@ func TestRepositoryRejectsInvalidInputsAndDoesNotPersistPrivateErrorText(t *test
 	require.Error(t, err)
 }
 
+func TestRepositoryPlansAndReloadsBoundedReleaseCandidatesAtomically(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	databasePath := filepath.Join(t.TempDir(), "jobs.db")
+	repository, err := acquisitionjobrepo.Open(ctx, databasePath)
+	require.NoError(t, err)
+	at := time.Date(2026, time.August, 14, 12, 0, 0, 0, time.UTC)
+	job, _, err := repository.Submit(ctx, "0123456789abcdef0123456789abcdef", mustMovieRequest(t), at)
+	require.NoError(t, err)
+	claim, err := repository.Claim(ctx, at, time.Minute)
+	require.NoError(t, err)
+	candidates := mustCandidates(t, 3)
+
+	require.NoError(t, repository.Plan(ctx, claim, candidates, at.Add(time.Second)))
+	planned, err := repository.Get(ctx, job.ID())
+	require.NoError(t, err)
+	ordinal, hasPlan := planned.SelectedCandidateOrdinal()
+	require.True(t, hasPlan)
+	require.Equal(t, 0, ordinal)
+	require.Equal(t, candidates[0].Selection().InfoHash(), planned.Selection().InfoHash())
+	actual, err := repository.Candidates(ctx, job.ID())
+	require.NoError(t, err)
+	require.Equal(t, candidates, actual)
+
+	require.NoError(t, repository.Close())
+	repository, err = acquisitionjobrepo.Open(ctx, databasePath)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, repository.Close()) })
+	reloaded, err := repository.Candidates(ctx, job.ID())
+	require.NoError(t, err)
+	require.Equal(t, candidates, reloaded)
+}
+
+func TestRepositoryAdvancesCandidatesAndFailsAtomicallyWhenExhausted(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	repository := openRepository(t, ctx)
+	at := time.Date(2026, time.August, 14, 12, 0, 0, 0, time.UTC)
+	job, _, err := repository.Submit(ctx, "0123456789abcdef0123456789abcdef", mustMovieRequest(t), at)
+	require.NoError(t, err)
+	claim, err := repository.Claim(ctx, at, time.Minute)
+	require.NoError(t, err)
+	candidates := mustCandidates(t, 3)
+	require.NoError(t, repository.Plan(ctx, claim, candidates, at.Add(time.Second)))
+
+	selectedClaim, err := repository.Claim(ctx, at.Add(2*time.Second), time.Minute)
+	require.NoError(t, err)
+	created, err := acquisition.NewCreatedObject("torbox-torrent", "17")
+	require.NoError(t, err)
+	require.NoError(t, repository.AttachPrepared(ctx, selectedClaim, created, true, at.Add(3*time.Second)))
+	preparingClaim, err := repository.Claim(ctx, at.Add(4*time.Second), time.Minute)
+	require.NoError(t, err)
+
+	advanced, err := repository.Advance(
+		ctx, preparingClaim, acquisition.CandidateOutcomeStalled, acquisition.JobErrorStalled, at.Add(5*time.Second),
+	)
+	require.NoError(t, err)
+	require.True(t, advanced)
+	next, err := repository.Get(ctx, job.ID())
+	require.NoError(t, err)
+	ordinal, hasPlan := next.SelectedCandidateOrdinal()
+	require.True(t, hasPlan)
+	require.Equal(t, 1, ordinal)
+	require.False(t, next.HasCreatedObject())
+	require.False(t, next.CreatedByJob())
+	require.Equal(t, candidates[1].Selection().InfoHash(), next.Selection().InfoHash())
+
+	secondClaim, err := repository.Claim(ctx, at.Add(6*time.Second), time.Minute)
+	require.NoError(t, err)
+	require.NoError(t, repository.AttachPrepared(ctx, secondClaim, created, false, at.Add(7*time.Second)))
+	secondPreparing, err := repository.Claim(ctx, at.Add(8*time.Second), time.Minute)
+	require.NoError(t, err)
+	advanced, err = repository.Advance(
+		ctx, secondPreparing, acquisition.CandidateOutcomeMissing, acquisition.JobErrorStalled, at.Add(9*time.Second),
+	)
+	require.NoError(t, err)
+	require.True(t, advanced)
+
+	thirdClaim, err := repository.Claim(ctx, at.Add(10*time.Second), time.Minute)
+	require.NoError(t, err)
+	require.NoError(t, repository.AttachPrepared(ctx, thirdClaim, created, true, at.Add(11*time.Second)))
+	thirdPreparing, err := repository.Claim(ctx, at.Add(12*time.Second), time.Minute)
+	require.NoError(t, err)
+	advanced, err = repository.Advance(
+		ctx, thirdPreparing, acquisition.CandidateOutcomeUnplayable,
+		acquisition.JobErrorNoPlayableMedia, at.Add(13*time.Second),
+	)
+	require.NoError(t, err)
+	require.False(t, advanced)
+
+	failed, err := repository.Get(ctx, job.ID())
+	require.NoError(t, err)
+	require.Equal(t, acquisition.JobStateFailed, failed.State())
+	require.Equal(t, acquisition.JobErrorNoPlayableMedia, failed.ErrorCode())
+	require.False(t, failed.HasSelection())
+	require.False(t, failed.HasCreatedObject())
+	_, hasPlan = failed.SelectedCandidateOrdinal()
+	require.False(t, hasPlan)
+	actual, err := repository.Candidates(ctx, job.ID())
+	require.NoError(t, err)
+	require.Equal(t, acquisition.CandidateOutcomeStalled, actual[0].Outcome())
+	require.Equal(t, acquisition.CandidateOutcomeMissing, actual[1].Outcome())
+	require.Equal(t, acquisition.CandidateOutcomeUnplayable, actual[2].Outcome())
+}
+
+func TestRepositoryLegacySelectionDoesNotInferCandidatePlanOrOwnership(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	repository := openRepository(t, ctx)
+	at := time.Date(2026, time.August, 14, 12, 0, 0, 0, time.UTC)
+	job, _, err := repository.Submit(ctx, "0123456789abcdef0123456789abcdef", mustMovieRequest(t), at)
+	require.NoError(t, err)
+	claim, err := repository.Claim(ctx, at, time.Minute)
+	require.NoError(t, err)
+	require.NoError(t, repository.Select(ctx, claim, mustSelection(t), at.Add(time.Second)))
+
+	legacy, err := repository.Get(ctx, job.ID())
+
+	require.NoError(t, err)
+	_, hasPlan := legacy.SelectedCandidateOrdinal()
+	require.False(t, hasPlan)
+	require.False(t, legacy.CreatedByJob())
+	candidates, err := repository.Candidates(ctx, job.ID())
+	require.NoError(t, err)
+	require.Empty(t, candidates)
+}
+
 func openRepository(t *testing.T, ctx context.Context) *acquisitionjobrepo.Repository {
 	t.Helper()
 	repository, err := acquisitionjobrepo.Open(ctx, filepath.Join(t.TempDir(), "jobs.db"))
@@ -193,4 +320,29 @@ func mustSelection(t *testing.T) acquisition.JobSelection {
 	selection, err := acquisition.NewJobSelection(release)
 	require.NoError(t, err)
 	return selection
+}
+
+func mustCandidates(t *testing.T, count int) []acquisition.JobCandidate {
+	t.Helper()
+	result := make([]acquisition.JobCandidate, 0, count)
+	for ordinal := range count {
+		hash := []byte("0123456789abcdef0123456789abcdef01234567")
+		hash[len(hash)-1] = "789abcdef"[ordinal]
+		release, err := acquisition.NewRelease(acquisition.ReleaseInput{
+			Provider: "prowlarr", SourceID: "private-result-url", Title: "Example.Movie.2026",
+			Protocol: acquisition.ReleaseProtocolTorrent, Size: int64(100 + ordinal), Indexer: "authorized-indexer",
+			InfoHash: string(hash), DownloadURL: "http://prowlarr:9696/private-proxy",
+		})
+		require.NoError(t, err)
+		selection, err := acquisition.NewJobSelection(release)
+		require.NoError(t, err)
+		outcome := acquisition.CandidateOutcomePending
+		if ordinal == 0 {
+			outcome = acquisition.CandidateOutcomeSelected
+		}
+		candidate, err := acquisition.NewJobCandidate(selection, ordinal, outcome)
+		require.NoError(t, err)
+		result = append(result, candidate)
+	}
+	return result
 }
