@@ -50,14 +50,15 @@ SQLite stores provider-neutral records keyed by `(source, external_id)`:
 
 - normalized movie intent;
 - first/last observed timestamps;
-- state: `pending`, `acquiring`, `succeeded`, `not_cached`, or `retryable`;
+- state: `pending`, `acquiring`, `succeeded`, `not_cached`, `retryable`, or
+  `manual_review`;
 - attempt count and next-attempt timestamp; and
 - the published BlackPearl object ID only after success.
 
 An upsert never reopens a succeeded item. A crashed `acquiring` record becomes
 retryable only after a lease expires. `not_cached` uses a long cooldown because
-the prior attempt made no TorBox mutation. Retryable failures use bounded
-exponential backoff. Ambiguous create failures retain a terminal/manual-review
+the prior attempt made no TorBox mutation. Known transient failures use a
+bounded retry cooldown. Ambiguous create failures retain a terminal/manual-review
 state rather than being retried automatically.
 
 ## Polling flow
@@ -70,7 +71,7 @@ state rather than being retried automatically.
 6. Expose only aggregate queue state to the paired UI.
 
 The poller runs on a process-lifetime context, serializes acquisitions, and
-uses jittered intervals. Startup restore and manual browser acquisition keep
+uses bounded configured intervals. Startup restore and manual browser acquisition keep
 their existing locks and transactions.
 
 ## Acceptance
@@ -86,4 +87,3 @@ their existing locks and transactions.
   with Plex still network-isolated from BlackPearl.
 - Live acceptance first runs in observe-only mode, then acquires one authorized
   cached watchlist movie only after private Prowlarr indexers are configured.
-

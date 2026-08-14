@@ -9,7 +9,7 @@ Tested from `main` on an Apple Silicon Mac with Docker Desktop's Linux ARM64 VM.
 | Gate | Result | Evidence |
 |---|---|---|
 | Go race tests | Pass | `go test -race ./...` |
-| Go coverage | Pass | 81.5% of project statements from `go test -coverprofile=coverage.out ./...`; generated Go code inside `web/node_modules` is excluded from the project floor |
+| Go coverage | Pass | 81.6% of project statements from `go test -coverprofile=coverage.out ./...`; generated Go code inside `web/node_modules` is excluded from the project floor |
 | Static analysis | Pass | `go vet ./...` |
 | Compose isolation | Pass | Rendered configuration checked by `scripts/test-compose-paths.sh`; every bind is under `runtime/`, Plex media is read-only `rslave`, and only BlackPearl receives FUSE privileges |
 | POC image build | Pass | `blackpearl:poc` built for local Linux ARM64 |
@@ -58,6 +58,12 @@ Tested from `main` on an Apple Silicon Mac with Docker Desktop's Linux ARM64 VM.
 | TorBox manifest restart recovery | Pass on macOS | After a BlackPearl-only restart, the saved three-item mixed manifest restored, both NFS roots remained readable through the existing Plex mount, and the rolling cache held about 208 MB for about 2.84 GB of logical media. |
 | TorBox mixed playback decisions | Pass on macOS | The known H.264/AAC MP4 remained `directplay` after a seek from about 11:34 to 15:05. The MKV episode sought to 3:40 with original video copied and AC3 audio transcoded by Plex Web, confirming source-byte compatibility while preserving the Direct Play target for compatible media. |
 | Post-acquisition-console Plex regression | Pass on macOS in Brave | Rebuilding BlackPearl and adding Prowlarr preserved the four-item manifest and existing Plex libraries. Brave resumed the known H.264/AAC movie, Plex logged `MDE=1000, Direct play OK`, and a forward seek advanced playback from roughly 15:37 to 16:29. |
+| Plex Watchlist gateway | Pass (mocked and read-only live probe) | Bounded TLS tests cover header-only token authentication, pagination, deduplication, malformed-item isolation, redirects, response limits, cancellation, and sanitized failures. The live Discover-provider route returned the current three-item Watchlist without exposing the token. |
+| Durable Watchlist queue | Pass in race tests | SQLite tests cover idempotent movie/show observation, succeeded-item finality, no-cache cooldown, expired-lease recovery, stale-completion rejection, restart persistence, and one winner across concurrent independent database connections. |
+| Serialized Watchlist acquisition | Pass (mocked full process) | One observed movie produced exactly one Prowlarr search, one cached-only TorBox creation, atomic manifest publication, and durable success. No-cache and known transient failures receive cooldowns; any ambiguous or post-mutation failure becomes terminal manual review instead of automatic retry. Shows remain observation-only. |
+| Portable Watchlist credential boundary | Pass in Compose and live container checks | BlackPearl mounts only the project-scoped `plex-config` named volume at `/plex-config` read-only, while Plex retains its normal writable `/config` mount. Plex remains on a network disjoint from BlackPearl and Prowlarr. Automatic Watchlist acquisition is disabled by default. |
+| Plex Watchlist observe-only acceptance | Pass on macOS | After rebuilding the isolated stack, BlackPearl re-read Plex's account token from the read-only config mount, reported healthy observation with three pending movies, returned only aggregate paired status, performed no acquisition, and restored the existing four-item manifest. |
+| Post-Watchlist Plex regression | Pass on macOS in Brave | Brave opened the restored BlackPearl movie library, resumed the existing H.264/AAC movie, advanced through a forward seek, and remained playing. The current Plex server log recorded `MDE=1000,Direct play OK` with `decision=direct play`; playback was paused after verification. |
 | Cross-container Plex mount | Pending Ubuntu | Docker Desktop bind propagation cannot prove this Linux-host behavior |
 
 The current result includes locally verified FUSE and portable NFS adapters, persistent and rolling macOS Plex playback, strict random-range retrieval, a live hard-quota test, eviction, and refetch evidence. The rolling client test completed the eight-second fixture; explicit rolling-client forward/backward seek evidence remains to be captured with a longer fixture. Windows and native-Linux portability remain unverified.
@@ -86,6 +92,9 @@ The current result includes locally verified FUSE and portable NFS adapters, per
 - [x] A multi-item TorBox manifest publishes atomically, scans in Plex, and survives BlackPearl restart.
 - [x] A mixed movie/TV manifest publishes canonical Plex paths, scans in separate libraries, seeks, and survives BlackPearl restart.
 - [x] Opening one TV episode prefetches only a bounded prefix of the next episode under the same hard rolling quota.
+- [x] The isolated Plex Watchlist is observed through a read-only named-volume credential source and stored in a durable lease queue.
+- [x] Automatic Watchlist movie acquisition is serialized, cached-only, and refuses to retry ambiguous mutations.
+- [x] Live observe-only Watchlist counts are healthy while automatic acquisition remains disabled pending authorized indexers.
 - [ ] A longer rolling fixture demonstrates explicit forward and backward client seeks before playback completes.
 - [ ] CI passes after publishing the repository.
 - [ ] Both Linux AMD64 and ARM64 image builds pass in CI.
