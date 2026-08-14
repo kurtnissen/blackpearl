@@ -153,6 +153,36 @@ func TestServiceApplyPublishesMultipleSelectionsAsOneManifest(t *testing.T) {
 	require.Equal(t, status.SelectedItems[0], *status.Selected)
 }
 
+func TestServiceApplyBuildsExplicitEpisodeSelection(t *testing.T) {
+	t.Parallel()
+	candidate, err := domain.NewMediaCandidate("17:9", "Example.Show.S01E02.mkv", 2048)
+	require.NoError(t, err)
+	repository := &fakeSetupRepository{}
+	service := setupservice.New(repository,
+		func(string) (setupservice.Discoverer, error) {
+			return &fakeDiscoverer{items: []domain.MediaCandidate{candidate}}, nil
+		},
+		func(_ context.Context, _ string, manifest domain.SetupManifest) (core.CatalogService, error) {
+			require.Equal(t, domain.MediaTypeEpisode, manifest.Items[0].MediaType)
+			return &fakeCatalog{}, nil
+		},
+		&fakePublisher{},
+	)
+
+	manifest, err := service.Apply(context.Background(), setupservice.ApplyRequest{
+		Token: "new-token",
+		Items: []setupservice.ApplyItemRequest{{
+			ObjectID: candidate.ObjectID, MediaType: domain.MediaTypeEpisode, Title: "The Second",
+			Year: 2024, ShowTitle: "Example Show", Season: 1, Episode: 2,
+		}},
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, "Example Show", manifest.Items[0].ShowTitle)
+	require.Equal(t, 1, manifest.Items[0].Season)
+	require.Equal(t, 2, manifest.Items[0].Episode)
+}
+
 func TestServiceApplyKeepsRuntimeAndPersistenceWhenSaveOrPublishFails(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {

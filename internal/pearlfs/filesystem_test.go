@@ -29,6 +29,19 @@ func TestNewBuildsDeterministicMovieLayout(t *testing.T) {
 	}, root.virtualPaths())
 }
 
+func TestNewAcceptsCanonicalTVEpisodeLayout(t *testing.T) {
+	t.Parallel()
+	backing, err := domain.NewBackingRef("generated", "episode")
+	require.NoError(t, err)
+	episode, err := domain.NewEpisode("episode", "Example Show", 2024, 1, 2, "The Second", ".mkv", 84, backing)
+	require.NoError(t, err)
+
+	root, err := New(context.Background(), &fakeCatalog{media: []domain.Media{episode}})
+
+	require.NoError(t, err)
+	require.Equal(t, []string{episode.VirtualPath}, root.virtualPaths())
+}
+
 func TestNewRejectsCatalogPathOutsideMovieHierarchy(t *testing.T) {
 	t.Parallel()
 	catalog := &fakeCatalog{media: []domain.Media{{

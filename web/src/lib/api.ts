@@ -10,8 +10,12 @@ export type SetupConfiguration = {
   name: string;
   extension: ".mp4" | ".mkv";
   size: number;
+	mediaType: "movie" | "episode";
   title: string;
   year: number;
+	showTitle?: string;
+	season?: number;
+	episode?: number;
 };
 
 export type SetupStatus = {
@@ -24,8 +28,12 @@ export type SetupStatus = {
 
 export type ApplyItemInput = {
 	objectId: string;
+	mediaType: "movie" | "episode";
 	title: string;
 	year: number;
+	showTitle?: string;
+	season?: number;
+	episode?: number;
 };
 
 export type ApplyInput = {
@@ -140,8 +148,12 @@ function isConfiguration(value: unknown): value is SetupConfiguration {
     && typeof value.name === "string"
     && (value.extension === ".mp4" || value.extension === ".mkv")
     && typeof value.size === "number"
+		&& (value.mediaType === "movie" || value.mediaType === "episode")
     && typeof value.title === "string"
-    && typeof value.year === "number";
+		&& typeof value.year === "number"
+		&& (value.showTitle === undefined || typeof value.showTitle === "string")
+		&& (value.season === undefined || typeof value.season === "number")
+		&& (value.episode === undefined || typeof value.episode === "number");
 }
 
 function isSetupStatus(value: unknown): value is SetupStatus {

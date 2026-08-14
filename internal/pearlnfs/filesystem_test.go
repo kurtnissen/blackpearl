@@ -40,6 +40,23 @@ func TestFilesystemExposesPlexHierarchyAndLogicalSize(t *testing.T) {
 	require.Equal(t, os.FileMode(0o444), file.Mode().Perm())
 }
 
+func TestFilesystemExposesCanonicalTVEpisodeHierarchy(t *testing.T) {
+	t.Parallel()
+	backing, err := domain.NewBackingRef("generated", "episode")
+	require.NoError(t, err)
+	episode, err := domain.NewEpisode("episode", "Example Show", 2024, 1, 2, "The Second", ".mkv", 84, backing)
+	require.NoError(t, err)
+	filesystem, err := pearlnfs.New(context.Background(), catalogStub{items: []domain.Media{episode}})
+	require.NoError(t, err)
+
+	season, err := filesystem.Stat("TV Shows/Example Show (2024)/Season 01")
+	require.NoError(t, err)
+	require.True(t, season.IsDir())
+	file, err := filesystem.Stat(episode.VirtualPath)
+	require.NoError(t, err)
+	require.Equal(t, int64(84), file.Size())
+}
+
 func TestFilesystemReadsRequestedTailRangeWithoutCompleteFile(t *testing.T) {
 	t.Parallel()
 	filesystem := newTestFilesystem(t, context.Background())

@@ -9,7 +9,7 @@ Tested from `main` on an Apple Silicon Mac with Docker Desktop's Linux ARM64 VM.
 | Gate | Result | Evidence |
 |---|---|---|
 | Go race tests | Pass | `go test -race ./...` |
-| Go coverage | Pass | 80.7% of project statements from `go test -coverprofile=coverage.out ./...`; generated Go code inside `web/node_modules` is excluded from the project floor |
+| Go coverage | Pass | 80.5% of project statements from `go test -coverprofile=coverage.out ./...`; generated Go code inside `web/node_modules` is excluded from the project floor |
 | Static analysis | Pass | `go vet ./...` |
 | Compose isolation | Pass | Rendered configuration checked by `scripts/test-compose-paths.sh`; every bind is under `runtime/`, Plex media is read-only `rslave`, and only BlackPearl receives FUSE privileges |
 | POC image build | Pass | `blackpearl:poc` built for local Linux ARM64 |
@@ -40,7 +40,9 @@ Tested from `main` on an Apple Silicon Mac with Docker Desktop's Linux ARM64 VM.
 | TorBox Plex Direct Play and seek | Pass on macOS | Plex indexed an authorized 1,783,163,131-byte H.264/AAC MP4, reported `decision="directplay"`, resumed at 10:13 after a non-sequential seek, and advanced continuously to 10:34 while BlackPearl held 56,519,784 bytes of rolling chunks |
 | TorBox CDN request control | Pass in unit and live tests | A validated signed link is reused within its TTL instead of issuing a validation range before every NFS read; an expired link still refreshes on the first rejected content range. This removed live CDN 429 failures during Plex playback. |
 | TorBox multi-item manifest | Pass on macOS | Browser setup searched 3,232 eligible account videos, atomically published two authorized logical MP4s, and Plex indexed both without a Plex or stack restart. Random reads succeeded in both files. |
-| TorBox manifest restart recovery | Pass on macOS | After a BlackPearl-only restart, the saved two-item manifest restored, both NFS files remained readable through the existing Plex mount, and the rolling cache held about 107 MB for about 2.15 GB of logical media. |
+| TorBox mixed movie/TV manifest | Pass on macOS | Browser setup published two movies plus one explicit TV episode. PearlNFS exposed canonical Movies and `TV Shows/Friends (1994)/Season 07` paths; Plex matched Friends S07E01 in a separate TV library. Beginning, midpoint, and tail reads succeeded for the 890,602,349-byte episode. |
+| TorBox manifest restart recovery | Pass on macOS | After a BlackPearl-only restart, the saved three-item mixed manifest restored, both NFS roots remained readable through the existing Plex mount, and the rolling cache held about 208 MB for about 2.84 GB of logical media. |
+| TorBox mixed playback decisions | Pass on macOS | The known H.264/AAC MP4 remained `directplay` after a seek from about 11:34 to 15:05. The MKV episode sought to 3:40 with original video copied and AC3 audio transcoded by Plex Web, confirming source-byte compatibility while preserving the Direct Play target for compatible media. |
 | Cross-container Plex mount | Pending Ubuntu | Docker Desktop bind propagation cannot prove this Linux-host behavior |
 
 The current result includes locally verified FUSE and portable NFS adapters, persistent and rolling macOS Plex playback, strict random-range retrieval, a live hard-quota test, eviction, and refetch evidence. The rolling client test completed the eight-second fixture; explicit rolling-client forward/backward seek evidence remains to be captured with a longer fixture. Windows and native-Linux portability remain unverified.
@@ -67,6 +69,7 @@ The current result includes locally verified FUSE and portable NFS adapters, per
 - [x] An authorized TorBox token discovers account media through the live provider.
 - [x] Plex Direct Plays and seeks an authorized TorBox-backed logical file.
 - [x] A multi-item TorBox manifest publishes atomically, scans in Plex, and survives BlackPearl restart.
+- [x] A mixed movie/TV manifest publishes canonical Plex paths, scans in separate libraries, seeks, and survives BlackPearl restart.
 - [ ] A longer rolling fixture demonstrates explicit forward and backward client seeks before playback completes.
 - [ ] CI passes after publishing the repository.
 - [ ] Both Linux AMD64 and ARM64 image builds pass in CI.

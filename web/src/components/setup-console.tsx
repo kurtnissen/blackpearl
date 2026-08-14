@@ -7,12 +7,21 @@ import {
   getStatus,
   SetupAPIError,
   type MediaCandidate,
+	type ApplyItemInput,
   type SetupAuthorization,
   type SetupConfiguration,
 } from "../lib/api";
 
 type Phase = "loading" | "credentials" | "select" | "ready";
-type SelectionDraft = { objectId: string; title: string; year: number };
+type SelectionDraft = {
+	objectId: string;
+	mediaType: "movie" | "episode";
+	title: string;
+	year: number;
+	showTitle: string;
+	season: number;
+	episode: number;
+};
 const setupSessionStorageKey = "blackpearl.setup.session";
 const setupBootstrapStorageKey = "blackpearl.setup.bootstrap";
 const maximumManifestItems = 100;
@@ -91,7 +100,10 @@ export function SetupConsole(): React.JSX.Element {
 			setDrafts(useSavedToken
 				? selectedItems
 					.filter((item) => discoveredIDs.has(item.objectId))
-					.map((item) => ({ objectId: item.objectId, title: item.title, year: item.year }))
+					.map((item) => ({
+						objectId: item.objectId, mediaType: item.mediaType, title: item.title, year: item.year,
+						showTitle: item.showTitle ?? "", season: item.season ?? 1, episode: item.episode ?? 1,
+					}))
 				: []);
       if (result.candidates.length === 0) {
         setMessage("No ready MP4 or MKV files found");
@@ -112,12 +124,18 @@ export function SetupConsole(): React.JSX.Element {
 				return current.filter((draft) => draft.objectId !== candidate.objectId);
 			}
 			if (current.length >= maximumManifestItems) return current;
-			return [...current, { objectId: candidate.objectId, title: suggestTitle(candidate.name), year: new Date().getFullYear() }];
+			return [...current, suggestDraft(candidate)];
 		});
   }
 
-	function updateDraft(objectId: string, update: Partial<Pick<SelectionDraft, "title" | "year">>): void {
+	function updateDraft(objectId: string, update: Partial<Omit<SelectionDraft, "objectId">>): void {
 		setDrafts((current) => current.map((draft) => draft.objectId === objectId ? { ...draft, ...update } : draft));
+	}
+
+	function replaceDraft(objectId: string, mediaType: "movie" | "episode"): void {
+		const candidate = candidates.find((item) => item.objectId === objectId);
+		if (!candidate) return;
+		setDrafts((current) => current.map((draft) => draft.objectId === objectId ? suggestDraft(candidate, mediaType) : draft));
 	}
 
   async function apply(): Promise<void> {
@@ -127,7 +145,7 @@ export function SetupConsole(): React.JSX.Element {
     try {
       const result = await applyConfiguration({
         token: token === "" ? undefined : token,
-				items: drafts,
+				items: drafts.map(toApplyItem),
       }, csrf, authorization);
       storeSession(result.session);
       setSession(result.session);
@@ -221,15 +239,19 @@ export function SetupConsole(): React.JSX.Element {
 							{drafts.map((draft, index) => (
 								<div className="plex-fields" key={draft.objectId}>
 									<span className="selection-number">{String(index + 1).padStart(2, "0")}</span>
-									<label>Plex title<input value={draft.title} maxLength={200} onChange={(event) => updateDraft(draft.objectId, { title: event.target.value })} /></label>
+									<label>Media type<select value={draft.mediaType} onChange={(event) => replaceDraft(draft.objectId, mediaTypeFromValue(event.target.value))}><option value="movie">Movie</option><option value="episode">TV episode</option></select></label>
+									{draft.mediaType === "episode" && <label>Show title<input value={draft.showTitle} maxLength={200} onChange={(event) => updateDraft(draft.objectId, { showTitle: event.target.value })} /></label>}
+									<label>{draft.mediaType === "episode" ? "Episode title" : "Plex title"}<input value={draft.title} maxLength={200} onChange={(event) => updateDraft(draft.objectId, { title: event.target.value })} /></label>
 									<label>Year<input type="number" min="1888" max="2100" value={draft.year} onChange={(event) => updateDraft(draft.objectId, { year: event.target.valueAsNumber })} /></label>
+									{draft.mediaType === "episode" && <label>Season<input type="number" min="0" max="99" value={draft.season} onChange={(event) => updateDraft(draft.objectId, { season: event.target.valueAsNumber })} /></label>}
+									{draft.mediaType === "episode" && <label>Episode<input type="number" min="1" max="999" value={draft.episode} onChange={(event) => updateDraft(draft.objectId, { episode: event.target.valueAsNumber })} /></label>}
 									<button type="button" onClick={() => setDrafts((current) => current.filter((item) => item.objectId !== draft.objectId))}>Remove</button>
 								</div>
 							))}
 						</div>
 					)}
             <div className="actions">
-						<button className="primary" type="button" onClick={() => void apply()} disabled={pending || drafts.length === 0 || drafts.some((draft) => draft.title.trim() === "" || !Number.isInteger(draft.year))}>Use {drafts.length || "selected"} with Plex</button>
+						<button className="primary" type="button" onClick={() => void apply()} disabled={pending || drafts.length === 0 || drafts.some((draft) => !validDraft(draft))}>Use {drafts.length || "selected"} with Plex</button>
               <button type="button" onClick={() => setPhase("credentials")} disabled={pending}>Back</button>
             </div>
           </div>
@@ -241,7 +263,7 @@ export function SetupConsole(): React.JSX.Element {
             <h3>BlackPearl is ready</h3>
             <dl>
 						<div><dt>Plex library</dt><dd>{selectedItems.length} {selectedItems.length === 1 ? "video" : "videos"}</dd></div>
-						<div><dt>Manifest</dt><dd>{selectedItems.map((item) => `${item.title} (${item.year})`).join(" · ")}</dd></div>
+						<div><dt>Manifest</dt><dd>{selectedItems.map(manifestLabel).join(" · ")}</dd></div>
 						<div><dt>Logical size</dt><dd>{formatBytes(selectedItems.reduce((total, item) => total + item.size, 0))}</dd></div>
               <div><dt>Storage</dt><dd>Rolling range cache</dd></div>
             </dl>
@@ -292,6 +314,73 @@ function publicMessage(error: unknown): string {
 function suggestTitle(name: string): string {
   const base = name.split("/").at(-1) ?? name;
   return base.replace(/\.(mkv|mp4)$/i, "").replace(/[._]+/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function suggestDraft(candidate: MediaCandidate, forcedType?: "movie" | "episode"): SelectionDraft {
+	const base = (candidate.name.split("/").at(-1) ?? candidate.name).replace(/\.(mkv|mp4)$/i, "");
+	const episodeMatch = /^(.*?)[ ._-]+S(\d{1,2})E(\d{1,3})(?:[ ._-]+(.*))?$/i.exec(base);
+	const mediaType = forcedType ?? (episodeMatch ? "episode" : "movie");
+	if (mediaType === "episode") {
+		const showSource = episodeMatch?.[1] ?? base;
+		const year = suggestYear(candidate.name);
+		const showTitle = cleanDisplayTitle(showSource.replace(/\b(19|20)\d{2}\b/, "")).replace(/\s*-\s*$/, "");
+		const season = episodeMatch ? Number.parseInt(episodeMatch[2], 10) : 1;
+		const episode = episodeMatch ? Number.parseInt(episodeMatch[3], 10) : 1;
+		return {
+			objectId: candidate.objectId, mediaType, showTitle, year, season, episode,
+			title: suggestEpisodeTitle(episodeMatch?.[4], episode),
+		};
+	}
+	return {
+		objectId: candidate.objectId, mediaType, title: suggestTitle(candidate.name), year: suggestYear(base),
+		showTitle: "", season: 1, episode: 1,
+	};
+}
+
+function suggestYear(value: string): number {
+	const matched = /\b(19|20)\d{2}\b/.exec(value);
+	return matched ? Number.parseInt(matched[0], 10) : new Date().getFullYear();
+}
+
+function cleanDisplayTitle(value: string): string {
+	return value.replace(/[._]+/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function suggestEpisodeTitle(value: string | undefined, episode: number): string {
+	const fallback = `Episode ${String(episode).padStart(2, "0")}`;
+	if (!value) return fallback;
+	const cleaned = cleanDisplayTitle(value.replace(/\s*\[[^\]]*\]\s*$/, "")).replace(/^\s*-\s*/, "");
+	if (cleaned === "" || /^(?:\d{3,4}p|UHD|WEB(?:-DL)?|BluRay|HDR|DV|x26[45]|h26[45])\b/i.test(cleaned)) return fallback;
+	return cleaned;
+}
+
+function mediaTypeFromValue(value: string): "movie" | "episode" {
+	return value === "episode" ? "episode" : "movie";
+}
+
+function validDraft(draft: SelectionDraft): boolean {
+	if (draft.title.trim() === "" || !Number.isInteger(draft.year) || draft.year < 1888 || draft.year > 2100) return false;
+	if (draft.mediaType === "movie") return true;
+	return draft.showTitle.trim() !== ""
+		&& Number.isInteger(draft.season) && draft.season >= 0 && draft.season <= 99
+		&& Number.isInteger(draft.episode) && draft.episode >= 1 && draft.episode <= 999;
+}
+
+function toApplyItem(draft: SelectionDraft): ApplyItemInput {
+	if (draft.mediaType === "episode") {
+		return {
+			objectId: draft.objectId, mediaType: draft.mediaType, title: draft.title, year: draft.year,
+			showTitle: draft.showTitle, season: draft.season, episode: draft.episode,
+		};
+	}
+	return { objectId: draft.objectId, mediaType: draft.mediaType, title: draft.title, year: draft.year };
+}
+
+function manifestLabel(item: SetupConfiguration): string {
+	if (item.mediaType === "episode") {
+		return `${item.showTitle ?? "TV Show"} S${String(item.season ?? 0).padStart(2, "0")}E${String(item.episode ?? 0).padStart(2, "0")}`;
+	}
+	return `${item.title} (${item.year})`;
 }
 
 function phaseLabel(phase: Phase): string {

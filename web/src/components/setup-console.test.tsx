@@ -23,10 +23,10 @@ it("discovers videos, applies a multi-item manifest, and clears the token field"
       headers: { "X-BlackPearl-Session": session },
     }))
 		.mockResolvedValueOnce(new Response(JSON.stringify({
-			selected: { objectId: "17:3", name: "Films/Example.mkv", extension: ".mkv", size: 1073741824, title: "Example", year: 2026 },
+			selected: { objectId: "17:3", name: "Films/Example.mkv", extension: ".mkv", size: 1073741824, mediaType: "movie", title: "Example", year: 2026 },
 			selectedItems: [
-				{ objectId: "17:3", name: "Films/Example.mkv", extension: ".mkv", size: 1073741824, title: "Example", year: 2026 },
-				{ objectId: "17:4", name: "Films/Second.mp4", extension: ".mp4", size: 734003200, title: "Second", year: 2026 },
+				{ objectId: "17:3", name: "Films/Example.mkv", extension: ".mkv", size: 1073741824, mediaType: "movie", title: "Example", year: 2026 },
+				{ objectId: "17:4", name: "Films/Second.mp4", extension: ".mp4", size: 734003200, mediaType: "movie", title: "Second", year: 2026 },
 			],
 		}), {
       status: 200,
@@ -98,7 +98,7 @@ it("bounds the visible account list and searches the full discovery result", asy
 it("keeps the active manifest selected when adding videos with the saved token", async () => {
 	const session = "a".repeat(64);
 	const bootstrap = "b".repeat(64);
-	const active = { objectId: "17:3", name: "Films/Existing.mp4", extension: ".mp4", size: 1024, title: "Existing", year: 2024 };
+	const active = { objectId: "17:3", name: "Films/Existing.mp4", extension: ".mp4", size: 1024, mediaType: "movie", title: "Existing", year: 2024 };
 	window.history.replaceState(null, "", `/#bootstrap=${bootstrap}`);
 	vi.stubGlobal("fetch", vi.fn()
 		.mockResolvedValueOnce(new Response(JSON.stringify({ setupRequired: false, tokenConfigured: true, csrfToken: "csrf", selected: active, selectedItems: [active] }), { status: 200 }))
@@ -113,6 +113,33 @@ it("keeps the active manifest selected when adding videos with the saved token",
 
 	expect(await screen.findByRole("checkbox", { name: /Existing\.mp4/ })).toBeChecked();
 	expect(screen.getByLabelText("Plex title")).toHaveValue("Existing");
+});
+
+it("suggests explicit TV metadata for an SxxEyy filename", async () => {
+	const session = "a".repeat(64);
+	vi.stubGlobal("fetch", vi.fn()
+		.mockResolvedValueOnce(new Response(JSON.stringify({ setupRequired: true, tokenConfigured: false, csrfToken: "csrf" }), { status: 200 }))
+		.mockResolvedValueOnce(new Response(JSON.stringify({ candidates: [
+			{
+				objectId: "17:9",
+				name: "Friends.1994.Season.7.Complete/Friends - S07E01 - The One With Monica's Thunder [4K h265].mkv",
+				extension: ".mkv",
+				size: 2048,
+			},
+		] }), { status: 200, headers: { "X-BlackPearl-Session": session } })));
+	const user = userEvent.setup();
+	render(<SetupConsole />);
+
+	await user.type(await screen.findByLabelText("TorBox API token"), "private-token");
+	await user.click(screen.getByRole("button", { name: "Find my videos" }));
+	await user.click(await screen.findByRole("checkbox", { name: /Friends - S07E01/ }));
+
+	expect(screen.getByLabelText("Media type")).toHaveValue("episode");
+	expect(screen.getByLabelText("Show title")).toHaveValue("Friends");
+	expect(screen.getByLabelText("Year")).toHaveValue(1994);
+	expect(screen.getByLabelText("Season")).toHaveValue(7);
+	expect(screen.getByLabelText("Episode")).toHaveValue(1);
+	expect(screen.getByLabelText("Episode title")).toHaveValue("The One With Monica's Thunder");
 });
 
 it("announces provider errors without displaying the typed token", async () => {

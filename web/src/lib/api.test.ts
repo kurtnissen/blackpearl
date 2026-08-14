@@ -39,7 +39,7 @@ describe("setup API", () => {
   });
 
   it("loads status and applies a public media manifest", async () => {
-	const selectedItems = [{ objectId: "17:3", name: "Film.mkv", extension: ".mkv", size: 9, title: "Film", year: 2026 }];
+	const selectedItems = [{ objectId: "17:3", name: "Film.mkv", extension: ".mkv", size: 9, mediaType: "movie", title: "Film", year: 2026 }];
     const fetchSpy = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({ setupRequired: true, tokenConfigured: false, csrfToken: "csrf" }), { status: 200 }))
 		.mockResolvedValueOnce(new Response(JSON.stringify({ selected: selectedItems[0], selectedItems }), {
@@ -49,7 +49,7 @@ describe("setup API", () => {
     vi.stubGlobal("fetch", fetchSpy);
 
     const status = await getStatus();
-	const result = await applyConfiguration({ items: [{ objectId: "17:3", title: "Film", year: 2026 }] }, status.csrfToken, { session });
+	const result = await applyConfiguration({ items: [{ objectId: "17:3", mediaType: "movie", title: "Film", year: 2026 }] }, status.csrfToken, { session });
 
     expect(result.selected.extension).toBe(".mkv");
 	expect(result.selectedItems).toHaveLength(1);

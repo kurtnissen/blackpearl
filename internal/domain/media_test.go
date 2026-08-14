@@ -18,6 +18,45 @@ func TestNewMovieBuildsCanonicalPlexPath(t *testing.T) {
 	require.Equal(t, int64(42), media.Size)
 }
 
+func TestNewEpisodeBuildsCanonicalPlexPath(t *testing.T) {
+	t.Parallel()
+
+	media, err := domain.NewEpisode("episode", "Example Show", 2024, 1, 2, "The Second", ".mkv", 84, validBacking())
+
+	require.NoError(t, err)
+	require.Equal(t, domain.MediaTypeEpisode, media.Type)
+	require.Equal(t, "TV Shows/Example Show (2024)/Season 01/Example Show (2024) - S01E02 - The Second.mkv", media.VirtualPath)
+	require.Equal(t, "The Second", media.Title)
+	require.Equal(t, int64(84), media.Size)
+}
+
+func TestNewEpisodeRejectsUnsafeOrOutOfRangeMetadata(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		showTitle    string
+		season       int
+		episode      int
+		episodeTitle string
+	}{
+		{name: "unsafe show", showTitle: "../Show", season: 1, episode: 1, episodeTitle: "Pilot"},
+		{name: "negative season", showTitle: "Show", season: -1, episode: 1, episodeTitle: "Pilot"},
+		{name: "large season", showTitle: "Show", season: 100, episode: 1, episodeTitle: "Pilot"},
+		{name: "zero episode", showTitle: "Show", season: 1, episodeTitle: "Pilot"},
+		{name: "large episode", showTitle: "Show", season: 1, episode: 1000, episodeTitle: "Pilot"},
+		{name: "unsafe episode title", showTitle: "Show", season: 1, episode: 1, episodeTitle: "Bad/Title"},
+	}
+	for index := range tests {
+		test := tests[index]
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := domain.NewEpisode("episode", test.showTitle, 2024, test.season, test.episode, test.episodeTitle, ".mkv", 84, validBacking())
+			require.Error(t, err)
+		})
+	}
+}
+
 func TestNewMovieRejectsUnsafePathSegments(t *testing.T) {
 	t.Parallel()
 

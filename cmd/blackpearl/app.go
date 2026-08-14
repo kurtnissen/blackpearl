@@ -367,7 +367,13 @@ func runBrowserSetup(ctx context.Context, cfg config.Config, logger *slog.Logger
 			if logicalSize != configuration.Size {
 				return nil, fmt.Errorf("selected TorBox size changed: got %d want %d", logicalSize, configuration.Size)
 			}
-			if _, registerErr := catalog.RegisterRemoteMovie(runtimeContext, configuration, backing); registerErr != nil {
+			var registerErr error
+			if configuration.MediaType == domain.MediaTypeEpisode {
+				_, registerErr = catalog.RegisterRemoteEpisode(runtimeContext, configuration, backing)
+			} else {
+				_, registerErr = catalog.RegisterRemoteMovie(runtimeContext, configuration, backing)
+			}
+			if registerErr != nil {
 				return nil, registerErr
 			}
 		}

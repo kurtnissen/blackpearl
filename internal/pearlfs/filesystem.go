@@ -55,7 +55,9 @@ func New(ctx context.Context, catalog Catalog) (*Root, error) {
 
 func validateVirtualPath(virtualPath string) error {
 	parts := strings.Split(virtualPath, "/")
-	if len(parts) != 3 || parts[0] != "Movies" || path.Clean(virtualPath) != virtualPath {
+	moviePath := len(parts) == 3 && parts[0] == "Movies"
+	episodePath := len(parts) == 4 && parts[0] == "TV Shows"
+	if (!moviePath && !episodePath) || path.Clean(virtualPath) != virtualPath {
 		return fmt.Errorf("invalid virtual path: %q", virtualPath)
 	}
 	for _, part := range parts {
@@ -76,32 +78,30 @@ func (r *Root) virtualPaths() []string {
 
 // OnAdd materializes the validated catalog snapshot as persistent FUSE inodes.
 func (r *Root) OnAdd(ctx context.Context) {
-	movies := r.NewPersistentInode(
-		ctx,
-		&directoryNode{},
-		fs.StableAttr{Mode: syscall.S_IFDIR, Ino: inodeFor("Movies")},
-	)
-	r.AddChild("Movies", movies, false)
 	directories := make(map[string]*fs.Inode)
 	for _, media := range r.media {
 		parts := strings.Split(media.VirtualPath, "/")
-		directoryPath := strings.Join(parts[:2], "/")
-		parent, exists := directories[directoryPath]
-		if !exists {
-			parent = movies.NewPersistentInode(
-				ctx,
-				&directoryNode{},
-				fs.StableAttr{Mode: syscall.S_IFDIR, Ino: inodeFor(directoryPath)},
-			)
-			movies.AddChild(parts[1], parent, false)
-			directories[directoryPath] = parent
+		parent := &r.Inode
+		for index := 0; index < len(parts)-1; index++ {
+			directoryPath := strings.Join(parts[:index+1], "/")
+			directory, exists := directories[directoryPath]
+			if !exists {
+				directory = parent.NewPersistentInode(
+					ctx,
+					&directoryNode{},
+					fs.StableAttr{Mode: syscall.S_IFDIR, Ino: inodeFor(directoryPath)},
+				)
+				parent.AddChild(parts[index], directory, false)
+				directories[directoryPath] = directory
+			}
+			parent = directory
 		}
 		file := parent.NewPersistentInode(
 			ctx,
 			&fileNode{media: media, catalog: r.catalog},
 			fs.StableAttr{Mode: syscall.S_IFREG, Ino: inodeFor(media.VirtualPath)},
 		)
-		parent.AddChild(parts[2], file, false)
+		parent.AddChild(parts[len(parts)-1], file, false)
 	}
 }
 

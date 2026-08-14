@@ -97,6 +97,41 @@ func TestNewSetupConfigurationEnforcesPlexTitleByteLimit(t *testing.T) {
 	require.ErrorContains(t, err, "200 bytes")
 }
 
+func TestNewSetupEpisodeConfigurationPreservesCanonicalTVMetadata(t *testing.T) {
+	t.Parallel()
+	candidate, err := domain.NewMediaCandidate("17:3", "Shows/Example.S01E02.mkv", 2048)
+	require.NoError(t, err)
+
+	configuration, err := domain.NewSetupEpisodeConfiguration(candidate, "Example Show", 2024, 1, 2, "The Second")
+
+	require.NoError(t, err)
+	require.Equal(t, domain.MediaTypeEpisode, configuration.MediaType)
+	require.Equal(t, "Example Show", configuration.ShowTitle)
+	require.Equal(t, "The Second", configuration.Title)
+	require.Equal(t, 1, configuration.Season)
+	require.Equal(t, 2, configuration.Episode)
+}
+
+func TestNewSetupManifestNormalizesLegacyMovieAndValidatesEpisode(t *testing.T) {
+	t.Parallel()
+	movieCandidate, err := domain.NewMediaCandidate("17:3", "Movie.mp4", 1024)
+	require.NoError(t, err)
+	legacyMovie := domain.SetupConfiguration{
+		ObjectID: movieCandidate.ObjectID, Name: movieCandidate.Name, Extension: movieCandidate.Extension,
+		Size: movieCandidate.Size, Title: "Movie", Year: 2024,
+	}
+	episodeCandidate, err := domain.NewMediaCandidate("17:4", "Show.S01E01.mkv", 2048)
+	require.NoError(t, err)
+	episode, err := domain.NewSetupEpisodeConfiguration(episodeCandidate, "Example Show", 2024, 1, 1, "Pilot")
+	require.NoError(t, err)
+
+	manifest, err := domain.NewSetupManifest([]domain.SetupConfiguration{legacyMovie, episode})
+
+	require.NoError(t, err)
+	require.Equal(t, domain.MediaTypeMovie, manifest.Items[0].MediaType)
+	require.Equal(t, domain.MediaTypeEpisode, manifest.Items[1].MediaType)
+}
+
 func TestNewSetupManifestValidatesMultipleUniqueMovies(t *testing.T) {
 	t.Parallel()
 	firstCandidate, err := domain.NewMediaCandidate("17:3", "Films/First.mp4", 1024)

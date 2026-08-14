@@ -23,12 +23,16 @@ type MediaCandidate struct {
 
 // SetupConfiguration is the non-secret persisted selection shown to Plex.
 type SetupConfiguration struct {
-	ObjectID  string `json:"objectId"`
-	Name      string `json:"name"`
-	Extension string `json:"extension"`
-	Size      int64  `json:"size"`
-	Title     string `json:"title"`
-	Year      int    `json:"year"`
+	ObjectID  string    `json:"objectId"`
+	Name      string    `json:"name"`
+	Extension string    `json:"extension"`
+	Size      int64     `json:"size"`
+	MediaType MediaType `json:"mediaType"`
+	Title     string    `json:"title"`
+	Year      int       `json:"year"`
+	ShowTitle string    `json:"showTitle,omitempty"`
+	Season    int       `json:"season,omitempty"`
+	Episode   int       `json:"episode,omitempty"`
 }
 
 // SetupManifest is one validated, atomically published Plex library snapshot.
@@ -81,8 +85,34 @@ func NewSetupConfiguration(candidate MediaCandidate, title string, year int) (Se
 		Name:      validated.Name,
 		Extension: validated.Extension,
 		Size:      validated.Size,
+		MediaType: MediaTypeMovie,
 		Title:     cleanTitle,
 		Year:      year,
+	}, nil
+}
+
+// NewSetupEpisodeConfiguration validates one Plex-visible TV episode selection.
+func NewSetupEpisodeConfiguration(candidate MediaCandidate, showTitle string, year int, season int, episode int, episodeTitle string) (SetupConfiguration, error) {
+	validated, err := NewMediaCandidate(candidate.ObjectID, candidate.Name, candidate.Size)
+	if err != nil {
+		return SetupConfiguration{}, fmt.Errorf("validate media candidate: %w", err)
+	}
+	if candidate.Extension != "" && strings.ToLower(candidate.Extension) != validated.Extension {
+		return SetupConfiguration{}, errors.New("media candidate extension does not match its name")
+	}
+	cleanShowTitle := strings.TrimSpace(showTitle)
+	cleanEpisodeTitle := strings.TrimSpace(episodeTitle)
+	if year < 1888 || year > 2100 {
+		return SetupConfiguration{}, fmt.Errorf("year must be between 1888 and 2100: %d", year)
+	}
+	backing := BackingRef{Provider: "setup", ObjectID: validated.ObjectID}
+	if _, err := NewEpisode("setup-validation", cleanShowTitle, year, season, episode, cleanEpisodeTitle, validated.Extension, validated.Size, backing); err != nil {
+		return SetupConfiguration{}, err
+	}
+	return SetupConfiguration{
+		ObjectID: validated.ObjectID, Name: validated.Name, Extension: validated.Extension,
+		Size: validated.Size, MediaType: MediaTypeEpisode, Title: cleanEpisodeTitle, Year: year,
+		ShowTitle: cleanShowTitle, Season: season, Episode: episode,
 	}, nil
 }
 
@@ -91,7 +121,7 @@ func (c SetupConfiguration) Candidate() MediaCandidate {
 	return MediaCandidate{ObjectID: c.ObjectID, Name: c.Name, Extension: c.Extension, Size: c.Size}
 }
 
-// NewSetupManifest validates and copies one bounded movie manifest.
+// NewSetupManifest validates and copies one bounded Plex media manifest.
 func NewSetupManifest(items []SetupConfiguration) (SetupManifest, error) {
 	if len(items) == 0 {
 		return SetupManifest{}, errors.New("setup manifest requires at least one item")
@@ -103,14 +133,17 @@ func NewSetupManifest(items []SetupConfiguration) (SetupManifest, error) {
 	objectIDs := make(map[string]struct{}, len(items))
 	virtualPaths := make(map[string]struct{}, len(items))
 	for index := range items {
-		item, err := NewSetupConfiguration(items[index].Candidate(), items[index].Title, items[index].Year)
+		item, err := validateSetupConfiguration(items[index])
 		if err != nil {
 			return SetupManifest{}, fmt.Errorf("validate setup manifest item %d: %w", index, err)
 		}
 		if _, exists := objectIDs[item.ObjectID]; exists {
 			return SetupManifest{}, fmt.Errorf("setup manifest contains duplicate object ID at item %d", index)
 		}
-		virtualPath := setupVirtualPath(item)
+		virtualPath, err := setupVirtualPath(item)
+		if err != nil {
+			return SetupManifest{}, fmt.Errorf("derive setup manifest path at item %d: %w", index, err)
+		}
 		if _, exists := virtualPaths[virtualPath]; exists {
 			return SetupManifest{}, fmt.Errorf("setup manifest contains duplicate Plex path at item %d", index)
 		}
@@ -121,7 +154,29 @@ func NewSetupManifest(items []SetupConfiguration) (SetupManifest, error) {
 	return SetupManifest{Items: validated}, nil
 }
 
-func setupVirtualPath(configuration SetupConfiguration) string {
-	displayName := fmt.Sprintf("%s (%d)", configuration.Title, configuration.Year)
-	return path.Join("Movies", displayName, displayName+configuration.Extension)
+func validateSetupConfiguration(configuration SetupConfiguration) (SetupConfiguration, error) {
+	switch configuration.MediaType {
+	case "", MediaTypeMovie:
+		return NewSetupConfiguration(configuration.Candidate(), configuration.Title, configuration.Year)
+	case MediaTypeEpisode:
+		return NewSetupEpisodeConfiguration(
+			configuration.Candidate(), configuration.ShowTitle, configuration.Year,
+			configuration.Season, configuration.Episode, configuration.Title,
+		)
+	default:
+		return SetupConfiguration{}, fmt.Errorf("unsupported setup media type: %q", configuration.MediaType)
+	}
+}
+
+func setupVirtualPath(configuration SetupConfiguration) (string, error) {
+	backing := BackingRef{Provider: "setup", ObjectID: configuration.ObjectID}
+	if configuration.MediaType == MediaTypeEpisode {
+		media, err := NewEpisode(
+			"setup-path", configuration.ShowTitle, configuration.Year, configuration.Season,
+			configuration.Episode, configuration.Title, configuration.Extension, configuration.Size, backing,
+		)
+		return media.VirtualPath, err
+	}
+	media, err := NewMovie("setup-path", configuration.Title, configuration.Year, configuration.Extension, configuration.Size, backing)
+	return media.VirtualPath, err
 }

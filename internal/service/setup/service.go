@@ -63,11 +63,15 @@ type ApplyRequest struct {
 	Year     int                `json:"year,omitempty"`
 }
 
-// ApplyItemRequest identifies one discovered item and its Plex movie metadata.
+// ApplyItemRequest identifies one discovered item and its Plex metadata.
 type ApplyItemRequest struct {
-	ObjectID string `json:"objectId"`
-	Title    string `json:"title"`
-	Year     int    `json:"year"`
+	ObjectID  string           `json:"objectId"`
+	MediaType domain.MediaType `json:"mediaType,omitempty"`
+	Title     string           `json:"title"`
+	Year      int              `json:"year"`
+	ShowTitle string           `json:"showTitle,omitempty"`
+	Season    int              `json:"season,omitempty"`
+	Episode   int              `json:"episode,omitempty"`
 }
 
 // Status is safe to return to an untrusted browser.
@@ -213,7 +217,7 @@ func (s *Service) Apply(ctx context.Context, request ApplyRequest) (domain.Setup
 		if !exists {
 			return domain.SetupManifest{}, ErrInvalidSelection
 		}
-		configuration, configurationErr := domain.NewSetupConfiguration(selected, requests[index].Title, requests[index].Year)
+		configuration, configurationErr := configurationFromRequest(selected, requests[index])
 		if configurationErr != nil {
 			return domain.SetupManifest{}, fmt.Errorf("validate selected media: %w", ErrInvalidSelection)
 		}
@@ -361,6 +365,19 @@ func manifestsEqual(left domain.SetupManifest, right domain.SetupManifest) bool 
 		}
 	}
 	return true
+}
+
+func configurationFromRequest(candidate domain.MediaCandidate, request ApplyItemRequest) (domain.SetupConfiguration, error) {
+	switch request.MediaType {
+	case "", domain.MediaTypeMovie:
+		return domain.NewSetupConfiguration(candidate, request.Title, request.Year)
+	case domain.MediaTypeEpisode:
+		return domain.NewSetupEpisodeConfiguration(
+			candidate, request.ShowTitle, request.Year, request.Season, request.Episode, request.Title,
+		)
+	default:
+		return domain.SetupConfiguration{}, fmt.Errorf("unsupported media type: %q", request.MediaType)
+	}
 }
 
 func (s *Service) markTokenConfigured() {

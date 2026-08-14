@@ -131,18 +131,26 @@ components:
       allOf:
         - $ref: "#/components/schemas/MediaCandidate"
         - type: object
-          required: [title, year]
+          required: [mediaType, title, year]
           properties:
+            mediaType: { type: string, enum: [movie, episode] }
             title: { type: string, maxLength: 200, description: Maximum 200 UTF-8 bytes. }
             year: { type: integer }
+            showTitle: { type: string, maxLength: 200 }
+            season: { type: integer, minimum: 0, maximum: 99 }
+            episode: { type: integer, minimum: 1, maximum: 999 }
     ApplyItemRequest:
       type: object
       additionalProperties: false
       required: [objectId, title, year]
       properties:
         objectId: { type: string, pattern: "^[1-9][0-9]*:[1-9][0-9]*$" }
+        mediaType: { type: string, enum: [movie, episode], default: movie }
         title: { type: string, minLength: 1, maxLength: 200, description: Maximum 200 UTF-8 bytes. }
         year: { type: integer, minimum: 1888, maximum: 2100 }
+        showTitle: { type: string, minLength: 1, maxLength: 200 }
+        season: { type: integer, minimum: 0, maximum: 99 }
+        episode: { type: integer, minimum: 1, maximum: 999 }
     SetupStatus:
       type: object
       additionalProperties: false

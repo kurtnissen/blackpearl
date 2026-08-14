@@ -49,6 +49,35 @@ func (c *Catalog) RegisterRemoteMovie(ctx context.Context, configuration domain.
 	return media, nil
 }
 
+// RegisterRemoteEpisode persists one provider-backed logical TV episode without importing bytes.
+func (c *Catalog) RegisterRemoteEpisode(ctx context.Context, configuration domain.SetupConfiguration, backing domain.BackingRef) (domain.Media, error) {
+	ctx, span := otel.Tracer("blackpearl/core").Start(ctx, "catalog.register_remote_episode")
+	defer span.End()
+	validated, err := domain.NewSetupEpisodeConfiguration(
+		configuration.Candidate(), configuration.ShowTitle, configuration.Year,
+		configuration.Season, configuration.Episode, configuration.Title,
+	)
+	if err != nil {
+		return domain.Media{}, fmt.Errorf("validate selected episode: %w", err)
+	}
+	validatedBacking, err := domain.NewBackingRef(backing.Provider, backing.ObjectID)
+	if err != nil {
+		return domain.Media{}, fmt.Errorf("validate selected episode backing: %w", err)
+	}
+	media, err := domain.NewEpisode(
+		remoteMediaID(validatedBacking), validated.ShowTitle, validated.Year,
+		validated.Season, validated.Episode, validated.Title, validated.Extension,
+		validated.Size, validatedBacking,
+	)
+	if err != nil {
+		return domain.Media{}, fmt.Errorf("construct selected episode: %w", err)
+	}
+	if err := c.repository.Upsert(ctx, media); err != nil {
+		return domain.Media{}, fmt.Errorf("persist selected episode: %w", err)
+	}
+	return media, nil
+}
+
 func remoteMediaID(backing domain.BackingRef) domain.MediaID {
 	digest := sha256.Sum256([]byte(backing.Provider + "\x00" + backing.ObjectID))
 	return domain.MediaID("blackpearl-remote-" + hex.EncodeToString(digest[:16]))

@@ -16,7 +16,7 @@ BlackPearl is an experimental, open-source Go service that exposes a virtual med
 - A portable NFS frontend and macOS Docker Desktop Compose profile that need no
   FUSE mount propagation.
 
-BlackPearl now proves provider-neutral progressive range retrieval and rolling eviction through strict HTTP and TorBox torrent-file gateways. The TorBox profile includes a localhost setup page that discovers eligible completed MP4/MKV files and atomically publishes a searchable manifest of up to 100 selected movies without restarting the stack. Live macOS acceptance has verified a two-video manifest, Plex scan, Direct Play, a ten-minute seek, restart recovery, and continued playback from logical files that never existed completely on BlackPearl's disk. TorBox support is read-only; it does not yet implement read-ahead, Prowlarr, Usenet, TV hierarchy, or automatic torrent creation.
+BlackPearl now proves provider-neutral progressive range retrieval and rolling eviction through strict HTTP and TorBox torrent-file gateways. The TorBox profile includes a localhost setup page that discovers eligible completed MP4/MKV files and atomically publishes a searchable manifest of up to 100 selected movies or TV episodes without restarting the stack. Live macOS acceptance has verified a mixed movie/episode manifest, Plex movie and TV scans, Direct Play, non-sequential seeks, restart recovery, and continued reads from logical files that never existed completely on BlackPearl's disk. TorBox support is read-only; it does not yet implement read-ahead, Prowlarr, Usenet, automatic acquisition, or automatic metadata resolution.
 
 ## Architecture at a glance
 
@@ -92,9 +92,12 @@ cache and filesystem path. Start the isolated browser-first profile:
 ./scripts/torbox-stack.sh start
 ```
 
-The launcher opens a locally paired setup page. Paste a TorBox token, search and select one or more completed MP4/MKV files, then open Plex at
-`http://localhost:32402/web` and add a Movies library rooted at
-`/blackpearl/Movies`. The token and manifest are stored with private permissions only inside
+The launcher opens a locally paired setup page. Paste a TorBox token, search and select one or more completed MP4/MKV files, and choose whether each is a movie or TV episode. Then open Plex at `http://localhost:32402/web` and add:
+
+- a Movies library rooted at `/blackpearl/Movies`; and
+- a TV Shows library rooted at `/blackpearl/TV Shows`.
+
+The token and manifest are stored with private permissions only inside
 the named BlackPearl data volume. It is never returned to the browser after
 save and is never written to SQLite, cache filenames, container environment,
 logs, or telemetry.

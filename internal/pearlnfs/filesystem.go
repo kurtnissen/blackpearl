@@ -130,7 +130,9 @@ func buildEntries(items []domain.Media) (map[string]entry, error) {
 
 func (f *filesystem) addMedia(media domain.Media) error {
 	parts := strings.Split(media.VirtualPath, "/")
-	if len(parts) != 3 || parts[0] != "Movies" || path.Clean(media.VirtualPath) != media.VirtualPath {
+	moviePath := len(parts) == 3 && parts[0] == "Movies"
+	episodePath := len(parts) == 4 && parts[0] == "TV Shows"
+	if (!moviePath && !episodePath) || path.Clean(media.VirtualPath) != media.VirtualPath {
 		return fmt.Errorf("invalid virtual path: %q", media.VirtualPath)
 	}
 	for _, part := range parts {
@@ -141,12 +143,15 @@ func (f *filesystem) addMedia(media domain.Media) error {
 	if _, exists := f.entries[media.VirtualPath]; exists {
 		return fmt.Errorf("duplicate virtual path: %q", media.VirtualPath)
 	}
-	f.addDirectory("", parts[0])
-	f.addDirectory(parts[0], parts[1])
+	for index := 0; index < len(parts)-1; index++ {
+		parent := strings.Join(parts[:index], "/")
+		f.addDirectory(parent, parts[index])
+	}
 	mediaCopy := media
-	f.entries[media.VirtualPath] = entry{name: parts[2], media: &mediaCopy}
-	parent := path.Join(parts[0], parts[1])
-	f.addChild(parent, parts[2])
+	filename := parts[len(parts)-1]
+	f.entries[media.VirtualPath] = entry{name: filename, media: &mediaCopy}
+	parent := strings.Join(parts[:len(parts)-1], "/")
+	f.addChild(parent, filename)
 	return nil
 }
 

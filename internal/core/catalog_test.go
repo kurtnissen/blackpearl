@@ -162,6 +162,25 @@ func TestRegisterRemoteMovieUsesStableDistinctIDsForMultipleObjects(t *testing.T
 	require.Equal(t, firstMedia.ID, firstAgain.ID)
 }
 
+func TestRegisterRemoteEpisodePreservesTVHierarchyAndBacking(t *testing.T) {
+	t.Parallel()
+	repository := &fakeRepository{}
+	catalog := core.NewCatalog(repository, nil, &fakeCache{})
+	candidate, err := domain.NewMediaCandidate("17:9", "Example.S01E02.mkv", 300)
+	require.NoError(t, err)
+	configuration, err := domain.NewSetupEpisodeConfiguration(candidate, "Example Show", 2024, 1, 2, "The Second")
+	require.NoError(t, err)
+	backing, err := domain.NewBackingRef("torbox-torrent", configuration.ObjectID)
+	require.NoError(t, err)
+
+	media, err := catalog.RegisterRemoteEpisode(context.Background(), configuration, backing)
+
+	require.NoError(t, err)
+	require.Equal(t, domain.MediaTypeEpisode, media.Type)
+	require.Equal(t, "TV Shows/Example Show (2024)/Season 01/Example Show (2024) - S01E02 - The Second.mkv", media.VirtualPath)
+	require.Equal(t, backing, media.Backing)
+}
+
 func TestListWrapsRepositoryFailure(t *testing.T) {
 	t.Parallel()
 	catalog := core.NewCatalog(&fakeRepository{listErr: errors.New("database unavailable")}, &fakeCache{}, &fakeCache{})
