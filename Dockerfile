@@ -1,11 +1,11 @@
 # syntax=docker/dockerfile:1.7
 
-FROM oven/bun:1.3.11 AS web-deps
+FROM --platform=$BUILDPLATFORM oven/bun:1.3.11 AS web-deps
 WORKDIR /web
 COPY web/package.json web/bun.lock ./
 RUN --mount=type=cache,target=/root/.bun/install/cache bun install --frozen-lockfile
 
-FROM node:24-bookworm-slim AS web-builder
+FROM --platform=$BUILDPLATFORM node:24-bookworm-slim AS web-builder
 WORKDIR /web
 ENV NEXT_TELEMETRY_DISABLED=1
 COPY --from=web-deps /web/node_modules ./node_modules
@@ -14,7 +14,9 @@ COPY web/next.config.ts web/tsconfig.json web/vitest.config.ts web/vitest.setup.
 COPY web/src ./src
 RUN node node_modules/next/dist/bin/next build
 
-FROM golang:1.26.6-bookworm AS builder
+FROM --platform=$BUILDPLATFORM golang:1.26.6-bookworm AS builder
+ARG TARGETOS
+ARG TARGETARCH
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
@@ -23,9 +25,10 @@ COPY internal ./internal
 COPY web/assets.go ./web/assets.go
 COPY --from=web-builder /web/out ./web/out
 RUN --mount=type=cache,target=/go/pkg/mod \
-    CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/blackpearl ./cmd/blackpearl
+    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
+    go build -trimpath -ldflags="-s -w" -o /out/blackpearl ./cmd/blackpearl
 
-FROM debian:bookworm-slim AS fixture
+FROM --platform=$BUILDPLATFORM debian:bookworm-slim AS fixture
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ffmpeg \
     && rm -rf /var/lib/apt/lists/*
