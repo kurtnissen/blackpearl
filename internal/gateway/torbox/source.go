@@ -77,7 +77,7 @@ func (s *source) readRange(ctx context.Context, downloadURL *url.URL, destinatio
 	request.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", offset, end))
 	response, err := s.gateway.client.Do(request)
 	if err != nil {
-		return 0, 0, fmt.Errorf("request TorBox CDN range: %w", err)
+		return 0, 0, errors.New("request TorBox CDN range")
 	}
 	defer func() { resultErr = errors.Join(resultErr, response.Body.Close()) }()
 	if response.StatusCode != http.StatusPartialContent {

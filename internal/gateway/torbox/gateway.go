@@ -142,7 +142,32 @@ func (g *Gateway) Open(ctx context.Context, backing domain.BackingRef) (acquisit
 	if err != nil {
 		return nil, err
 	}
+	if err := g.validateDownload(ctx, downloadURL, metadata.size); err != nil {
+		return nil, err
+	}
 	return newSource(g, identifier, metadata, downloadURL), nil
+}
+
+func (g *Gateway) validateDownload(ctx context.Context, downloadURL *url.URL, expectedSize int64) (resultErr error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodHead, downloadURL.String(), nil)
+	if err != nil {
+		return errors.New("construct TorBox CDN metadata request")
+	}
+	response, err := g.client.Do(request)
+	if err != nil {
+		return errors.New("request TorBox CDN metadata")
+	}
+	defer func() { resultErr = errors.Join(resultErr, response.Body.Close()) }()
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("TorBox CDN metadata requires status 200: got %d", response.StatusCode)
+	}
+	if response.ContentLength != expectedSize {
+		return fmt.Errorf("TorBox CDN size mismatch: got %d want %d", response.ContentLength, expectedSize)
+	}
+	if !strings.Contains(strings.ToLower(response.Header.Get("Accept-Ranges")), "bytes") {
+		return errors.New("TorBox CDN does not advertise byte ranges")
+	}
+	return nil
 }
 
 func (g *Gateway) loadMetadata(ctx context.Context, identifier objectID) (fileMetadata, error) {

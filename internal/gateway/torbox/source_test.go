@@ -27,6 +27,12 @@ func newTestCDN(t *testing.T, content []byte, mutate cdnMutation) *httptest.Serv
 	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		require.Empty(t, request.Header.Get("Authorization"))
 		require.Empty(t, request.URL.Query().Get("token"))
+		if request.Method == http.MethodHead {
+			writer.Header().Set("Content-Length", fmt.Sprint(len(content)))
+			writer.Header().Set("Accept-Ranges", "bytes")
+			writer.WriteHeader(http.StatusOK)
+			return
+		}
 		if request.Method != http.MethodGet {
 			http.Error(writer, "method not allowed", http.StatusMethodNotAllowed)
 			return
@@ -109,6 +115,12 @@ func TestSourceReadAtRefreshesExpiredLinkOnce(t *testing.T) {
 	content := []byte("0123456789abcdef")
 	var expiredCalls atomic.Int64
 	expired := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method == http.MethodHead {
+			writer.Header().Set("Content-Length", fmt.Sprint(len(content)))
+			writer.Header().Set("Accept-Ranges", "bytes")
+			writer.WriteHeader(http.StatusOK)
+			return
+		}
 		expiredCalls.Add(1)
 		http.Error(writer, "expired", http.StatusForbidden)
 	}))

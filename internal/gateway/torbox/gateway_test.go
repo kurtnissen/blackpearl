@@ -98,6 +98,27 @@ func TestGatewayOpenMapsCompletedTorrentFile(t *testing.T) {
 	require.Equal(t, int64(1), linkCalls.Load())
 }
 
+func TestGatewayOpenRejectsCDNSizeMismatchWithoutLeakingURL(t *testing.T) {
+	t.Parallel()
+	cdn := newTestCDN(t, []byte("short"), nil)
+	api := newTestAPI(t, func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/v1/api/torrents/mylist":
+			writeTorrentMetadata(writer, 17, 3, 16)
+		case "/v1/api/torrents/requestdl":
+			writeEnvelope(writer, true, "ok", fmt.Sprintf("%q", cdn.URL))
+		default:
+			http.NotFound(writer, request)
+		}
+	})
+	gateway := newTestGateway(t, api.URL+"/v1/api/", cdn.Client())
+
+	_, err := gateway.Open(context.Background(), domainBacking("17:3"))
+
+	require.ErrorContains(t, err, "size mismatch")
+	require.NotContains(t, err.Error(), cdn.URL)
+}
+
 func TestGatewayOpenCachesMetadataAndLinkWithinTTL(t *testing.T) {
 	t.Parallel()
 	cdn := newTestCDN(t, []byte("0123456789abcdef"), nil)
