@@ -61,7 +61,7 @@ Rolling mode divides a logical object into independently addressable chunks and:
 - verify range length and integrity before publication; and
 - apply backpressure when all cache capacity is pinned or reserved.
 
-The implementation enforces `published chunk bytes + reserved fetch bytes <= quota`, coalesces concurrent misses, atomically publishes verified chunks, restores valid chunks after restart, and evicts least-recently-used unpinned chunks. Browser-selected runtimes share one process-lifetime rolling pool, preventing competing recovery scans or independent quota ledgers on the same directory. Read-ahead and adaptive scheduling remain later work. None of these policies change PearlFS, PearlNFS, or Plex integration; the same binary selects the policy from configuration.
+The implementation enforces `published chunk bytes + reserved fetch bytes <= quota`, coalesces concurrent misses, atomically publishes verified chunks, restores valid chunks after restart, and evicts least-recently-used unpinned chunks. Browser-selected runtimes share one process-lifetime rolling pool, preventing competing recovery scans or independent quota ledgers on the same directory. Configurable seek-aware read-ahead opportunistically fetches the chunks after the most recent foreground range, protects that demanded chunk, and retains one chunk of quota headroom. A seek immediately relocates the window. Adaptive throughput-based scheduling remains later work. None of these policies change PearlFS, PearlNFS, or Plex integration; the same binary selects the policy from configuration.
 
 Browser setup persists one credential plus a validated manifest of 1-100 movie
 or TV-episode selections. It prepares every provider object and a fresh in-memory catalog

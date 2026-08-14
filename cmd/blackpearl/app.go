@@ -188,10 +188,11 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger, deps depen
 			return fmt.Errorf("unsupported range provider: %q", cfg.RangeProvider)
 		}
 		rollingSource, rollingErr := cache.NewRolling(ctx, cache.RollingOptions{
-			Root:         cfg.CacheDir,
-			MaxBytes:     cfg.CacheMaxBytes,
-			ChunkBytes:   cfg.CacheChunkBytes,
-			FetchTimeout: cfg.RangeTimeout,
+			Root:            cfg.CacheDir,
+			MaxBytes:        cfg.CacheMaxBytes,
+			ChunkBytes:      cfg.CacheChunkBytes,
+			ReadAheadChunks: cfg.CacheReadAheadChunks,
+			FetchTimeout:    cfg.RangeTimeout,
 		}, gateway)
 		if rollingErr != nil {
 			return fmt.Errorf("open rolling cache: %w", rollingErr)
@@ -322,7 +323,8 @@ func runBrowserSetup(ctx context.Context, cfg config.Config, logger *slog.Logger
 	}
 	rollingPool, err := cache.NewRollingPool(ctx, cache.RollingOptions{
 		Root: cfg.CacheDir, MaxBytes: cfg.CacheMaxBytes,
-		ChunkBytes: cfg.CacheChunkBytes, FetchTimeout: cfg.RangeTimeout,
+		ChunkBytes: cfg.CacheChunkBytes, ReadAheadChunks: cfg.CacheReadAheadChunks,
+		FetchTimeout: cfg.RangeTimeout,
 	})
 	if err != nil {
 		return fmt.Errorf("open shared browser rolling cache: %w", err)

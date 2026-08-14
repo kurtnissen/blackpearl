@@ -21,7 +21,10 @@ import (
 	"github.com/blackpearl-media/blackpearl/internal/domain"
 )
 
-const rollingDirectory = "rolling"
+const (
+	rollingDirectory       = "rolling"
+	maximumReadAheadChunks = 64
+)
 
 var (
 	rollingObjectPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
@@ -36,22 +39,25 @@ type RangeOpener interface {
 
 // RollingOptions configures fixed-size local chunk retention.
 type RollingOptions struct {
-	Root         string
-	MaxBytes     int64
-	ChunkBytes   int64
-	FetchTimeout time.Duration
+	Root            string
+	MaxBytes        int64
+	ChunkBytes      int64
+	ReadAheadChunks int
+	FetchTimeout    time.Duration
 }
 
 // Stats is a concurrency-safe snapshot of rolling cache behavior.
 type Stats struct {
-	CurrentBytes   int64
-	ReservedBytes  int64
-	HighWaterBytes int64
-	ChunkCount     int64
-	Hits           uint64
-	Misses         uint64
-	Fetches        uint64
-	Evictions      uint64
+	CurrentBytes     int64
+	ReservedBytes    int64
+	HighWaterBytes   int64
+	ChunkCount       int64
+	Hits             uint64
+	Misses           uint64
+	Fetches          uint64
+	Evictions        uint64
+	ReadAheadFetches uint64
+	ReadAheadErrors  uint64
 }
 
 // RollingSource stores independently addressable remote object chunks under a
@@ -72,18 +78,20 @@ type rollingShared struct {
 	options   RollingOptions
 	root      string
 
-	mu        sync.Mutex
-	chunks    map[chunkKey]*chunkEntry
-	inflight  map[chunkKey]*fetchCall
-	notify    chan struct{}
-	current   int64
-	reserved  int64
-	highWater int64
-	tick      uint64
-	hits      uint64
-	misses    uint64
-	fetches   uint64
-	evictions uint64
+	mu               sync.Mutex
+	chunks           map[chunkKey]*chunkEntry
+	inflight         map[chunkKey]*fetchCall
+	notify           chan struct{}
+	current          int64
+	reserved         int64
+	highWater        int64
+	tick             uint64
+	hits             uint64
+	misses           uint64
+	fetches          uint64
+	evictions        uint64
+	readAheadFetches uint64
+	readAheadErrors  uint64
 }
 
 type chunkKey struct {
@@ -99,8 +107,9 @@ type chunkEntry struct {
 }
 
 type fetchCall struct {
-	done chan struct{}
-	err  error
+	done      chan struct{}
+	err       error
+	readAhead bool
 }
 
 // NewRolling creates a rolling cache rooted at an explicit absolute path.
@@ -126,6 +135,9 @@ func NewRollingPool(ctx context.Context, options RollingOptions) (*RollingPool, 
 	}
 	if options.ChunkBytes <= 0 || options.ChunkBytes > options.MaxBytes {
 		return nil, errors.New("rolling cache chunk bytes must be positive and no larger than maximum bytes")
+	}
+	if options.ReadAheadChunks < 0 || options.ReadAheadChunks > maximumReadAheadChunks {
+		return nil, fmt.Errorf("rolling cache read-ahead chunks must be between 0 and %d", maximumReadAheadChunks)
 	}
 	if options.FetchTimeout <= 0 {
 		return nil, errors.New("rolling cache fetch timeout must be positive")
@@ -202,14 +214,16 @@ func (s *RollingSource) Stats() Stats {
 	s.shared.mu.Lock()
 	defer s.shared.mu.Unlock()
 	return Stats{
-		CurrentBytes:   s.shared.current,
-		ReservedBytes:  s.shared.reserved,
-		HighWaterBytes: s.shared.highWater,
-		ChunkCount:     int64(len(s.shared.chunks)),
-		Hits:           s.shared.hits,
-		Misses:         s.shared.misses,
-		Fetches:        s.shared.fetches,
-		Evictions:      s.shared.evictions,
+		CurrentBytes:     s.shared.current,
+		ReservedBytes:    s.shared.reserved,
+		HighWaterBytes:   s.shared.highWater,
+		ChunkCount:       int64(len(s.shared.chunks)),
+		Hits:             s.shared.hits,
+		Misses:           s.shared.misses,
+		Fetches:          s.shared.fetches,
+		Evictions:        s.shared.evictions,
+		ReadAheadFetches: s.shared.readAheadFetches,
+		ReadAheadErrors:  s.shared.readAheadErrors,
 	}
 }
 
@@ -270,10 +284,84 @@ func (h *rollingHandle) ReadAt(ctx context.Context, destination []byte, offset i
 			return written, fmt.Errorf("read rolling chunk %d: %w", chunkIndex, readErr)
 		}
 	}
+	lastChunk := (offset + wanted - 1) / h.owner.shared.options.ChunkBytes
+	h.owner.scheduleReadAhead(h.media.Backing, h.validator, h.media.Size, lastChunk+1)
 	if partial {
 		return written, io.EOF
 	}
 	return written, nil
+}
+
+func (s *RollingSource) scheduleReadAhead(
+	backing domain.BackingRef,
+	validator string,
+	logicalSize int64,
+	startIndex int64,
+) {
+	protected := chunkKey{object: objectCacheKey(backing, validator), index: startIndex - 1}
+	for distance := 0; distance < s.shared.options.ReadAheadChunks; distance++ {
+		index := startIndex + int64(distance)
+		expected := s.chunkLength(logicalSize, index)
+		if expected <= 0 {
+			return
+		}
+		key := chunkKey{object: objectCacheKey(backing, validator), index: index}
+		s.shared.mu.Lock()
+		if _, exists := s.shared.chunks[key]; exists {
+			s.shared.mu.Unlock()
+			continue
+		}
+		if _, exists := s.shared.inflight[key]; exists {
+			s.shared.mu.Unlock()
+			continue
+		}
+		if !s.tryReserveReadAheadLocked(expected, protected) {
+			s.shared.mu.Unlock()
+			return
+		}
+		call := &fetchCall{done: make(chan struct{}), readAhead: true}
+		s.shared.inflight[key] = call
+		s.shared.readAheadFetches++
+		s.shared.mu.Unlock()
+		go s.runFetch(call, key, backing, validator, logicalSize, index*s.shared.options.ChunkBytes, expected)
+	}
+}
+
+func (s *RollingSource) tryReserveReadAheadLocked(expected int64, protected chunkKey) bool {
+	foregroundHeadroom := s.shared.options.ChunkBytes
+	for s.shared.current+s.shared.reserved+expected > s.shared.options.MaxBytes-foregroundHeadroom {
+		key, entry, found := s.oldestUnpinnedExceptLocked(protected)
+		if !found {
+			return false
+		}
+		if err := os.Remove(entry.path); err != nil {
+			s.shared.readAheadErrors++
+			return false
+		}
+		delete(s.shared.chunks, key)
+		s.shared.current -= entry.size
+		s.shared.evictions++
+	}
+	s.shared.reserved += expected
+	if usage := s.shared.current + s.shared.reserved; usage > s.shared.highWater {
+		s.shared.highWater = usage
+	}
+	return true
+}
+
+func (s *RollingSource) oldestUnpinnedExceptLocked(protected chunkKey) (chunkKey, *chunkEntry, bool) {
+	var selectedKey chunkKey
+	var selected *chunkEntry
+	for key, entry := range s.shared.chunks {
+		if key == protected || entry.pins != 0 {
+			continue
+		}
+		if selected == nil || entry.lastAccess < selected.lastAccess {
+			selectedKey = key
+			selected = entry
+		}
+	}
+	return selectedKey, selected, selected != nil
 }
 
 func (h *rollingHandle) Close() error {
@@ -423,6 +511,9 @@ func (s *RollingSource) runFetch(
 		s.shared.chunks[key] = entry
 	}
 	call.err = err
+	if err != nil && call.readAhead {
+		s.shared.readAheadErrors++
+	}
 	delete(s.shared.inflight, key)
 	close(call.done)
 	s.signalLocked()

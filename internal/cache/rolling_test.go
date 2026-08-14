@@ -69,6 +69,80 @@ func TestRollingSourceReadAtReturnsExactNonsequentialRanges(t *testing.T) {
 	require.Equal(t, int64(12), handle.Size())
 }
 
+func TestRollingSourceReadAheadFollowsForegroundReadsAndMovesAfterSeek(t *testing.T) {
+	t.Parallel()
+	opener := newFakeRangeOpener([]byte("abcdefghijklmnopqrstuvwxyz012345"))
+	source, _ := newRollingSourceWithReadAheadForTest(t, opener, 32, 4, 2)
+	handle := openRollingHandle(t, source, 32)
+
+	require.Equal(t, "abcd", readRollingExact(t, handle, 0, 4))
+	require.Eventually(t, func() bool {
+		return opener.readCount(4) == 1 && opener.readCount(8) == 1
+	}, time.Second, 5*time.Millisecond)
+
+	require.Equal(t, "uvwx", readRollingExact(t, handle, 20, 4))
+	require.Eventually(t, func() bool {
+		stats := source.Stats()
+		return opener.readCount(24) == 1 && opener.readCount(28) == 1 && stats.ReservedBytes == 0
+	}, time.Second, 5*time.Millisecond)
+	require.Equal(t, uint64(4), source.Stats().ReadAheadFetches)
+}
+
+func TestRollingSourceForegroundReadJoinsInflightReadAhead(t *testing.T) {
+	t.Parallel()
+	opener := newOffsetBlockingRangeOpener([]byte("abcdefghijkl"), 4)
+	source, _ := newRollingSourceWithReadAheadForTest(t, opener, 12, 4, 1)
+	handle := openRollingHandle(t, source, 12)
+
+	require.Equal(t, "abcd", readRollingExact(t, handle, 0, 4))
+	select {
+	case <-opener.started:
+	case <-time.After(time.Second):
+		require.FailNow(t, "read-ahead did not start")
+	}
+	result := make(chan string, 1)
+	go func() {
+		buffer := make([]byte, 4)
+		count, err := handle.ReadAt(context.Background(), buffer, 4)
+		result <- fmt.Sprintf("%d:%v:%s", count, err, buffer)
+	}()
+	close(opener.release)
+
+	require.Equal(t, "4:<nil>:efgh", <-result)
+	require.Equal(t, 1, opener.readCount(4))
+}
+
+func TestRollingSourceReadAheadPreservesForegroundHeadroom(t *testing.T) {
+	t.Parallel()
+	opener := newFakeRangeOpener([]byte("abcdefghijkl"))
+	source, _ := newRollingSourceWithReadAheadForTest(t, opener, 8, 4, 1)
+	handle := openRollingHandle(t, source, 12)
+
+	require.Equal(t, "abcd", readRollingExact(t, handle, 0, 4))
+	time.Sleep(20 * time.Millisecond)
+
+	require.Zero(t, opener.readCount(4))
+	require.Zero(t, source.Stats().ReadAheadFetches)
+	require.LessOrEqual(t, source.Stats().CurrentBytes+source.Stats().ReservedBytes, int64(4))
+}
+
+func TestRollingSourceReadAheadContinuesAfterCacheSaturates(t *testing.T) {
+	t.Parallel()
+	opener := newFakeRangeOpener([]byte("abcdefghijklmnopqrst"))
+	source, _ := newRollingSourceWithReadAheadForTest(t, opener, 12, 4, 1)
+	handle := openRollingHandle(t, source, 20)
+
+	require.Equal(t, "abcd", readRollingExact(t, handle, 0, 4))
+	require.Eventually(t, func() bool { return opener.readCount(4) == 1 && source.Stats().ReservedBytes == 0 }, time.Second, 5*time.Millisecond)
+	require.Equal(t, "ijkl", readRollingExact(t, handle, 8, 4))
+	require.Eventually(t, func() bool { return opener.readCount(12) == 1 && source.Stats().ReservedBytes == 0 }, time.Second, 5*time.Millisecond)
+
+	require.Equal(t, "ijkl", readRollingExact(t, handle, 8, 4))
+	require.Equal(t, 1, opener.readCount(8))
+	require.GreaterOrEqual(t, source.Stats().Evictions, uint64(2))
+	require.LessOrEqual(t, source.Stats().CurrentBytes+source.Stats().ReservedBytes, int64(8))
+}
+
 func TestRollingSourceReadAtEvictsWithinHardQuotaAndRefetches(t *testing.T) {
 	t.Parallel()
 	opener := newFakeRangeOpener([]byte("abcdefghijkl"))
@@ -259,13 +333,18 @@ func TestNewRollingRecoversChunksRemovesTemporaryFilesAndTrimsQuota(t *testing.T
 }
 
 func newRollingSourceForTest(t *testing.T, opener cache.RangeOpener, maxBytes int64, chunkBytes int64) (*cache.RollingSource, string) {
+	return newRollingSourceWithReadAheadForTest(t, opener, maxBytes, chunkBytes, 0)
+}
+
+func newRollingSourceWithReadAheadForTest(t *testing.T, opener cache.RangeOpener, maxBytes int64, chunkBytes int64, readAheadChunks int) (*cache.RollingSource, string) {
 	t.Helper()
 	root := t.TempDir()
 	source, err := cache.NewRolling(context.Background(), cache.RollingOptions{
-		Root:         root,
-		MaxBytes:     maxBytes,
-		ChunkBytes:   chunkBytes,
-		FetchTimeout: time.Second,
+		Root:            root,
+		MaxBytes:        maxBytes,
+		ChunkBytes:      chunkBytes,
+		ReadAheadChunks: readAheadChunks,
+		FetchTimeout:    time.Second,
 	}, opener)
 	require.NoError(t, err)
 	return source, root
@@ -308,6 +387,33 @@ type blockingRangeOpener struct {
 	started chan struct{}
 	release chan struct{}
 	once    sync.Once
+}
+
+type offsetBlockingRangeOpener struct {
+	*fakeRangeOpener
+	offset  int64
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func newOffsetBlockingRangeOpener(content []byte, offset int64) *offsetBlockingRangeOpener {
+	return &offsetBlockingRangeOpener{
+		fakeRangeOpener: newFakeRangeOpener(content),
+		offset:          offset,
+		started:         make(chan struct{}),
+		release:         make(chan struct{}),
+	}
+}
+
+func (o *offsetBlockingRangeOpener) Open(ctx context.Context, _ domain.BackingRef) (acquisition.RangeSource, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	o.mu.Lock()
+	validator := o.validator
+	o.mu.Unlock()
+	return &offsetBlockingRangeSource{opener: o, reader: bytes.NewReader(o.content), validator: validator}, nil
 }
 
 func newBlockingRangeOpener(content []byte) *blockingRangeOpener {
@@ -376,6 +482,33 @@ type blockingRangeSource struct {
 	reader *bytes.Reader
 	closed atomic.Bool
 }
+
+type offsetBlockingRangeSource struct {
+	opener    *offsetBlockingRangeOpener
+	reader    *bytes.Reader
+	validator string
+}
+
+func (s *offsetBlockingRangeSource) ReadAt(ctx context.Context, destination []byte, offset int64) (int, error) {
+	if offset == s.opener.offset {
+		s.opener.once.Do(func() { close(s.opener.started) })
+		select {
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		case <-s.opener.release:
+		}
+	}
+	s.opener.mu.Lock()
+	s.opener.reads[offset]++
+	s.opener.mu.Unlock()
+	return s.reader.ReadAt(destination, offset)
+}
+
+func (s *offsetBlockingRangeSource) Size() int64 { return s.reader.Size() }
+
+func (s *offsetBlockingRangeSource) Validator() string { return s.validator }
+
+func (s *offsetBlockingRangeSource) Close() error { return nil }
 
 func (b *blockingRangeSource) ReadAt(ctx context.Context, destination []byte, offset int64) (int, error) {
 	b.once.Do(func() { close(b.started) })

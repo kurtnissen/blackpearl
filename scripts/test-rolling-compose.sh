@@ -26,6 +26,7 @@ assert not blackpearl.get("cap_add")
 assert blackpearl["environment"]["BLACKPEARL_STORAGE_MODE"] == "rolling"
 assert str(blackpearl["environment"]["BLACKPEARL_CACHE_MAX_BYTES"]) == "1048576"
 assert str(blackpearl["environment"]["BLACKPEARL_CACHE_CHUNK_BYTES"]) == "262144"
+assert str(blackpearl["environment"]["BLACKPEARL_CACHE_READ_AHEAD_CHUNKS"]) == "0"
 for service in (blackpearl, plex):
     for port in service.get("ports", []):
         assert port["host_ip"] == "127.0.0.1"

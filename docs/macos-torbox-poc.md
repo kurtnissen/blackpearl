@@ -64,7 +64,10 @@ still serves the original source bytes. BlackPearl does not transcode.
 The default cache limit is 40 GiB. Override it before launch with, for example,
 `BLACKPEARL_CACHE_MAX_BYTES=4294967296` for 4 GiB. The logical file may be
 larger than this limit; BlackPearl stores only requested fixed-size chunks and
-evicts old chunks as needed.
+evicts old chunks as needed. The TorBox profile reads ahead eight 1 MiB chunks
+from the latest Plex range by default. Set
+`BLACKPEARL_CACHE_READ_AHEAD_CHUNKS=0` to disable it or choose a value from 1
+through 64. Foreground reads keep priority and a seek moves the window.
 
 ## Inspect and stop
 

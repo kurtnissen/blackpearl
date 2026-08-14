@@ -9,7 +9,7 @@ Tested from `main` on an Apple Silicon Mac with Docker Desktop's Linux ARM64 VM.
 | Gate | Result | Evidence |
 |---|---|---|
 | Go race tests | Pass | `go test -race ./...` |
-| Go coverage | Pass | 80.5% of project statements from `go test -coverprofile=coverage.out ./...`; generated Go code inside `web/node_modules` is excluded from the project floor |
+| Go coverage | Pass | 80.8% of project statements from `go test -coverprofile=coverage.out ./...`; generated Go code inside `web/node_modules` is excluded from the project floor |
 | Static analysis | Pass | `go vet ./...` |
 | Compose isolation | Pass | Rendered configuration checked by `scripts/test-compose-paths.sh`; every bind is under `runtime/`, Plex media is read-only `rslave`, and only BlackPearl receives FUSE privileges |
 | POC image build | Pass | `blackpearl:poc` built for local Linux ARM64 |
@@ -34,6 +34,8 @@ Tested from `main` on an Apple Silicon Mac with Docker Desktop's Linux ARM64 VM.
 | Browser replacement transaction | Pass in automated tests | Token/config generations commit through one atomic pointer; failed publication restores the prior pointer; NFS publishes namespace and catalog together |
 | NFS replacement handle stability | Pass in protocol and live restart tests | A real NFSv3 client keeps reading original bytes from an issued handle after replacement while a new mount reads the new catalog; deterministic handles resolve the current file after server recreation; the live Plex mount remained readable across a BlackPearl-only restart |
 | Shared rolling quota during replacement | Pass in automated tests | Multiple immutable provider runtimes use one process-lifetime cache owner and one hard-quota ledger |
+| Seek-aware rolling read-ahead | Pass in race tests | Configurable background chunks follow the latest foreground offset, coalesce with demand reads, continue after LRU saturation, protect the most recently demanded chunk, and preserve one-chunk foreground headroom. |
+| TorBox live read-ahead | Pass on macOS | One previously uncached NFS read at byte 700,000,000 of the TV episode produced the demanded 1 MiB chunk plus all eight configured adjacent chunks (9/9 files, 9,437,184 bytes total) without storing the complete object. The known H.264/AAC movie remained `directplay` on the rebuilt stack. |
 | Setup API container isolation | Pass in Compose, API, and live container tests | BlackPearl and Plex use disjoint Docker networks; Docker Desktop host-gateway reachability is treated as untrusted. A forged unpaired mutation from the live Plex container was denied with HTTP 401 and issued no session. First setup requires a host-generated pairing value; later mutations require a setup-origin session header, pairing value, or exact saved-token re-entry. No authorization cookie is sent to Plex. |
 | TorBox live provider | Pass on macOS with an authorized account file | Live TorBox metadata and repeated exact ranges at the beginning, interior, midpoint, and tail passed through both the gateway and the rolling cache; no complete media file was stored locally |
 | TorBox dynamic Plex namespace | Pass on macOS | A setup replacement changed the NFS namespace without restarting Plex; one-second attribute caching plus disabled negative lookup caching exposed the new path, and generation-based modification times caused Plex to rescan it |
