@@ -41,9 +41,11 @@ func TestGatewayCoalescesConcurrentDownloadLinkRequests(t *testing.T) {
 	require.NoError(t, err)
 
 	results := make(chan error, 16)
+	joined := make(chan struct{}, 16)
 	for range 16 {
+		callerContext := &observedDoneContext{Context: context.Background(), observed: joined}
 		go func() {
-			opened, openErr := gateway.Open(context.Background(), backing)
+			opened, openErr := gateway.Open(callerContext, backing)
 			if openErr == nil {
 				openErr = opened.Close()
 			}
@@ -51,6 +53,9 @@ func TestGatewayCoalescesConcurrentDownloadLinkRequests(t *testing.T) {
 		}()
 	}
 	<-started
+	for range 16 {
+		<-joined
+	}
 	close(release)
 	for range 16 {
 		require.NoError(t, <-results)
@@ -88,15 +93,29 @@ func TestGatewayCoalescedDownloadSurvivesFirstCallerCancellation(t *testing.T) {
 	}()
 	<-started
 	waiterResult := make(chan error, 1)
+	waiterJoined := make(chan struct{})
+	waiterContext := &observedDoneContext{Context: context.Background(), observed: waiterJoined}
 	go func() {
-		_, openErr := gateway.downloadURL(context.Background(), identifier, "validator", false)
+		_, openErr := gateway.downloadURL(waiterContext, identifier, "validator", false)
 		waiterResult <- openErr
 	}()
+	<-waiterJoined
 	cancelLeader()
 	require.ErrorIs(t, <-leaderResult, context.Canceled)
 	close(release)
 	require.NoError(t, <-waiterResult)
 	require.Equal(t, int64(1), linkCalls.Load())
+}
+
+type observedDoneContext struct {
+	context.Context
+	observed chan struct{}
+	once     sync.Once
+}
+
+func (c *observedDoneContext) Done() <-chan struct{} {
+	c.once.Do(func() { c.observed <- struct{}{} })
+	return c.Context.Done()
 }
 
 func TestGatewayOpenMapsCompletedTorrentFile(t *testing.T) {
