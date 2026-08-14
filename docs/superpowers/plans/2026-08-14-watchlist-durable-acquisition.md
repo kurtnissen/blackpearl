@@ -80,6 +80,7 @@
 - [x] Run focused config and app tests and confirm they fail.
 - [x] Wire the Watchlist worker to `acquisitionJobManager`; remove its direct cached coordinator dependency; keep Compose acquisition opt-in `false`.
 - [x] Persist immutable automatic eligibility and prove startup baseline items never enter the acquisition queue.
+- [x] Skip provider submission when an exact movie/year is already present in the durable Plex manifest.
 - [x] Update the paired UI to explain post-baseline eligibility and uncached TorBox preparation.
 - [x] Run `go test -race ./internal/config ./cmd/blackpearl` and confirm it passes.
 - [x] Commit `feat: wire durable watchlist acquisition`.
