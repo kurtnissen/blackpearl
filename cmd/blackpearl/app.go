@@ -408,27 +408,30 @@ func runBrowserSetup(ctx context.Context, cfg config.Config, logger *slog.Logger
 		if gatewayErr != nil {
 			return nil, fmt.Errorf("configure selected TorBox source: %w", gatewayErr)
 		}
-		rangeSource, rangeErr := rangePool.Source(gateway)
+		router, routerErr := cache.NewRangeRouter(map[string]cache.RangeOpener{
+			"torbox-torrent": gateway,
+		})
+		if routerErr != nil {
+			return nil, fmt.Errorf("configure selected range providers: %w", routerErr)
+		}
+		rangeSource, rangeErr := rangePool.Source(router)
 		if rangeErr != nil {
 			return nil, fmt.Errorf("open selected range cache: %w", rangeErr)
 		}
 		catalog := core.NewCatalog(state.NewMemory(), nil, rangeSource)
 		for index := range manifest.Items {
 			configuration := manifest.Items[index]
-			backing, backingErr := domain.NewBackingRef("torbox-torrent", configuration.ObjectID)
-			if backingErr != nil {
-				return nil, fmt.Errorf("construct selected backing: %w", backingErr)
-			}
-			metadata, openErr := gateway.Open(runtimeContext, backing)
+			backing := configuration.Backing()
+			metadata, openErr := router.Open(runtimeContext, backing)
 			if openErr != nil {
-				return nil, fmt.Errorf("validate selected TorBox source: %w", openErr)
+				return nil, fmt.Errorf("validate selected range source: %w", openErr)
 			}
 			logicalSize := metadata.Size()
 			if closeErr := metadata.Close(); closeErr != nil {
-				return nil, fmt.Errorf("close selected TorBox metadata: %w", closeErr)
+				return nil, fmt.Errorf("close selected range metadata: %w", closeErr)
 			}
 			if logicalSize != configuration.Size {
-				return nil, fmt.Errorf("selected TorBox size changed: got %d want %d", logicalSize, configuration.Size)
+				return nil, fmt.Errorf("selected range size changed: got %d want %d", logicalSize, configuration.Size)
 			}
 			var registerErr error
 			if configuration.MediaType == domain.MediaTypeEpisode {
