@@ -33,14 +33,14 @@
 - Produces: `(Repository).AttachJob(context.Context, WatchlistClaim, string, time.Time) error`
 - Produces: `(Repository).DeferJob(context.Context, WatchlistClaim, time.Time) error`
 
-- [ ] Write failing domain tests for valid and malformed 32-character lowercase hexadecimal job IDs.
-- [ ] Run `go test ./internal/acquisition -run Watchlist` and confirm the new tests fail.
-- [ ] Add the optional linked-job value to `WatchlistClaim` while preserving the existing constructor for unlinked claims.
-- [ ] Write failing repository tests that attach a job, reclaim it only after the reconciliation delay, preserve it across reopen, and reject stale attach/defer operations.
-- [ ] Run `go test ./internal/repository/watchlist -run 'Job|Lease'` and confirm the new tests fail.
-- [ ] Add migration `002_background_job.sql`, scan the job ID during claims, and implement version-checked attach/defer transitions.
-- [ ] Run `go test -race ./internal/acquisition ./internal/repository/watchlist` and confirm it passes.
-- [ ] Commit `feat: link watchlist requests to durable jobs`.
+- [x] Write failing domain tests for valid and malformed 32-character lowercase hexadecimal job IDs.
+- [x] Run `go test ./internal/acquisition -run Watchlist` and confirm the new tests fail.
+- [x] Add the optional linked-job value to `WatchlistClaim` while preserving the existing constructor for unlinked claims.
+- [x] Write failing repository tests that attach a job, reclaim it only after the reconciliation delay, preserve it across reopen, and reject stale attach/defer operations.
+- [x] Run `go test ./internal/repository/watchlist -run 'Job|Lease'` and confirm the new tests fail.
+- [x] Add migration `002_background_job.sql`, scan the job ID during claims, and implement version-checked attach/defer transitions.
+- [x] Run `go test -race ./internal/acquisition ./internal/repository/watchlist` and confirm it passes.
+- [x] Commit `feat: link watchlist requests to durable jobs`.
 
 ### Task 2: Replace cached-only Watchlist acquisition with durable orchestration
 

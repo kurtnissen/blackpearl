@@ -34,13 +34,26 @@ const (
 
 // WatchlistClaim is one immutable, versioned queue lease.
 type WatchlistClaim struct {
-	item         WatchlistItem
-	leaseVersion int64
-	attempt      int
+	item            WatchlistItem
+	leaseVersion    int64
+	attempt         int
+	backgroundJobID string
 }
 
 // NewWatchlistClaim validates a queue lease loaded from persistence.
 func NewWatchlistClaim(item WatchlistItem, leaseVersion int64, attempt int) (WatchlistClaim, error) {
+	return newWatchlistClaim(item, leaseVersion, attempt, "")
+}
+
+// NewWatchlistJobClaim validates a queue lease linked to a durable acquisition job.
+func NewWatchlistJobClaim(item WatchlistItem, leaseVersion int64, attempt int, jobID string) (WatchlistClaim, error) {
+	if !jobIDPattern.MatchString(jobID) {
+		return WatchlistClaim{}, errors.New("watchlist background job ID must be 32 lowercase hexadecimal characters")
+	}
+	return newWatchlistClaim(item, leaseVersion, attempt, jobID)
+}
+
+func newWatchlistClaim(item WatchlistItem, leaseVersion int64, attempt int, jobID string) (WatchlistClaim, error) {
 	validated, err := NewWatchlistItem(WatchlistItemInput{
 		Source: item.Source(), ExternalID: item.ExternalID(), MediaType: item.MediaType(),
 		Title: item.Title(), Year: item.Year(),
@@ -54,7 +67,7 @@ func NewWatchlistClaim(item WatchlistItem, leaseVersion int64, attempt int) (Wat
 	if attempt < 1 {
 		return WatchlistClaim{}, errors.New("watchlist claim attempt must be positive")
 	}
-	return WatchlistClaim{item: validated, leaseVersion: leaseVersion, attempt: attempt}, nil
+	return WatchlistClaim{item: validated, leaseVersion: leaseVersion, attempt: attempt, backgroundJobID: jobID}, nil
 }
 
 // Item returns the validated watchlist intent owned by this lease.
@@ -65,6 +78,9 @@ func (c WatchlistClaim) LeaseVersion() int64 { return c.leaseVersion }
 
 // Attempt returns the number of times this item has been claimed.
 func (c WatchlistClaim) Attempt() int { return c.attempt }
+
+// BackgroundJobID returns the durable acquisition job linked to this lease.
+func (c WatchlistClaim) BackgroundJobID() string { return c.backgroundJobID }
 
 // WatchlistCompletion is a validated terminal or deferred lease result.
 type WatchlistCompletion struct {

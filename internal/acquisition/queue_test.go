@@ -38,6 +38,24 @@ func TestNewWatchlistClaimRequiresValidatedIntentAndPositiveLeaseValues(t *testi
 	}
 }
 
+func TestNewWatchlistJobClaimValidatesDurableJobIdentity(t *testing.T) {
+	t.Parallel()
+	item := mustWatchlistItem(t, "plex://movie/background", acquisition.WatchlistMediaTypeMovie)
+	jobID := "0123456789abcdef0123456789abcdef"
+
+	claim, err := acquisition.NewWatchlistJobClaim(item, 2, 3, jobID)
+
+	require.NoError(t, err)
+	require.Equal(t, jobID, claim.BackgroundJobID())
+
+	for _, invalid := range []string{
+		"", "short", "0123456789ABCDEF0123456789ABCDEF", "0123456789abcdef0123456789abcdeg",
+	} {
+		_, claimErr := acquisition.NewWatchlistJobClaim(item, 2, 3, invalid)
+		require.Error(t, claimErr)
+	}
+}
+
 func TestWatchlistCompletionConstructorsEnforceOutcomeContract(t *testing.T) {
 	t.Parallel()
 	nextAttempt := time.Date(2026, time.August, 15, 12, 0, 0, 0, time.UTC)

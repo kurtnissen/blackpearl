@@ -67,6 +67,65 @@ func TestRepositoryDefersNotCachedMovieUntilCooldownExpires(t *testing.T) {
 	require.Equal(t, int64(2), retry.LeaseVersion())
 }
 
+func TestRepositoryAttachesDurableJobAndRecoversItAfterRestart(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "blackpearl.db")
+	repository, err := watchlistrepo.Open(context.Background(), path)
+	require.NoError(t, err)
+	now := time.Date(2026, time.August, 14, 12, 0, 0, 0, time.UTC)
+	reconcileAt := now.Add(time.Minute)
+	require.NoError(t, repository.UpsertSnapshot(context.Background(), []acquisitiondomain.WatchlistItem{
+		mustItem(t, "plex://movie/job", acquisitiondomain.WatchlistMediaTypeMovie, "Durable Job"),
+	}, now))
+	claim, err := repository.Claim(context.Background(), now, 30*time.Second)
+	require.NoError(t, err)
+	jobID := "0123456789abcdef0123456789abcdef"
+
+	require.NoError(t, repository.AttachJob(context.Background(), claim, jobID, reconcileAt))
+	_, err = repository.Claim(context.Background(), reconcileAt.Add(-time.Millisecond), 30*time.Second)
+	require.ErrorIs(t, err, domain.ErrNotFound)
+	require.NoError(t, repository.Close())
+
+	reopened := openRepository(t, path)
+	recovered, err := reopened.Claim(context.Background(), reconcileAt, 30*time.Second)
+	require.NoError(t, err)
+	require.Equal(t, jobID, recovered.BackgroundJobID())
+}
+
+func TestRepositoryDefersLinkedJobAndRejectsStaleTransitions(t *testing.T) {
+	t.Parallel()
+	repository := openRepository(t, filepath.Join(t.TempDir(), "blackpearl.db"))
+	now := time.Date(2026, time.August, 14, 12, 0, 0, 0, time.UTC)
+	require.NoError(t, repository.UpsertSnapshot(context.Background(), []acquisitiondomain.WatchlistItem{
+		mustItem(t, "plex://movie/job-lease", acquisitiondomain.WatchlistMediaTypeMovie, "Job Lease"),
+	}, now))
+	first, err := repository.Claim(context.Background(), now, time.Minute)
+	require.NoError(t, err)
+	second, err := repository.Claim(context.Background(), now.Add(time.Minute), time.Minute)
+	require.NoError(t, err)
+	jobID := "11111111111111111111111111111111"
+
+	err = repository.AttachJob(context.Background(), first, jobID, now.Add(2*time.Minute))
+	require.ErrorIs(t, err, acquisitiondomain.ErrStaleWatchlistClaim)
+	require.NoError(t, repository.AttachJob(context.Background(), second, jobID, now.Add(2*time.Minute)))
+	linked, err := repository.Claim(context.Background(), now.Add(2*time.Minute), time.Minute)
+	require.NoError(t, err)
+	require.Equal(t, jobID, linked.BackgroundJobID())
+
+	staleLinked, claimErr := acquisitiondomain.NewWatchlistJobClaim(
+		second.Item(), second.LeaseVersion(), second.Attempt(), jobID,
+	)
+	require.NoError(t, claimErr)
+	err = repository.DeferJob(context.Background(), staleLinked, now.Add(3*time.Minute))
+	require.ErrorIs(t, err, acquisitiondomain.ErrStaleWatchlistClaim)
+	require.NoError(t, repository.DeferJob(context.Background(), linked, now.Add(3*time.Minute)))
+	_, err = repository.Claim(context.Background(), now.Add(3*time.Minute-time.Millisecond), time.Minute)
+	require.ErrorIs(t, err, domain.ErrNotFound)
+	retry, err := repository.Claim(context.Background(), now.Add(3*time.Minute), time.Minute)
+	require.NoError(t, err)
+	require.Equal(t, jobID, retry.BackgroundJobID())
+}
+
 func TestRepositoryReclaimsExpiredLeaseAndRejectsStaleCompletion(t *testing.T) {
 	t.Parallel()
 	repository := openRepository(t, filepath.Join(t.TempDir(), "blackpearl.db"))
