@@ -11,6 +11,9 @@ var (
 	// ErrNotReady indicates that a created provider object exists but is not yet
 	// available as complete, range-readable media.
 	ErrNotReady = errors.New("acquired object is not ready")
+	// ErrAmbiguousProviderObjects indicates that reconciliation found multiple
+	// account objects for one stable content fingerprint.
+	ErrAmbiguousProviderObjects = errors.New("multiple provider objects match the selected content")
 )
 
 // CreatedObject identifies one provider account object created by an
