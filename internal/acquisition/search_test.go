@@ -70,11 +70,12 @@ func TestNewReleaseNormalizesValidTorrentByHash(t *testing.T) {
 	seeders := 42
 
 	release, err := acquisition.NewRelease(acquisition.ReleaseInput{
-		SourceID: "source-1", Title: "Otherhood.2019.1080p", Protocol: acquisition.ReleaseProtocolTorrent,
+		Provider: "prowlarr", SourceID: "source-1", Title: "Otherhood.2019.1080p", Protocol: acquisition.ReleaseProtocolTorrent,
 		Size: 10_000, Indexer: "authorized-indexer", InfoHash: "ABCDEF0123456789ABCDEF0123456789ABCDEF01", Seeders: &seeders,
 	})
 
 	require.NoError(t, err)
+	require.Equal(t, "prowlarr", release.Provider())
 	require.Equal(t, "source-1", release.SourceID())
 	require.Equal(t, "Otherhood.2019.1080p", release.Title())
 	require.Equal(t, acquisition.ReleaseProtocolTorrent, release.Protocol())
@@ -90,9 +91,9 @@ func TestNewReleaseNormalizesValidTorrentByHash(t *testing.T) {
 func TestNewReleaseAcceptsValidProtocolLocators(t *testing.T) {
 	t.Parallel()
 	tests := []acquisition.ReleaseInput{
-		{SourceID: "magnet", Title: "Movie", Protocol: acquisition.ReleaseProtocolTorrent, Size: 1, Indexer: "one", MagnetURL: "magnet:?xt=urn:btih:ABCDEF0123456789ABCDEF0123456789ABCDEF01&dn=Movie"},
-		{SourceID: "torrent-file", Title: "Movie", Protocol: acquisition.ReleaseProtocolTorrent, Size: 1, Indexer: "one", DownloadURL: "https://prowlarr.test/download?id=1&token=signed"},
-		{SourceID: "nzb", Title: "Episode", Protocol: acquisition.ReleaseProtocolUsenet, Size: 1, Indexer: "two", DownloadURL: "https://prowlarr.test/download/episode.nzb?key=signed"},
+		{Provider: "prowlarr", SourceID: "magnet", Title: "Movie", Protocol: acquisition.ReleaseProtocolTorrent, Size: 1, Indexer: "one", MagnetURL: "magnet:?xt=urn:btih:ABCDEF0123456789ABCDEF0123456789ABCDEF01&dn=Movie"},
+		{Provider: "prowlarr", SourceID: "torrent-file", Title: "Movie", Protocol: acquisition.ReleaseProtocolTorrent, Size: 1, Indexer: "one", DownloadURL: "https://prowlarr.test/download?id=1&token=signed"},
+		{Provider: "prowlarr", SourceID: "nzb", Title: "Episode", Protocol: acquisition.ReleaseProtocolUsenet, Size: 1, Indexer: "two", DownloadURL: "https://prowlarr.test/download/episode.nzb?key=signed"},
 	}
 	for _, input := range tests {
 		input := input
@@ -110,6 +111,7 @@ func TestNewReleaseRejectsUnsafeOrIncompleteResults(t *testing.T) {
 		name   string
 		mutate func(*acquisition.ReleaseInput)
 	}{
+		{name: "blank provider", mutate: func(input *acquisition.ReleaseInput) { input.Provider = " " }},
 		{name: "blank source ID", mutate: func(input *acquisition.ReleaseInput) { input.SourceID = " " }},
 		{name: "control in title", mutate: func(input *acquisition.ReleaseInput) { input.Title = "Bad\tTitle" }},
 		{name: "oversize title", mutate: func(input *acquisition.ReleaseInput) { input.Title = strings.Repeat("x", 201) }},
@@ -141,7 +143,7 @@ func TestNewReleaseRejectsUnsafeOrIncompleteResults(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			input := acquisition.ReleaseInput{
-				SourceID: "source", Title: "Movie", Protocol: acquisition.ReleaseProtocolTorrent,
+				Provider: "prowlarr", SourceID: "source", Title: "Movie", Protocol: acquisition.ReleaseProtocolTorrent,
 				Size: 1, Indexer: "indexer", InfoHash: "abcdef0123456789abcdef0123456789abcdef01",
 			}
 			test.mutate(&input)

@@ -151,6 +151,7 @@ func (c ProviderCapabilities) DownloadURLs() bool { return c.downloadURLs }
 
 // ReleaseInput contains one untrusted provider result for validation.
 type ReleaseInput struct {
+	Provider    string
 	SourceID    string
 	Title       string
 	Protocol    ReleaseProtocol
@@ -164,6 +165,7 @@ type ReleaseInput struct {
 
 // Release is a validated ephemeral acquisition candidate.
 type Release struct {
+	provider    string
 	sourceID    string
 	title       string
 	protocol    ReleaseProtocol
@@ -178,6 +180,9 @@ type Release struct {
 
 // NewRelease validates and normalizes one provider release.
 func NewRelease(input ReleaseInput) (Release, error) {
+	if _, err := domain.NewBackingRef(input.Provider, "release"); err != nil {
+		return Release{}, fmt.Errorf("invalid release provider: %w", err)
+	}
 	sourceID, err := validateSearchText("release source ID", input.SourceID, maximumSourceIDBytes)
 	if err != nil {
 		return Release{}, err
@@ -225,7 +230,7 @@ func NewRelease(input ReleaseInput) (Release, error) {
 		seeders = *input.Seeders
 	}
 	return Release{
-		sourceID: sourceID, title: title, protocol: input.Protocol, size: input.Size, indexer: indexer,
+		provider: input.Provider, sourceID: sourceID, title: title, protocol: input.Protocol, size: input.Size, indexer: indexer,
 		infoHash: infoHash, magnetURL: input.MagnetURL, downloadURL: input.DownloadURL,
 		seeders: seeders, hasSeeders: hasSeeders,
 	}, nil
@@ -273,6 +278,9 @@ func validateReleaseDownloadURL(value string) error {
 	}
 	return nil
 }
+
+// Provider returns the stable search-provider name.
+func (r Release) Provider() string { return r.provider }
 
 // SourceID returns the provider-local stable result identifier.
 func (r Release) SourceID() string { return r.sourceID }

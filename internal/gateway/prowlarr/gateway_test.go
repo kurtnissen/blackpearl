@@ -102,6 +102,7 @@ func TestSearchMapsValidReleasesAndSkipsMalformedRecords(t *testing.T) {
 
 	require.NoError(t, err)
 	require.Len(t, releases, 2)
+	require.Equal(t, "prowlarr", releases[0].Provider())
 	require.Equal(t, "torrent-guid", releases[0].SourceID())
 	require.Equal(t, "abcdef0123456789abcdef0123456789abcdef01", releases[0].InfoHash())
 	require.Equal(t, 25, releases[0].Seeders())

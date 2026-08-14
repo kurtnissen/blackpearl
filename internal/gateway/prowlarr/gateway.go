@@ -158,7 +158,7 @@ func normalizeRelease(resource releaseResource) (acquisition.Release, bool) {
 		infoHash = strings.TrimSpace(resource.ReleaseHash)
 	}
 	release, err := acquisition.NewRelease(acquisition.ReleaseInput{
-		SourceID: sourceID, Title: resource.Title, Protocol: protocol, Size: resource.Size,
+		Provider: providerName, SourceID: sourceID, Title: resource.Title, Protocol: protocol, Size: resource.Size,
 		Indexer: indexer, InfoHash: infoHash, MagnetURL: resource.MagnetURL,
 		DownloadURL: resource.DownloadURL, Seeders: resource.Seeders,
 	})
