@@ -27,11 +27,14 @@ func TestGatewayNextResolvesSameSeasonGapAndSeasonTransition(t *testing.T) {
 		response.Header().Set("Content-Type", "application/json")
 		switch request.URL.Path {
 		case "/library/metadata/" + showID + "/children":
-			fmt.Fprintf(response, `{"MediaContainer":{"size":3,"Metadata":[{"type":"season","index":2,"ratingKey":%q},{"type":"season","index":0,"ratingKey":"000000000000000000000000"},{"type":"season","index":1,"ratingKey":%q}]}}`, seasonTwoID, seasonOneID)
+			_, err := fmt.Fprintf(response, `{"MediaContainer":{"size":3,"Metadata":[{"type":"season","index":2,"ratingKey":%q},{"type":"season","index":0,"ratingKey":"000000000000000000000000"},{"type":"season","index":1,"ratingKey":%q}]}}`, seasonTwoID, seasonOneID)
+			require.NoError(t, err)
 		case "/library/metadata/" + seasonOneID + "/children":
-			fmt.Fprint(response, `{"MediaContainer":{"size":3,"Metadata":[{"type":"episode","parentIndex":1,"index":8},{"type":"episode","parentIndex":1,"index":3},{"type":"episode","parentIndex":1,"index":1}]}}`)
+			_, err := fmt.Fprint(response, `{"MediaContainer":{"size":3,"Metadata":[{"type":"episode","parentIndex":1,"index":8},{"type":"episode","parentIndex":1,"index":3},{"type":"episode","parentIndex":1,"index":1}]}}`)
+			require.NoError(t, err)
 		case "/library/metadata/" + seasonTwoID + "/children":
-			fmt.Fprint(response, `{"MediaContainer":{"size":2,"Metadata":[{"type":"episode","parentIndex":2,"index":2},{"type":"episode","parentIndex":2,"index":1}]}}`)
+			_, err := fmt.Fprint(response, `{"MediaContainer":{"size":2,"Metadata":[{"type":"episode","parentIndex":2,"index":2},{"type":"episode","parentIndex":2,"index":1}]}}`)
+			require.NoError(t, err)
 		default:
 			http.NotFound(response, request)
 		}
@@ -57,9 +60,11 @@ func TestGatewayNextReturnsNotFoundForTerminalOrUnknownCurrentSeason(t *testing.
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
 		case "/library/metadata/" + showID + "/children":
-			fmt.Fprintf(response, `{"MediaContainer":{"size":1,"Metadata":[{"type":"season","index":1,"ratingKey":%q}]}}`, seasonID)
+			_, err := fmt.Fprintf(response, `{"MediaContainer":{"size":1,"Metadata":[{"type":"season","index":1,"ratingKey":%q}]}}`, seasonID)
+			require.NoError(t, err)
 		case "/library/metadata/" + seasonID + "/children":
-			fmt.Fprint(response, `{"MediaContainer":{"size":2,"Metadata":[{"type":"episode","parentIndex":1,"index":1},{"type":"episode","parentIndex":1,"index":2}]}}`)
+			_, err := fmt.Fprint(response, `{"MediaContainer":{"size":2,"Metadata":[{"type":"episode","parentIndex":1,"index":1},{"type":"episode","parentIndex":1,"index":2}]}}`)
+			require.NoError(t, err)
 		}
 	}))
 	t.Cleanup(server.Close)
@@ -74,7 +79,8 @@ func TestGatewayNextReturnsNotFoundForTerminalOrUnknownCurrentSeason(t *testing.
 func TestGatewayNextRejectsMalformedIdentityAndFailsClosedAtHTTPBoundary(t *testing.T) {
 	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
-		fmt.Fprint(response, `{"MediaContainer":{"size":2,"Metadata":[]}}`)
+		_, err := fmt.Fprint(response, `{"MediaContainer":{"size":2,"Metadata":[]}}`)
+		require.NoError(t, err)
 	}))
 	t.Cleanup(server.Close)
 	gateway := newMetadataGateway(t, server.URL, &metadataTokenSource{token: metadataToken})
@@ -93,7 +99,8 @@ func TestGatewayNextRejectsMalformedIdentityAndFailsClosedAtHTTPBoundary(t *test
 func TestGatewayNextRejectsOversizedMetadata(t *testing.T) {
 	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
-		fmt.Fprint(response, strings.Repeat("x", (2<<20)+1))
+		_, err := fmt.Fprint(response, strings.Repeat("x", (2<<20)+1))
+		require.NoError(t, err)
 	}))
 	t.Cleanup(server.Close)
 	gateway := newMetadataGateway(t, server.URL, &metadataTokenSource{token: metadataToken})
@@ -124,7 +131,8 @@ func TestGatewayNextMapsAuthenticationCancellationAndTokenFailures(t *testing.T)
 			t.Parallel()
 			server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
 				response.WriteHeader(test.status)
-				fmt.Fprint(response, `private response body`)
+				_, writeErr := fmt.Fprint(response, `private response body`)
+				require.NoError(t, writeErr)
 			}))
 			t.Cleanup(server.Close)
 			gateway := newMetadataGateway(t, server.URL, test.tokens)

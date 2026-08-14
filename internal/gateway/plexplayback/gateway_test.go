@@ -24,10 +24,11 @@ func TestGatewaySnapshotReturnsOnlyNormalizedBlackPearlEpisodes(t *testing.T) {
 		require.Equal(t, "application/json", request.Header.Get("Accept"))
 		require.Equal(t, playbackToken, request.Header.Get("X-Plex-Token"))
 		response.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(response, `{"MediaContainer":{"size":3,"Metadata":[`+
+		_, err := fmt.Fprint(response, `{"MediaContainer":{"size":3,"Metadata":[`+
 			playbackEpisodeJSON("paused", "/blackpearl/TV Shows/MariposaHD (2006)/Season 01/MariposaHD (2006) - S01E01 - Episode 1.mp4", true)+`,`+
 			`{"type":"movie","viewOffset":254000,"duration":2186773,"Player":{"state":"playing"},"Media":[{"Part":[{"file":"/blackpearl/Movies/Film (2026)/Film (2026).mp4","selected":true}]}]},`+
 			playbackEpisodeJSON("playing", "/other/TV Shows/MariposaHD (2006)/Season 01/episode.mp4", true)+`]}}`)
+		require.NoError(t, err)
 	}))
 	t.Cleanup(server.Close)
 	gateway := newPlaybackGateway(t, server.URL, &fakeTokenSource{token: playbackToken})
@@ -46,11 +47,12 @@ func TestGatewaySnapshotReturnsOnlyNormalizedBlackPearlEpisodes(t *testing.T) {
 func TestGatewaySnapshotIsolatesMalformedSessions(t *testing.T) {
 	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
-		fmt.Fprint(response, `{"MediaContainer":{"size":4,"Metadata":[`+
+		_, err := fmt.Fprint(response, `{"MediaContainer":{"size":4,"Metadata":[`+
 			playbackEpisodeJSON("buffering", "/blackpearl/TV Shows/Show (2026)/Season 01/bad.mp4", true)+`,`+
 			playbackEpisodeJSON("playing", "/blackpearl/TV Shows/Show (2026)/Season 01/unselected.mp4", false)+`,`+
 			strings.Replace(playbackEpisodeJSON("playing", "/blackpearl/TV Shows/Show (2026)/Season 01/duplicate.mp4", true), `"Part":[`, `"Part":[{"file":"/blackpearl/TV Shows/Show (2026)/Season 01/other.mp4","selected":true},`, 1)+`,`+
 			playbackEpisodeJSON("playing", "/blackpearl/TV Shows/MariposaHD (2006)/Season 01/valid.mp4", true)+`]}}`)
+		require.NoError(t, err)
 	}))
 	t.Cleanup(server.Close)
 	gateway := newPlaybackGateway(t, server.URL, &fakeTokenSource{token: playbackToken})
@@ -85,7 +87,8 @@ func TestGatewaySnapshotFailsClosedAtHTTPBoundary(t *testing.T) {
 			t.Parallel()
 			server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
 				response.WriteHeader(test.status)
-				fmt.Fprint(response, test.body)
+				_, writeErr := fmt.Fprint(response, test.body)
+				require.NoError(t, writeErr)
 			}))
 			t.Cleanup(server.Close)
 			gateway := newPlaybackGateway(t, server.URL, test.token)

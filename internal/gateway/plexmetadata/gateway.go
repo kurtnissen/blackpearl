@@ -88,7 +88,7 @@ func (g *Gateway) Next(ctx context.Context, externalShowID string, current domai
 	}
 	showMatches := showGUIDPattern.FindStringSubmatch(externalShowID)
 	if len(showMatches) != 2 {
-		return domain.EpisodeCoordinate{}, errors.New("Plex show identity is invalid")
+		return domain.EpisodeCoordinate{}, errors.New("plex show identity is invalid")
 	}
 	if _, err := domain.NewEpisodeCoordinate(current.Season(), current.Episode()); err != nil {
 		return domain.EpisodeCoordinate{}, fmt.Errorf("current episode coordinate is invalid: %w", err)
