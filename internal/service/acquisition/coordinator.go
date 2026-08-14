@@ -5,9 +5,9 @@ import (
 	"errors"
 	"fmt"
 
-	acquisitiondomain "github.com/blackpearl-media/blackpearl/internal/acquisition"
-	"github.com/blackpearl-media/blackpearl/internal/domain"
-	"github.com/blackpearl-media/blackpearl/internal/resolver"
+	acquisitiondomain "github.com/kurtnissen/blackpearl/internal/acquisition"
+	"github.com/kurtnissen/blackpearl/internal/domain"
+	"github.com/kurtnissen/blackpearl/internal/resolver"
 )
 
 var (

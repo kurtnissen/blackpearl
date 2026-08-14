@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"net/url"
 
-	"github.com/blackpearl-media/blackpearl/internal/domain"
+	"github.com/kurtnissen/blackpearl/internal/domain"
 )
 
 const maximumReadyBodyBytes = 1 << 20

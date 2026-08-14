@@ -12,7 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 
-	"github.com/blackpearl-media/blackpearl/internal/domain"
+	"github.com/kurtnissen/blackpearl/internal/domain"
 )
 
 var cacheKeyPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)

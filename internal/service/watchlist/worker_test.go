@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/blackpearl-media/blackpearl/internal/acquisition"
-	"github.com/blackpearl-media/blackpearl/internal/domain"
-	watchlistservice "github.com/blackpearl-media/blackpearl/internal/service/watchlist"
+	"github.com/kurtnissen/blackpearl/internal/acquisition"
+	"github.com/kurtnissen/blackpearl/internal/domain"
+	watchlistservice "github.com/kurtnissen/blackpearl/internal/service/watchlist"
 	"github.com/stretchr/testify/require"
 )
 

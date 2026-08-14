@@ -10,7 +10,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/blackpearl-media/blackpearl/internal/plex"
+	"github.com/kurtnissen/blackpearl/internal/plex"
 	"github.com/stretchr/testify/require"
 )
 

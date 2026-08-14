@@ -14,7 +14,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/blackpearl-media/blackpearl/internal/domain"
+	"github.com/kurtnissen/blackpearl/internal/domain"
 )
 
 const (

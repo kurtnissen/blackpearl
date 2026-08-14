@@ -15,8 +15,8 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/blackpearl-media/blackpearl/internal/domain"
-	setupservice "github.com/blackpearl-media/blackpearl/internal/service/setup"
+	"github.com/kurtnissen/blackpearl/internal/domain"
+	setupservice "github.com/kurtnissen/blackpearl/internal/service/setup"
 )
 
 const maximumRequestBytes = 128 * 1024

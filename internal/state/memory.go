@@ -6,7 +6,7 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/blackpearl-media/blackpearl/internal/domain"
+	"github.com/kurtnissen/blackpearl/internal/domain"
 )
 
 // MemoryRepository stores one runtime catalog snapshot without sharing mutable

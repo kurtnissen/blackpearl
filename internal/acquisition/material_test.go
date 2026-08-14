@@ -5,7 +5,7 @@ import (
 	"encoding/hex"
 	"testing"
 
-	"github.com/blackpearl-media/blackpearl/internal/acquisition"
+	"github.com/kurtnissen/blackpearl/internal/acquisition"
 	"github.com/stretchr/testify/require"
 )
 

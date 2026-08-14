@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/blackpearl-media/blackpearl/internal/acquisition"
-	"github.com/blackpearl-media/blackpearl/internal/domain"
-	"github.com/blackpearl-media/blackpearl/internal/resolver"
+	"github.com/kurtnissen/blackpearl/internal/acquisition"
+	"github.com/kurtnissen/blackpearl/internal/domain"
+	"github.com/kurtnissen/blackpearl/internal/resolver"
 	"github.com/stretchr/testify/require"
 )
 

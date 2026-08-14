@@ -8,7 +8,7 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/blackpearl-media/blackpearl/internal/domain"
+	"github.com/kurtnissen/blackpearl/internal/domain"
 	"github.com/hanwen/go-fuse/v2/fs"
 	"github.com/hanwen/go-fuse/v2/fuse"
 	"github.com/stretchr/testify/require"

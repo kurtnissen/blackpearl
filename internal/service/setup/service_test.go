@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/blackpearl-media/blackpearl/internal/core"
-	"github.com/blackpearl-media/blackpearl/internal/domain"
-	setupservice "github.com/blackpearl-media/blackpearl/internal/service/setup"
+	"github.com/kurtnissen/blackpearl/internal/core"
+	"github.com/kurtnissen/blackpearl/internal/domain"
+	setupservice "github.com/kurtnissen/blackpearl/internal/service/setup"
 	"github.com/stretchr/testify/require"
 )
 

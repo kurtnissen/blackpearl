@@ -9,8 +9,8 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/blackpearl-media/blackpearl/internal/domain"
-	"github.com/blackpearl-media/blackpearl/internal/pearlnfs"
+	"github.com/kurtnissen/blackpearl/internal/domain"
+	"github.com/kurtnissen/blackpearl/internal/pearlnfs"
 	"github.com/stretchr/testify/require"
 	nfsclient "github.com/willscott/go-nfs-client/nfs"
 	"github.com/willscott/go-nfs-client/nfs/rpc"

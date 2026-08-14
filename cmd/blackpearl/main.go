@@ -9,8 +9,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/blackpearl-media/blackpearl/internal/config"
-	"github.com/blackpearl-media/blackpearl/internal/platform"
+	"github.com/kurtnissen/blackpearl/internal/config"
+	"github.com/kurtnissen/blackpearl/internal/platform"
 )
 
 func main() {

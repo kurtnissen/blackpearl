@@ -10,9 +10,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/blackpearl-media/blackpearl/internal/domain"
-	setuphandler "github.com/blackpearl-media/blackpearl/internal/handler/setup"
-	setupservice "github.com/blackpearl-media/blackpearl/internal/service/setup"
+	"github.com/kurtnissen/blackpearl/internal/domain"
+	setuphandler "github.com/kurtnissen/blackpearl/internal/handler/setup"
+	setupservice "github.com/kurtnissen/blackpearl/internal/service/setup"
 	"github.com/stretchr/testify/require"
 )
 

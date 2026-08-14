@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/blackpearl-media/blackpearl/internal/domain"
-	"github.com/blackpearl-media/blackpearl/internal/state"
+	"github.com/kurtnissen/blackpearl/internal/domain"
+	"github.com/kurtnissen/blackpearl/internal/state"
 	"github.com/stretchr/testify/require"
 )
 

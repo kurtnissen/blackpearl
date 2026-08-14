@@ -12,7 +12,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/blackpearl-media/blackpearl/internal/acquisition"
+	"github.com/kurtnissen/blackpearl/internal/acquisition"
 )
 
 type createTorrentResponse struct {

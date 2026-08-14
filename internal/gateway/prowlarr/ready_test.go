@@ -11,8 +11,8 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/blackpearl-media/blackpearl/internal/domain"
-	"github.com/blackpearl-media/blackpearl/internal/gateway/prowlarr"
+	"github.com/kurtnissen/blackpearl/internal/domain"
+	"github.com/kurtnissen/blackpearl/internal/gateway/prowlarr"
 	"github.com/stretchr/testify/require"
 )
 

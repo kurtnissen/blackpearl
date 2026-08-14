@@ -8,7 +8,7 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/blackpearl-media/blackpearl/internal/domain"
+	"github.com/kurtnissen/blackpearl/internal/domain"
 )
 
 var jobIDPattern = regexp.MustCompile(`^[0-9a-f]{32}$`)

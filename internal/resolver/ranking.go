@@ -6,7 +6,7 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/blackpearl-media/blackpearl/internal/acquisition"
+	"github.com/kurtnissen/blackpearl/internal/acquisition"
 )
 
 type releaseRank struct {

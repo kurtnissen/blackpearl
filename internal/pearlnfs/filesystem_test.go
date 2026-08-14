@@ -8,8 +8,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/blackpearl-media/blackpearl/internal/domain"
-	"github.com/blackpearl-media/blackpearl/internal/pearlnfs"
+	"github.com/kurtnissen/blackpearl/internal/domain"
+	"github.com/kurtnissen/blackpearl/internal/pearlnfs"
 	"github.com/go-git/go-billy/v5"
 	"github.com/stretchr/testify/require"
 )

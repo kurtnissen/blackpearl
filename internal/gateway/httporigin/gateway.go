@@ -14,8 +14,8 @@ import (
 	"strings"
 	"sync/atomic"
 
-	"github.com/blackpearl-media/blackpearl/internal/acquisition"
-	"github.com/blackpearl-media/blackpearl/internal/domain"
+	"github.com/kurtnissen/blackpearl/internal/acquisition"
+	"github.com/kurtnissen/blackpearl/internal/domain"
 )
 
 const providerName = "http-range"

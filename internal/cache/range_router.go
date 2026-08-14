@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/blackpearl-media/blackpearl/internal/acquisition"
-	"github.com/blackpearl-media/blackpearl/internal/domain"
+	"github.com/kurtnissen/blackpearl/internal/acquisition"
+	"github.com/kurtnissen/blackpearl/internal/domain"
 )
 
 // RangeRouter dispatches provider-neutral backing references to their range opener.

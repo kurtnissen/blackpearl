@@ -1,4 +1,4 @@
-module github.com/blackpearl-media/blackpearl/experiments/readat-nfs
+module github.com/kurtnissen/blackpearl/experiments/readat-nfs
 
 go 1.24.0
 

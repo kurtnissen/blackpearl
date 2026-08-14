@@ -7,8 +7,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/blackpearl-media/blackpearl/internal/core"
-	"github.com/blackpearl-media/blackpearl/internal/domain"
+	"github.com/kurtnissen/blackpearl/internal/core"
+	"github.com/kurtnissen/blackpearl/internal/domain"
 	"github.com/stretchr/testify/require"
 )
 

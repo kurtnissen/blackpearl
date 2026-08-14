@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/blackpearl-media/blackpearl/internal/platform"
+	"github.com/kurtnissen/blackpearl/internal/platform"
 	"github.com/stretchr/testify/require"
 )
 

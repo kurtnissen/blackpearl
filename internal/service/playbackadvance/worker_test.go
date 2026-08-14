@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/blackpearl-media/blackpearl/internal/domain"
-	playbackadvance "github.com/blackpearl-media/blackpearl/internal/service/playbackadvance"
+	"github.com/kurtnissen/blackpearl/internal/domain"
+	playbackadvance "github.com/kurtnissen/blackpearl/internal/service/playbackadvance"
 	"github.com/stretchr/testify/require"
 )
 

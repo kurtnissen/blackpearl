@@ -6,10 +6,10 @@ import (
 	"log/slog"
 	"net/http"
 
-	acquisitiondomain "github.com/blackpearl-media/blackpearl/internal/acquisition"
-	"github.com/blackpearl-media/blackpearl/internal/domain"
-	acquisitionservice "github.com/blackpearl-media/blackpearl/internal/service/acquisition"
-	watchlistservice "github.com/blackpearl-media/blackpearl/internal/service/watchlist"
+	acquisitiondomain "github.com/kurtnissen/blackpearl/internal/acquisition"
+	"github.com/kurtnissen/blackpearl/internal/domain"
+	acquisitionservice "github.com/kurtnissen/blackpearl/internal/service/acquisition"
+	watchlistservice "github.com/kurtnissen/blackpearl/internal/service/watchlist"
 )
 
 // AcquisitionService is the private configuration and acquisition boundary

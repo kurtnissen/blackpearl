@@ -14,9 +14,9 @@ import (
 	"sync"
 	"time"
 
-	acquisitiondomain "github.com/blackpearl-media/blackpearl/internal/acquisition"
-	"github.com/blackpearl-media/blackpearl/internal/core"
-	"github.com/blackpearl-media/blackpearl/internal/domain"
+	acquisitiondomain "github.com/kurtnissen/blackpearl/internal/acquisition"
+	"github.com/kurtnissen/blackpearl/internal/core"
+	"github.com/kurtnissen/blackpearl/internal/domain"
 )
 
 const setupSessionPurpose = "blackpearl-local-setup-session-v1"

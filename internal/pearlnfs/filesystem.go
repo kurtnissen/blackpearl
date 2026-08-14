@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/blackpearl-media/blackpearl/internal/domain"
+	"github.com/kurtnissen/blackpearl/internal/domain"
 	"github.com/go-git/go-billy/v5"
 )
 

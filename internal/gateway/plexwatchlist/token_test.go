@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/blackpearl-media/blackpearl/internal/gateway/plexwatchlist"
+	"github.com/kurtnissen/blackpearl/internal/gateway/plexwatchlist"
 	"github.com/stretchr/testify/require"
 )
 

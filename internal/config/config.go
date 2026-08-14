@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/blackpearl-media/blackpearl/internal/domain"
+	"github.com/kurtnissen/blackpearl/internal/domain"
 	"github.com/caarlos0/env/v11"
 )
 

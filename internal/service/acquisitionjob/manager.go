@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/blackpearl-media/blackpearl/internal/acquisition"
+	"github.com/kurtnissen/blackpearl/internal/acquisition"
 )
 
 // ManagerRepository is the persistence boundary consumed by the paired API.

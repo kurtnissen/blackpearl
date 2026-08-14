@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/blackpearl-media/blackpearl/internal/domain"
-	setuprepo "github.com/blackpearl-media/blackpearl/internal/repository/setup"
+	"github.com/kurtnissen/blackpearl/internal/domain"
+	setuprepo "github.com/kurtnissen/blackpearl/internal/repository/setup"
 	"github.com/stretchr/testify/require"
 )
 

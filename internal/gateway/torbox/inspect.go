@@ -11,8 +11,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/blackpearl-media/blackpearl/internal/acquisition"
-	"github.com/blackpearl-media/blackpearl/internal/domain"
+	"github.com/kurtnissen/blackpearl/internal/acquisition"
+	"github.com/kurtnissen/blackpearl/internal/domain"
 )
 
 // InspectCreatedTorrent returns eligible video files from one freshly created

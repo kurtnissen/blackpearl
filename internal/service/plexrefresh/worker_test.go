@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	plexrefresh "github.com/blackpearl-media/blackpearl/internal/service/plexrefresh"
+	plexrefresh "github.com/kurtnissen/blackpearl/internal/service/plexrefresh"
 	"github.com/stretchr/testify/require"
 )
 

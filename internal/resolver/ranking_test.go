@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/blackpearl-media/blackpearl/internal/acquisition"
-	"github.com/blackpearl-media/blackpearl/internal/resolver"
+	"github.com/kurtnissen/blackpearl/internal/acquisition"
+	"github.com/kurtnissen/blackpearl/internal/resolver"
 	"github.com/stretchr/testify/require"
 )
 

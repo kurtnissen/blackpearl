@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/blackpearl-media/blackpearl/internal/cache"
-	"github.com/blackpearl-media/blackpearl/internal/domain"
-	"github.com/blackpearl-media/blackpearl/internal/gateway/torbox"
+	"github.com/kurtnissen/blackpearl/internal/cache"
+	"github.com/kurtnissen/blackpearl/internal/domain"
+	"github.com/kurtnissen/blackpearl/internal/gateway/torbox"
 	"github.com/stretchr/testify/require"
 )
 

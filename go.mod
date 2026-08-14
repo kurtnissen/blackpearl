@@ -1,4 +1,4 @@
-module github.com/blackpearl-media/blackpearl
+module github.com/kurtnissen/blackpearl
 
 go 1.26.6
 

@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	acquisitiondomain "github.com/blackpearl-media/blackpearl/internal/acquisition"
-	"github.com/blackpearl-media/blackpearl/internal/domain"
-	acquisitionrepo "github.com/blackpearl-media/blackpearl/internal/repository/acquisition"
+	acquisitiondomain "github.com/kurtnissen/blackpearl/internal/acquisition"
+	"github.com/kurtnissen/blackpearl/internal/domain"
+	acquisitionrepo "github.com/kurtnissen/blackpearl/internal/repository/acquisition"
 	"github.com/stretchr/testify/require"
 )
 

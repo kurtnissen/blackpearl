@@ -9,12 +9,12 @@ import (
 	"testing"
 	"time"
 
-	acquisitiondomain "github.com/blackpearl-media/blackpearl/internal/acquisition"
-	"github.com/blackpearl-media/blackpearl/internal/domain"
-	setuphandler "github.com/blackpearl-media/blackpearl/internal/handler/setup"
-	acquisitionservice "github.com/blackpearl-media/blackpearl/internal/service/acquisition"
-	setupservice "github.com/blackpearl-media/blackpearl/internal/service/setup"
-	watchlistservice "github.com/blackpearl-media/blackpearl/internal/service/watchlist"
+	acquisitiondomain "github.com/kurtnissen/blackpearl/internal/acquisition"
+	"github.com/kurtnissen/blackpearl/internal/domain"
+	setuphandler "github.com/kurtnissen/blackpearl/internal/handler/setup"
+	acquisitionservice "github.com/kurtnissen/blackpearl/internal/service/acquisition"
+	setupservice "github.com/kurtnissen/blackpearl/internal/service/setup"
+	watchlistservice "github.com/kurtnissen/blackpearl/internal/service/watchlist"
 	"github.com/stretchr/testify/require"
 )
 

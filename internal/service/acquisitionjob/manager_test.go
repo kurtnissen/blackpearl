@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/blackpearl-media/blackpearl/internal/acquisition"
-	acquisitionjobrepo "github.com/blackpearl-media/blackpearl/internal/repository/acquisitionjob"
-	acquisitionjobservice "github.com/blackpearl-media/blackpearl/internal/service/acquisitionjob"
+	"github.com/kurtnissen/blackpearl/internal/acquisition"
+	acquisitionjobrepo "github.com/kurtnissen/blackpearl/internal/repository/acquisitionjob"
+	acquisitionjobservice "github.com/kurtnissen/blackpearl/internal/service/acquisitionjob"
 	"github.com/stretchr/testify/require"
 )
 

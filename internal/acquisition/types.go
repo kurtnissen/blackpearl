@@ -5,7 +5,7 @@ import (
 	"context"
 	"errors"
 
-	"github.com/blackpearl-media/blackpearl/internal/domain"
+	"github.com/kurtnissen/blackpearl/internal/domain"
 )
 
 // ByteRange is a requested contiguous object range.

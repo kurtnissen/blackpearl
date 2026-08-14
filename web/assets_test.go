@@ -6,7 +6,7 @@ import (
 	"regexp"
 	"testing"
 
-	webui "github.com/blackpearl-media/blackpearl/web"
+	webui "github.com/kurtnissen/blackpearl/web"
 	"github.com/stretchr/testify/require"
 )
 
