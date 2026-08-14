@@ -199,6 +199,43 @@ it("limits the Plex title to the API filename bound", async () => {
   expect(screen.getByLabelText("Plex title")).toHaveAttribute("maxLength", "200");
 });
 
+it("connects Prowlarr and adds an instant cached movie to the Plex manifest", async () => {
+  const session = "a".repeat(64);
+  const bootstrap = "b".repeat(64);
+  const active = { objectId: "17:3", name: "Existing.mkv", extension: ".mkv", size: 1024, mediaType: "movie", title: "Existing", year: 2024 };
+  const added = { objectId: "18:2", name: "New.Movie.2026.mkv", extension: ".mkv", size: 2048, mediaType: "movie", title: "New Movie", year: 2026 };
+  window.history.replaceState(null, "", `/#bootstrap=${bootstrap}`);
+  const fetchSpy = vi.fn()
+    .mockResolvedValueOnce(new Response(JSON.stringify({ setupRequired: false, tokenConfigured: true, csrfToken: "csrf", selected: active, selectedItems: [active] }), { status: 200 }))
+    .mockResolvedValueOnce(new Response(JSON.stringify({ configured: false }), { status: 200 }))
+    .mockResolvedValueOnce(new Response(JSON.stringify({ configured: true }), { status: 200, headers: { "X-BlackPearl-Session": session } }))
+    .mockResolvedValueOnce(new Response(JSON.stringify({ selected: added, selectedItems: [active, added] }), { status: 200, headers: { "X-BlackPearl-Session": session } }));
+  vi.stubGlobal("fetch", fetchSpy);
+  const user = userEvent.setup();
+  render(<SetupConsole />);
+
+  await user.click(await screen.findByRole("button", { name: "Find something new" }));
+  expect(await screen.findByLabelText("Prowlarr URL")).toHaveValue("http://prowlarr:9696");
+  await user.type(screen.getByLabelText("Prowlarr API key"), "private-prowlarr-key");
+  await user.click(screen.getByRole("button", { name: "Connect Prowlarr" }));
+
+  await user.type(await screen.findByLabelText("Title"), "New Movie");
+  await user.clear(screen.getByLabelText("Year"));
+  await user.type(screen.getByLabelText("Year"), "2026");
+  await user.click(screen.getByRole("button", { name: "Find and add to Plex" }));
+
+  expect(await screen.findByText(/New Movie \(2026\)/)).toBeInTheDocument();
+  expect(screen.getByRole("status")).toHaveTextContent("Added New Movie to Plex");
+  expect(window.sessionStorage.getItem("blackpearl.setup.session")).toBe(session);
+  expect(Object.values(window.sessionStorage)).not.toContain("private-prowlarr-key");
+  expect(fetchSpy).toHaveBeenNthCalledWith(3, "/api/acquisition/settings", expect.objectContaining({
+    body: JSON.stringify({ baseUrl: "http://prowlarr:9696", apiKey: "private-prowlarr-key" }),
+  }));
+  expect(fetchSpy).toHaveBeenNthCalledWith(4, "/api/acquisition/acquire", expect.objectContaining({
+    body: JSON.stringify({ mediaType: "movie", title: "New Movie", year: 2026 }),
+  }));
+});
+
 function requireVisibleCheckboxCount(count: number): void {
 	expect(screen.getAllByRole("checkbox")).toHaveLength(count);
 }

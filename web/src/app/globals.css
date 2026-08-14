@@ -65,6 +65,9 @@ label, legend { font-weight: 800; letter-spacing: .025em; }
 input[type="password"], input[type="text"], input[type="search"], input[type="number"], .plex-fields input, select {
   width: 100%; min-height: 46px; border: 1px solid var(--ink); border-radius: 0; background: #f6f0e4; padding: 10px 12px; color: var(--ink);
 }
+input[type="url"] {
+  width: 100%; min-height: 46px; border: 1px solid var(--ink); border-radius: 0; background: #f6f0e4; padding: 10px 12px; color: var(--ink);
+}
 .token-input { display: grid; grid-template-columns: minmax(0, 1fr) auto; }
 .token-input input { border-right: 0; }
 .token-input button { min-height: 46px; border-radius: 0; }
@@ -97,6 +100,16 @@ dl div { display: grid; grid-template-columns: 140px 1fr; gap: 16px; padding: 11
 dt { color: #665b49; font-size: 12px; letter-spacing: .06em; text-transform: uppercase; }
 dd { margin: 0; overflow-wrap: anywhere; }
 
+.acquisition-panel { margin-top: 30px; padding-top: 22px; border-top: 1px solid var(--ink); }
+.acquisition-panel__heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 18px; }
+.acquisition-panel h4 { margin: 0; font-family: Charter, "Iowan Old Style", serif; font-size: 27px; font-weight: 500; }
+.provider-form { display: grid; max-width: 640px; gap: 12px; }
+.provider-form label, .acquisition-form label { display: grid; gap: 6px; font-size: 12px; }
+.provider-form .field-note { margin: -6px 0 0; }
+.provider-form .actions { margin-top: 8px; }
+.acquisition-form { display: grid; grid-template-columns: 150px minmax(220px, 1fr) 110px; gap: 14px; align-items: end; }
+.acquisition-form__actions { grid-column: 1 / -1; margin-top: 6px; }
+
 footer { display: flex; justify-content: space-between; gap: 12px; color: #948a78; margin-top: 25px; font-family: ui-monospace, monospace; font-size: 10px; letter-spacing: .1em; }
 
 @keyframes loading { to { transform: translateX(160%); } }
@@ -113,6 +126,8 @@ footer { display: flex; justify-content: space-between; gap: 12px; color: #948a7
 	.selection-tools { grid-template-columns: 1fr; }
 	.plex-fields { grid-template-columns: 28px 1fr; }
 	.plex-fields label, .plex-fields button { grid-column: 2; }
+  .acquisition-form { grid-template-columns: 1fr; }
+  .acquisition-form__actions { grid-column: 1; }
   dl div { grid-template-columns: 1fr; gap: 4px; }
   footer { flex-direction: column; }
 }

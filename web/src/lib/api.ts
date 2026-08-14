@@ -57,6 +57,23 @@ export type ApplyResult = {
   session: string;
 };
 
+export type AcquisitionStatus = {
+  configured: boolean;
+};
+
+export type ProwlarrSettingsInput = {
+  baseUrl: string;
+  apiKey: string;
+};
+
+export type AcquisitionIntent =
+  | { mediaType: "movie"; title: string; year: number }
+  | { mediaType: "episode"; title: string; year: number; season: number; episode: number };
+
+export type AcquisitionStatusResult = AcquisitionStatus & {
+  session: string;
+};
+
 export class SetupAPIError extends Error {
   readonly code: string;
 
@@ -92,6 +109,41 @@ export async function applyConfiguration(input: ApplyInput, csrfToken: string, a
   });
   const envelope = await readJSON(response, isSelectionEnvelope, "invalid_configuration");
 	return { selected: envelope.selected, selectedItems: envelope.selectedItems, session: readSession(response) };
+}
+
+export async function getAcquisitionStatus(): Promise<AcquisitionStatus> {
+  const response = await fetch("/api/acquisition/status", { method: "GET", cache: "no-store" });
+  return readJSON(response, isAcquisitionStatus, "invalid_acquisition_status");
+}
+
+export async function configureAcquisition(
+  input: ProwlarrSettingsInput,
+  csrfToken: string,
+  authorization: SetupAuthorization,
+): Promise<AcquisitionStatusResult> {
+  const response = await fetch("/api/acquisition/settings", {
+    method: "PUT",
+    cache: "no-store",
+    headers: mutationHeaders(csrfToken, authorization),
+    body: JSON.stringify(input),
+  });
+  const status = await readJSON(response, isAcquisitionStatus, "invalid_acquisition_status");
+  return { ...status, session: readSession(response) };
+}
+
+export async function acquireMedia(
+  input: AcquisitionIntent,
+  csrfToken: string,
+  authorization: SetupAuthorization,
+): Promise<ApplyResult> {
+  const response = await fetch("/api/acquisition/acquire", {
+    method: "POST",
+    cache: "no-store",
+    headers: mutationHeaders(csrfToken, authorization),
+    body: JSON.stringify(input),
+  });
+  const envelope = await readJSON(response, isSelectionEnvelope, "invalid_acquisition");
+  return { selected: envelope.selected, selectedItems: envelope.selectedItems, session: readSession(response) };
 }
 
 function mutationHeaders(csrfToken: string, authorization: SetupAuthorization): Record<string, string> {
@@ -175,4 +227,8 @@ function isSelectionEnvelope(value: unknown): value is { selected: SetupConfigur
 		&& Array.isArray(value.selectedItems)
 		&& value.selectedItems.length > 0
 		&& value.selectedItems.every(isConfiguration);
+}
+
+function isAcquisitionStatus(value: unknown): value is AcquisitionStatus {
+  return isRecord(value) && typeof value.configured === "boolean";
 }

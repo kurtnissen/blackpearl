@@ -2,10 +2,14 @@
 
 import { useEffect, useMemo, useState } from "react";
 import {
+  acquireMedia,
   applyConfiguration,
+  configureAcquisition,
   discoverMedia,
+  getAcquisitionStatus,
   getStatus,
   SetupAPIError,
+  type AcquisitionIntent,
   type MediaCandidate,
 	type ApplyItemInput,
   type SetupAuthorization,
@@ -13,6 +17,7 @@ import {
 } from "../lib/api";
 
 type Phase = "loading" | "credentials" | "select" | "ready";
+type AcquisitionView = "closed" | "loading" | "settings" | "search";
 type SelectionDraft = {
 	objectId: string;
 	mediaType: "movie" | "episode";
@@ -39,6 +44,15 @@ export function SetupConsole(): React.JSX.Element {
 	const [query, setQuery] = useState("");
 	const [drafts, setDrafts] = useState<SelectionDraft[]>([]);
 	const [selectedItems, setSelectedItems] = useState<SetupConfiguration[]>([]);
+  const [acquisitionView, setAcquisitionView] = useState<AcquisitionView>("closed");
+  const [prowlarrURL, setProwlarrURL] = useState("http://prowlarr:9696");
+  const [prowlarrKey, setProwlarrKey] = useState("");
+  const [showProwlarrKey, setShowProwlarrKey] = useState(false);
+  const [acquisitionType, setAcquisitionType] = useState<"movie" | "episode">("movie");
+  const [acquisitionTitle, setAcquisitionTitle] = useState("");
+  const [acquisitionYear, setAcquisitionYear] = useState(new Date().getFullYear());
+  const [acquisitionSeason, setAcquisitionSeason] = useState(1);
+  const [acquisitionEpisode, setAcquisitionEpisode] = useState(1);
   const [pending, setPending] = useState(false);
   const [message, setMessage] = useState("Loading BlackPearl setup…");
 
@@ -161,6 +175,68 @@ export function SetupConsole(): React.JSX.Element {
     }
   }
 
+  async function openAcquisition(): Promise<void> {
+    setAcquisitionView("loading");
+    setPending(true);
+    setMessage("Checking the search connection…");
+    try {
+      const status = await getAcquisitionStatus();
+      setAcquisitionView(status.configured ? "search" : "settings");
+      setMessage(status.configured
+        ? "Prowlarr is connected. Enter a movie or episode."
+        : "Connect Prowlarr once to search your configured indexers.");
+    } catch (error: unknown) {
+      setAcquisitionView("closed");
+      setMessage(publicMessage(error));
+    } finally {
+      setPending(false);
+    }
+  }
+
+  async function connectProwlarr(): Promise<void> {
+    setPending(true);
+    setMessage("Checking the Prowlarr connection…");
+    try {
+      const result = await configureAcquisition(
+        { baseUrl: prowlarrURL, apiKey: prowlarrKey },
+        csrf,
+        authorization,
+      );
+      storeSession(result.session);
+      setSession(result.session);
+      setProwlarrKey("");
+      setShowProwlarrKey(false);
+      setAcquisitionView("search");
+      setMessage("Prowlarr is connected. Enter a movie or episode.");
+    } catch (error: unknown) {
+      setMessage(publicMessage(error));
+    } finally {
+      setPending(false);
+    }
+  }
+
+  async function addRequestedMedia(): Promise<void> {
+    if (!validAcquisitionRequest(acquisitionTitle, acquisitionYear, acquisitionType, acquisitionSeason, acquisitionEpisode)) return;
+    setPending(true);
+    setMessage(`Looking for an instant ${acquisitionType === "movie" ? "movie" : "episode"}…`);
+    try {
+      const result = await acquireMedia(
+        acquisitionIntent(acquisitionType, acquisitionTitle, acquisitionYear, acquisitionSeason, acquisitionEpisode),
+        csrf,
+        authorization,
+      );
+      storeSession(result.session);
+      setSession(result.session);
+      setSelectedItems(result.selectedItems);
+      setAcquisitionTitle("");
+      setMessage(`Added ${result.selected.title} to Plex. Scan the library if it does not appear automatically.`);
+    } catch (error: unknown) {
+      setMessage(publicMessage(error));
+    } finally {
+      setPending(false);
+    }
+  }
+
   return (
     <main className="shell">
       <header className="masthead">
@@ -269,11 +345,49 @@ export function SetupConsole(): React.JSX.Element {
             </dl>
             <div className="actions">
               <a className="primary button-link" href="http://localhost:32402/web" target="_blank" rel="noreferrer">Open Plex</a>
+              <button type="button" onClick={() => void openAcquisition()} disabled={pending}>Find something new</button>
               {canUseSavedToken
                 ? <button type="button" onClick={() => void findVideos(true)} disabled={pending}>Change video</button>
                 : <button type="button" onClick={() => { setToken(""); setPhase("credentials"); setMessage("Re-enter your saved TorBox token to authorize this browser."); }}>Change video</button>}
               <button type="button" onClick={() => { setToken(""); setShowToken(false); setPhase("credentials"); setMessage("Enter a replacement TorBox token."); }}>Replace token</button>
             </div>
+            {acquisitionView !== "closed" && (
+              <section className="acquisition-panel" aria-labelledby="acquisition-title">
+                <div className="acquisition-panel__heading">
+                  <h4 id="acquisition-title">Add to Plex</h4>
+                  <button type="button" onClick={() => setAcquisitionView("closed")} disabled={pending}>Close</button>
+                </div>
+
+                {acquisitionView === "loading" && <div className="loading-rule" aria-hidden="true" />}
+
+                {acquisitionView === "settings" && (
+                  <form className="provider-form" onSubmit={(event) => { event.preventDefault(); void connectProwlarr(); }}>
+                    <label>Prowlarr URL<input type="url" value={prowlarrURL} maxLength={2048} onChange={(event) => setProwlarrURL(event.target.value)} required disabled={pending} /></label>
+                    <label htmlFor="prowlarr-api-key">Prowlarr API key</label>
+                    <p className="field-note">Copy the API key from Prowlarr Settings. BlackPearl stores it privately and never displays it again.</p>
+                    <div className="token-input">
+                      <input id="prowlarr-api-key" type={showProwlarrKey ? "text" : "password"} value={prowlarrKey} maxLength={4096} autoComplete="new-password" onChange={(event) => setProwlarrKey(event.target.value)} required disabled={pending} />
+                      <button type="button" aria-pressed={showProwlarrKey} onClick={() => setShowProwlarrKey((visible) => !visible)} disabled={pending}>{showProwlarrKey ? "Hide key" : "Show key"}</button>
+                    </div>
+                    <div className="actions"><button className="primary" type="submit" disabled={pending || prowlarrKey.length === 0}>Connect Prowlarr</button></div>
+                  </form>
+                )}
+
+                {acquisitionView === "search" && (
+                  <form className="acquisition-form" onSubmit={(event) => { event.preventDefault(); void addRequestedMedia(); }}>
+                    <label>Media type<select value={acquisitionType} onChange={(event) => setAcquisitionType(mediaTypeFromValue(event.target.value))} disabled={pending}><option value="movie">Movie</option><option value="episode">TV episode</option></select></label>
+                    <label className="acquisition-form__title">Title<input value={acquisitionTitle} maxLength={200} onChange={(event) => setAcquisitionTitle(event.target.value)} required disabled={pending} /></label>
+                    <label>Year<input type="number" min="1888" max="2100" value={acquisitionYear} onChange={(event) => setAcquisitionYear(event.target.valueAsNumber)} required disabled={pending} /></label>
+                    {acquisitionType === "episode" && <label>Season<input type="number" min="0" max="99" value={acquisitionSeason} onChange={(event) => setAcquisitionSeason(event.target.valueAsNumber)} required disabled={pending} /></label>}
+                    {acquisitionType === "episode" && <label>Episode<input type="number" min="1" max="999" value={acquisitionEpisode} onChange={(event) => setAcquisitionEpisode(event.target.valueAsNumber)} required disabled={pending} /></label>}
+                    <div className="acquisition-form__actions actions">
+                      <button className="primary" type="submit" disabled={pending || !validAcquisitionRequest(acquisitionTitle, acquisitionYear, acquisitionType, acquisitionSeason, acquisitionEpisode)}>Find and add to Plex</button>
+                      <button type="button" onClick={() => setAcquisitionView("settings")} disabled={pending}>Change Prowlarr</button>
+                    </div>
+                  </form>
+                )}
+              </section>
+            )}
           </div>
         )}
       </section>
@@ -356,6 +470,18 @@ function suggestEpisodeTitle(value: string | undefined, episode: number): string
 
 function mediaTypeFromValue(value: string): "movie" | "episode" {
 	return value === "episode" ? "episode" : "movie";
+}
+
+function validAcquisitionRequest(title: string, year: number, mediaType: "movie" | "episode", season: number, episode: number): boolean {
+  if (title.trim() === "" || !Number.isInteger(year) || year < 1888 || year > 2100) return false;
+  if (mediaType === "movie") return true;
+  return Number.isInteger(season) && season >= 0 && season <= 99
+    && Number.isInteger(episode) && episode >= 1 && episode <= 999;
+}
+
+function acquisitionIntent(mediaType: "movie" | "episode", title: string, year: number, season: number, episode: number): AcquisitionIntent {
+  if (mediaType === "episode") return { mediaType, title: title.trim(), year, season, episode };
+  return { mediaType, title: title.trim(), year };
 }
 
 function validDraft(draft: SelectionDraft): boolean {
