@@ -16,7 +16,7 @@ BlackPearl is an experimental, open-source Go service that exposes a virtual med
 - A portable NFS frontend and macOS Docker Desktop Compose profile that need no
   FUSE mount propagation.
 
-BlackPearl now proves provider-neutral progressive range retrieval and rolling eviction through strict HTTP and TorBox torrent-file gateways. TorBox support is read-only for already-complete files in the user's account. It does not yet implement discovery, read-ahead, Prowlarr, Usenet, or automatic torrent creation.
+BlackPearl now proves provider-neutral progressive range retrieval and rolling eviction through strict HTTP and TorBox torrent-file gateways. The TorBox profile includes a localhost setup page that discovers eligible completed MP4/MKV files and activates one selection without restarting the stack. TorBox support is read-only; it does not yet implement read-ahead, Prowlarr, Usenet, or automatic torrent creation.
 
 ## Architecture at a glance
 
@@ -86,25 +86,26 @@ Plex's `Direct play OK` decision. See [the rolling runbook](docs/macos-rolling-p
 ## TorBox provider
 
 TorBox can replace the synthetic HTTP origin while retaining the same rolling
-cache and filesystem path. Configure an already-complete torrent file you are
-authorized to access:
+cache and filesystem path. Start the isolated browser-first profile:
 
 ```bash
-export BLACKPEARL_RANGE_PROVIDER=torbox-torrent
-export BLACKPEARL_TORBOX_API_TOKEN='your token'
-export BLACKPEARL_RANGE_OBJECT_ID='torrent-id:file-id'
-./scripts/verify-torbox-live.sh
+docker compose -f compose.torbox.yaml up -d --build --wait
+open http://localhost:8082
 ```
 
-The token remains environment-only. BlackPearl does not write it or the signed
-TorBox CDN URL to SQLite, cache filenames, or logs. Without these variables,
-TorBox is contract-tested but not live-provider validated.
+Paste a TorBox token, choose one completed MP4 or MKV, then open Plex at
+`http://localhost:32402/web` and add a Movies library rooted at
+`/blackpearl/Movies`. The token is stored with private permissions only inside
+the named BlackPearl data volume. It is never returned to the browser after
+save and is never written to SQLite, cache filenames, container environment,
+logs, or telemetry.
 
-To run the isolated macOS Docker/Plex profile after the live probe:
+The direct CLI probe remains available for provider debugging:
 
 ```bash
-./scripts/setup-torbox-poc.sh
-open http://localhost:32402/web
+BLACKPEARL_TORBOX_API_TOKEN='your token' \
+BLACKPEARL_RANGE_OBJECT_ID='torrent-id:file-id' \
+./scripts/verify-torbox-live.sh
 ```
 
 See [the macOS TorBox runbook](docs/macos-torbox-poc.md) for object selection,
@@ -127,7 +128,7 @@ Then open Plex at `http://YOUR_UBUNTU_SERVER_IP:32400/web`, add one Movies libra
 
 - All supplied host binds stay under this repository's ignored `runtime/` directory.
 - The Plex container receives the propagated media mount read-only and receives no FUSE device or elevated capability.
-- BlackPearl does not auto-discover media, Plex, or `*arr` directories.
+- BlackPearl does not inspect host media, Plex, or `*arr` directories; TorBox discovery is an explicit read-only setup action.
 - Cleanup is guarded to the exact repository runtime root.
 - A Plex token is optional, passed by environment, sent as a header, and never written by BlackPearl.
 

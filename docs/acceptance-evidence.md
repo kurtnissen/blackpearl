@@ -28,6 +28,9 @@ Tested from the `research/portable-filesystem` branch on an Apple Silicon Mac wi
 | Rolling quota and eviction | Pass on macOS | The acceptance script sampled published chunks plus in-flight fetch files throughout a full stream, never exceeded 1 MiB, and observed an evicted range being fetched again after restart |
 | Rolling Plex client playback | Pass on macOS | Plex Web visibly played the generated test pattern from the rolling stack; the server logged `MDE=1000,Direct play OK` with `decision=direct play`, served all 3,417,699 original bytes, and recorded a playing timeline |
 | TorBox API/CDN contract | Pass (mocked) | TLS contract tests cover account metadata, bearer/query authentication, strict non-sequential ranges, immutable validators, signed-link reuse/refresh, redirects, CDN size validation, cancellation, concurrency, and secret redaction |
+| Browser-first TorBox stack | Pass without credentials on macOS | Docker image built with embedded Next UI; Compose started BlackPearl and Plex healthy with no token/object environment; Plex mounted the empty read-only NFS export; `/healthz` returned 200 and `/readyz` returned `setup_required` |
+| Browser setup UI | Pass on macOS | The embedded page hydrated from the production container, displayed first-setup state, and passed desktop 1280x800 plus narrow 390x844 visual checks; API/component tests cover discovery, selection, ready, empty, and error states |
+| Browser token persistence and activation | Pass in automated tests | Private file modes, bounded token reads, no response echo, CSRF/Origin/Host checks, runtime prepare/activate/reload, and rollback are covered under the race detector |
 | TorBox live provider | Pending credentials | Run `scripts/verify-torbox-live.sh` with an API token and authorized `torrent-id:file-id`; no live-provider claim is made without that evidence |
 | Cross-container Plex mount | Pending Ubuntu | Docker Desktop bind propagation cannot prove this Linux-host behavior |
 
@@ -50,6 +53,10 @@ The current result includes locally verified FUSE and portable NFS adapters, per
 - [x] Plex scans the fixture through PearlNFS and serves arbitrary source ranges unchanged.
 - [x] A macOS Plex Web client Direct Plays the fixture and manual seeks succeed.
 - [x] A macOS Plex Web client plays the rolling logical fixture and Plex records a Direct Play decision.
+- [x] The TorBox profile starts without credentials and exposes an interactive localhost-only setup page.
+- [x] Plex mounts an empty TorBox NFS export while BlackPearl reports setup-required media readiness.
+- [ ] An authorized TorBox token discovers account media through the live provider.
+- [ ] Plex Direct Plays and seeks an authorized TorBox-backed logical file.
 - [ ] A longer rolling fixture demonstrates explicit forward and backward client seeks before playback completes.
 - [ ] CI passes after publishing the repository.
 - [ ] Both Linux AMD64 and ARM64 image builds pass in CI.
