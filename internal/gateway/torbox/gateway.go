@@ -147,24 +147,26 @@ func (g *Gateway) Open(ctx context.Context, backing domain.BackingRef) (acquisit
 	if err != nil {
 		return nil, err
 	}
-	downloadURL, err := g.downloadURL(ctx, identifier, metadata.validator, false)
+	downloadURL, cached, err := g.downloadURL(ctx, identifier, metadata.validator, false)
 	if err != nil {
 		return nil, err
 	}
-	if err := g.validateDownload(ctx, downloadURL, metadata.size); err != nil {
-		if !expiredDownloadError(err) {
-			return nil, err
-		}
-		g.invalidateDownloadURL(identifier, metadata.validator, downloadURL)
-		downloadURL, err = g.downloadURL(ctx, identifier, metadata.validator, true)
-		if err != nil {
-			return nil, err
-		}
+	if !cached {
 		if err := g.validateDownload(ctx, downloadURL, metadata.size); err != nil {
-			return nil, err
+			if !expiredDownloadError(err) {
+				return nil, err
+			}
+			g.invalidateDownloadURL(identifier, metadata.validator, downloadURL)
+			downloadURL, _, err = g.downloadURL(ctx, identifier, metadata.validator, true)
+			if err != nil {
+				return nil, err
+			}
+			if err := g.validateDownload(ctx, downloadURL, metadata.size); err != nil {
+				return nil, err
+			}
 		}
+		g.cacheDownloadURL(identifier, metadata.validator, downloadURL)
 	}
-	g.cacheDownloadURL(identifier, metadata.validator, downloadURL)
 	return newSource(g, identifier, metadata, downloadURL), nil
 }
 
@@ -272,21 +274,21 @@ func (g *Gateway) loadMetadata(ctx context.Context, identifier objectID) (fileMe
 	return metadata, nil
 }
 
-func (g *Gateway) downloadURL(ctx context.Context, identifier objectID, validator string, force bool) (*url.URL, error) {
+func (g *Gateway) downloadURL(ctx context.Context, identifier objectID, validator string, force bool) (*url.URL, bool, error) {
 	key := identifier.String() + "\x00" + validator
 	g.mu.Lock()
 	if cached, ok := g.links[key]; !force && ok && g.now().Before(cached.expires) {
 		g.mu.Unlock()
-		return cached.url, nil
+		return cached.url, true, nil
 	}
 	if call, ok := g.inflight[key]; ok {
 		done := call.done
 		g.mu.Unlock()
 		select {
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			return nil, false, ctx.Err()
 		case <-done:
-			return call.url, call.err
+			return call.url, false, call.err
 		}
 	}
 	call := &linkCall{done: make(chan struct{})}
@@ -295,9 +297,9 @@ func (g *Gateway) downloadURL(ctx context.Context, identifier objectID, validato
 	go g.resolveDownloadURL(call, key, identifier)
 	select {
 	case <-ctx.Done():
-		return nil, ctx.Err()
+		return nil, false, ctx.Err()
 	case <-call.done:
-		return call.url, call.err
+		return call.url, false, call.err
 	}
 }
 

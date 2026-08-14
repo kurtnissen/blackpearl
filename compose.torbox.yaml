@@ -73,7 +73,7 @@ volumes:
     driver_opts:
       type: nfs
       device: :/
-      o: addr=127.0.0.1,vers=3,tcp,nolock,port=${BLACKPEARL_TORBOX_NFS_PORT:-20492},mountport=${BLACKPEARL_TORBOX_NFS_PORT:-20492},ro
+      o: addr=127.0.0.1,vers=3,tcp,nolock,actimeo=1,lookupcache=none,port=${BLACKPEARL_TORBOX_NFS_PORT:-20492},mountport=${BLACKPEARL_TORBOX_NFS_PORT:-20492},ro
 
 networks:
   blackpearl-control:

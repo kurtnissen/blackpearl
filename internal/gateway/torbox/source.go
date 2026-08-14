@@ -52,7 +52,7 @@ func (s *source) ReadAt(ctx context.Context, destination []byte, offset int64) (
 	}
 	count, status, err := s.readRange(ctx, s.download.Load(), destination[:wanted], offset, wanted)
 	if err != nil && (status == http.StatusUnauthorized || status == http.StatusForbidden || status == http.StatusGone) {
-		refreshed, refreshErr := s.gateway.downloadURL(ctx, s.identifier, s.metadata.validator, true)
+		refreshed, _, refreshErr := s.gateway.downloadURL(ctx, s.identifier, s.metadata.validator, true)
 		if refreshErr != nil {
 			return 0, fmt.Errorf("refresh TorBox download link: %w", refreshErr)
 		}

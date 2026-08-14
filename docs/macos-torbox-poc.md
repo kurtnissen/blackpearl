@@ -47,6 +47,13 @@ real `.mp4` or `.mkv` extension and TorBox logical size. Seeking and Direct Play
 read arbitrary ranges through PearlNFS; the complete file is not required on
 BlackPearl's disk.
 
+Direct Play is determined by the selected file and Plex client. H.264/AAC MP4
+is the most broadly compatible browser profile. HEVC, Dolby Vision, AC3, and
+some MKV combinations may make Plex remux or transcode even though BlackPearl
+still serves the original source bytes. Until BlackPearl publishes a dedicated
+TV hierarchy, give episode files a movie-style Plex title without `SxxExx` so
+the Movies scanner does not discard them.
+
 The default cache limit is 40 GiB. Override it before launch with, for example,
 `BLACKPEARL_CACHE_MAX_BYTES=4294967296` for 4 GiB. The logical file may be
 larger than this limit; BlackPearl stores only requested fixed-size chunks and
@@ -75,5 +82,7 @@ Ports are isolated from the existing POCs:
 export. `/readyz` reports `setup_required` until a selection is active.
 
 Live discovery, Plex scanning, Direct Play, and seeking are separate acceptance
-evidence. Do not call them passed until each has been observed with an
-authorized account file.
+evidence. They were observed on macOS on 2026-08-14 with an authorized
+H.264/AAC MP4: Plex reported Direct Play, resumed after a ten-minute seek, and
+continued playing while the rolling cache remained far smaller than the
+logical file.

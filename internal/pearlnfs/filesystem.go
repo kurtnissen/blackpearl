@@ -29,6 +29,7 @@ type filesystem struct {
 	catalog    Catalog
 	entries    map[string]entry
 	generation uint64
+	modified   time.Time
 }
 
 // Reloadable is a read-only filesystem whose namespace can be atomically refreshed.
@@ -42,6 +43,7 @@ type entry struct {
 	name     string
 	media    *domain.Media
 	children []string
+	modified time.Time
 }
 
 // New validates a catalog snapshot and adapts it to a read-only Billy filesystem.
@@ -94,10 +96,19 @@ func (f *filesystem) Replace(ctx context.Context, catalog Catalog) (Catalog, err
 		return nil, err
 	}
 	f.entriesMu.Lock()
+	modified := time.Now().UTC().Truncate(time.Second)
+	if !modified.After(f.modified) {
+		modified = f.modified.Add(time.Second)
+	}
+	for key, value := range entries {
+		value.modified = modified
+		entries[key] = value
+	}
 	previous := f.catalog
 	f.catalog = catalog
 	f.entries = entries
 	f.generation++
+	f.modified = modified
 	f.entriesMu.Unlock()
 	return previous, nil
 }
@@ -300,9 +311,9 @@ func cleanPath(filename string) string {
 
 func infoFor(value entry) os.FileInfo {
 	if value.media == nil {
-		return fileInfo{name: value.name, directory: true}
+		return fileInfo{name: value.name, directory: true, modified: value.modified}
 	}
-	return fileInfo{name: value.name, size: value.media.Size}
+	return fileInfo{name: value.name, size: value.media.Size, modified: value.modified}
 }
 
 type mediaFile struct {
@@ -382,6 +393,7 @@ type fileInfo struct {
 	name      string
 	size      int64
 	directory bool
+	modified  time.Time
 }
 
 func (i fileInfo) Name() string {
@@ -400,7 +412,7 @@ func (i fileInfo) Mode() os.FileMode {
 }
 
 func (i fileInfo) ModTime() time.Time {
-	return time.Unix(0, 0)
+	return i.modified
 }
 
 func (i fileInfo) IsDir() bool {

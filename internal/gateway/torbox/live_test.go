@@ -36,7 +36,7 @@ func TestLiveAuthorizedTorrentRanges(t *testing.T) {
 	t.Cleanup(func() { require.NoError(t, opened.Close()) })
 	require.Greater(t, opened.Size(), int64(131072))
 
-	for _, offset := range []int64{0, opened.Size() - 65536} {
+	for _, offset := range []int64{0, opened.Size() / 10, opened.Size() / 2, opened.Size() - 65536} {
 		first := make([]byte, 65536)
 		count, readErr := opened.ReadAt(ctx, first, offset)
 		require.NoError(t, readErr)

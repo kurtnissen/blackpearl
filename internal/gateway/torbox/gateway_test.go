@@ -88,7 +88,7 @@ func TestGatewayCoalescedDownloadSurvivesFirstCallerCancellation(t *testing.T) {
 	leaderContext, cancelLeader := context.WithCancel(context.Background())
 	leaderResult := make(chan error, 1)
 	go func() {
-		_, openErr := gateway.downloadURL(leaderContext, identifier, "validator", false)
+		_, _, openErr := gateway.downloadURL(leaderContext, identifier, "validator", false)
 		leaderResult <- openErr
 	}()
 	<-started
@@ -96,7 +96,7 @@ func TestGatewayCoalescedDownloadSurvivesFirstCallerCancellation(t *testing.T) {
 	waiterJoined := make(chan struct{})
 	waiterContext := &observedDoneContext{Context: context.Background(), observed: waiterJoined}
 	go func() {
-		_, openErr := gateway.downloadURL(waiterContext, identifier, "validator", false)
+		_, _, openErr := gateway.downloadURL(waiterContext, identifier, "validator", false)
 		waiterResult <- openErr
 	}()
 	<-waiterJoined
@@ -217,7 +217,7 @@ func TestGatewayOpenRejectsCDNSizeMismatchWithoutLeakingURL(t *testing.T) {
 	require.NotContains(t, err.Error(), cdn.URL)
 }
 
-func TestGatewayOpenRefreshesCachedLinkThatExpiresBeforeOpen(t *testing.T) {
+func TestSourceReadRefreshesCachedLinkThatExpiresAfterValidation(t *testing.T) {
 	t.Parallel()
 	content := []byte("0123456789abcdef")
 	expired := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -249,6 +249,11 @@ func TestGatewayOpenRefreshesCachedLinkThatExpiresBeforeOpen(t *testing.T) {
 	opened, err := gateway.Open(context.Background(), domainBacking("17:3"))
 
 	require.NoError(t, err)
+	buffer := make([]byte, 4)
+	count, err := opened.ReadAt(context.Background(), buffer, 4)
+	require.NoError(t, err)
+	require.Equal(t, 4, count)
+	require.Equal(t, "4567", string(buffer))
 	require.NoError(t, opened.Close())
 	require.Equal(t, int64(1), linkCalls.Load())
 }
@@ -336,7 +341,10 @@ func TestNewRejectsAPIBaseCredentialsQueryAndFragment(t *testing.T) {
 
 func TestGatewayOpenCachesMetadataAndLinkWithinTTL(t *testing.T) {
 	t.Parallel()
-	cdn := newTestCDN(t, []byte("0123456789abcdef"), nil)
+	var validationCalls atomic.Int64
+	cdn := newTestCDN(t, []byte("0123456789abcdef"), func(*cdnResponse) {
+		validationCalls.Add(1)
+	})
 	var metadataCalls atomic.Int64
 	var linkCalls atomic.Int64
 	api := newTestAPI(t, func(writer http.ResponseWriter, request *http.Request) {
@@ -364,6 +372,7 @@ func TestGatewayOpenCachesMetadataAndLinkWithinTTL(t *testing.T) {
 	require.NoError(t, second.Close())
 	require.Equal(t, int64(1), metadataCalls.Load())
 	require.Equal(t, int64(1), linkCalls.Load())
+	require.Equal(t, int64(1), validationCalls.Load())
 
 	now = now.Add(61 * time.Second)
 	third, err := gateway.Open(context.Background(), backing)
@@ -371,6 +380,7 @@ func TestGatewayOpenCachesMetadataAndLinkWithinTTL(t *testing.T) {
 	require.NoError(t, third.Close())
 	require.Equal(t, int64(2), metadataCalls.Load())
 	require.Equal(t, int64(1), linkCalls.Load())
+	require.Equal(t, int64(1), validationCalls.Load())
 }
 
 func TestGatewayOpenRejectsUnsafeOrUnavailableFilesWithoutLeakingToken(t *testing.T) {

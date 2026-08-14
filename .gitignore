@@ -6,6 +6,7 @@
 *.db-shm
 *.db-wal
 .env
+.DS_Store
 web/node_modules/
 web/.next/
 web/*.tsbuildinfo

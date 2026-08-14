@@ -2,7 +2,7 @@
 
 Evidence states are deliberately separate. Unit tests, a container build, a kernel FUSE test, Plex scan/range evidence, and client playback prove different things.
 
-## Current verified evidence — 2026-08-13
+## Current verified evidence — 2026-08-14
 
 Tested from the `research/portable-filesystem` branch on an Apple Silicon Mac with Docker Desktop's Linux ARM64 VM.
 
@@ -35,7 +35,10 @@ Tested from the `research/portable-filesystem` branch on an Apple Silicon Mac wi
 | NFS replacement handle stability | Pass in protocol and live restart tests | A real NFSv3 client keeps reading original bytes from an issued handle after replacement while a new mount reads the new catalog; deterministic handles resolve the current file after server recreation; the live Plex mount remained readable across a BlackPearl-only restart |
 | Shared rolling quota during replacement | Pass in automated tests | Multiple immutable provider runtimes use one process-lifetime cache owner and one hard-quota ledger |
 | Setup API container isolation | Pass in Compose, API, and live container tests | BlackPearl and Plex use disjoint Docker networks; Docker Desktop host-gateway reachability is treated as untrusted. A forged unpaired mutation from the live Plex container was denied with HTTP 401 and issued no session. First setup requires a host-generated pairing value; later mutations require a setup-origin session header, pairing value, or exact saved-token re-entry. No authorization cookie is sent to Plex. |
-| TorBox live provider | Pending credentials | Run `scripts/verify-torbox-live.sh` with an API token and authorized `torrent-id:file-id`; no live-provider claim is made without that evidence |
+| TorBox live provider | Pass on macOS with an authorized account file | Live TorBox metadata and repeated exact ranges at the beginning, interior, midpoint, and tail passed through both the gateway and the rolling cache; no complete media file was stored locally |
+| TorBox dynamic Plex namespace | Pass on macOS | A setup replacement changed the NFS namespace without restarting Plex; one-second attribute caching plus disabled negative lookup caching exposed the new path, and generation-based modification times caused Plex to rescan it |
+| TorBox Plex Direct Play and seek | Pass on macOS | Plex indexed an authorized 1,783,163,131-byte H.264/AAC MP4, reported `decision="directplay"`, resumed at 10:13 after a non-sequential seek, and advanced continuously to 10:34 while BlackPearl held 56,519,784 bytes of rolling chunks |
+| TorBox CDN request control | Pass in unit and live tests | A validated signed link is reused within its TTL instead of issuing a validation range before every NFS read; an expired link still refreshes on the first rejected content range. This removed live CDN 429 failures during Plex playback. |
 | Cross-container Plex mount | Pending Ubuntu | Docker Desktop bind propagation cannot prove this Linux-host behavior |
 
 The current result includes locally verified FUSE and portable NFS adapters, persistent and rolling macOS Plex playback, strict random-range retrieval, a live hard-quota test, eviction, and refetch evidence. The rolling client test completed the eight-second fixture; explicit rolling-client forward/backward seek evidence remains to be captured with a longer fixture. Windows and native-Linux portability remain unverified.
@@ -59,8 +62,8 @@ The current result includes locally verified FUSE and portable NFS adapters, per
 - [x] A macOS Plex Web client plays the rolling logical fixture and Plex records a Direct Play decision.
 - [x] The TorBox profile starts without credentials and exposes an interactive localhost-only setup page.
 - [x] Plex mounts an empty TorBox NFS export while BlackPearl reports setup-required media readiness.
-- [ ] An authorized TorBox token discovers account media through the live provider.
-- [ ] Plex Direct Plays and seeks an authorized TorBox-backed logical file.
+- [x] An authorized TorBox token discovers account media through the live provider.
+- [x] Plex Direct Plays and seeks an authorized TorBox-backed logical file.
 - [ ] A longer rolling fixture demonstrates explicit forward and backward client seeks before playback completes.
 - [ ] CI passes after publishing the repository.
 - [ ] Both Linux AMD64 and ARM64 image builds pass in CI.

@@ -105,10 +105,32 @@ func TestFilesystemImplementsReadOnlyBillyContract(t *testing.T) {
 	info, err := filesystem.Lstat(testVirtualPath)
 	require.NoError(t, err)
 	require.Equal(t, "BlackPearl POC (2026).mp4", info.Name())
-	require.Equal(t, int64(0), info.ModTime().Unix())
+	require.False(t, info.ModTime().IsZero())
 	require.Nil(t, info.Sys())
 	_, err = filesystem.ReadDir(testVirtualPath)
 	require.Error(t, err)
+}
+
+func TestFilesystemReloadAdvancesNamespaceModificationTime(t *testing.T) {
+	t.Parallel()
+	backing, err := domain.NewBackingRef("generated", "reload")
+	require.NoError(t, err)
+	media, err := domain.NewMovie("selected", "Reloaded", 2026, ".mkv", testLogicalSize, backing)
+	require.NoError(t, err)
+	catalog := &mutableCatalog{}
+	filesystem, err := pearlnfs.NewReloadable(context.Background(), catalog)
+	require.NoError(t, err)
+	before, err := filesystem.Stat("/")
+	require.NoError(t, err)
+	catalog.set([]domain.Media{media}, nil)
+
+	require.NoError(t, filesystem.Reload(context.Background()))
+	after, err := filesystem.Stat("/")
+	require.NoError(t, err)
+	file, err := filesystem.Stat(media.VirtualPath)
+	require.NoError(t, err)
+	require.True(t, after.ModTime().After(before.ModTime()))
+	require.Equal(t, after.ModTime(), file.ModTime())
 }
 
 func TestFilesystemFileSupportsSequentialReadsAndAllSeekOrigins(t *testing.T) {

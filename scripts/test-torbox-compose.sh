@@ -44,7 +44,10 @@ library = next(volume for volume in plex["volumes"] if volume["target"] == "/bla
 assert library["read_only"] is True
 nfs = model["volumes"][library["source"]]
 assert nfs["driver_opts"]["type"] == "nfs"
-assert "ro" in nfs["driver_opts"]["o"].split(",")
+mount_options = nfs["driver_opts"]["o"].split(",")
+assert "ro" in mount_options
+assert "actimeo=1" in mount_options
+assert "lookupcache=none" in mount_options
 assert all(not volume.get("source", "").startswith("/") for service in services.values() for volume in service.get("volumes", []))
 '
 
