@@ -14,9 +14,10 @@ import sys
 
 model = json.load(sys.stdin)
 services = model["services"]
-assert set(services) == {"blackpearl", "plex"}
+assert set(services) == {"blackpearl", "plex", "prowlarr"}
 blackpearl = services["blackpearl"]
 plex = services["plex"]
+prowlarr = services["prowlarr"]
 environment = blackpearl["environment"]
 assert blackpearl["build"]["target"] == "runtime"
 assert environment["BLACKPEARL_STORAGE_MODE"] == "rolling"
@@ -36,12 +37,17 @@ assert all(volume.get("type") == "volume" for volume in blackpearl.get("volumes"
 assert not blackpearl.get("devices")
 assert not blackpearl.get("cap_add")
 assert set(blackpearl["networks"]) == {"blackpearl-control"}
+assert set(prowlarr["networks"]) == {"blackpearl-control"}
 assert set(plex["networks"]) == {"plex-runtime"}
 assert set(blackpearl["networks"]).isdisjoint(plex["networks"])
+assert set(prowlarr["networks"]).isdisjoint(plex["networks"])
+assert prowlarr["image"] == "lscr.io/linuxserver/prowlarr:latest"
+assert any(volume["target"] == "/config" and volume["type"] == "volume" for volume in prowlarr["volumes"])
 assert blackpearl["healthcheck"]["test"][-1] == "http://localhost:8080/healthz"
 for service in services.values():
     for port in service.get("ports", []):
         assert port["host_ip"] == "127.0.0.1"
+assert any(port["target"] == 9696 for port in prowlarr["ports"])
 library = next(volume for volume in plex["volumes"] if volume["target"] == "/blackpearl")
 assert library["read_only"] is True
 nfs = model["volumes"][library["source"]]

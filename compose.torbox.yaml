@@ -41,6 +41,22 @@ services:
       retries: 30
       start_period: 3s
 
+  prowlarr:
+    image: lscr.io/linuxserver/prowlarr:latest
+    restart: unless-stopped
+    environment:
+      PUID: ${PUID:-1000}
+      PGID: ${PGID:-1000}
+      TZ: ${TZ:-America/New_York}
+    ports:
+      - 127.0.0.1:${BLACKPEARL_PROWLARR_PORT:-9697}:9696/tcp
+    volumes:
+      - prowlarr-config:/config
+    networks:
+      - blackpearl-control
+    security_opt:
+      - no-new-privileges:true
+
   plex:
     image: plexinc/pms-docker:1.43.0.10492-121068a07
     restart: unless-stopped
@@ -70,6 +86,7 @@ volumes:
   blackpearl-data:
   plex-config:
   plex-transcode:
+  prowlarr-config:
   blackpearl-library:
     driver: local
     driver_opts:

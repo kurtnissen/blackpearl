@@ -1,9 +1,11 @@
 # macOS TorBox Plex POC
 
 This profile connects BlackPearl's rolling range cache to a selected manifest
-of already-complete MP4/MKV files in your TorBox account, exposes them through
-PearlNFS, and lets an isolated Plex container scan and Direct Play the logical files. It does not
-search for, create, alter, or delete TorBox downloads.
+of MP4/MKV files in your TorBox account, exposes them through PearlNFS, and
+lets an isolated Plex container scan and Direct Play the logical files. It also
+includes Prowlarr so BlackPearl can search indexers you are authorized to use
+and add a result only when TorBox reports it is already cached. BlackPearl does
+not submit uncached downloads through this flow.
 
 ## Start it
 
@@ -21,6 +23,14 @@ choose Movie or TV episode for each item, adjust the editable Plex metadata if
 needed, and select **Use with Plex**. Conventional `SxxEyy` filenames receive
 an editable TV suggestion; filename parsing is never authoritative.
 
+Prowlarr is available only on the Mac at `http://localhost:9697`. Complete its
+one-time setup, add only indexers you are authorized to use, then copy the API
+key from **Settings → General**. In BlackPearl's ready screen, select **Find
+something new**. The default internal URL is `http://prowlarr:9696`; paste the
+Prowlarr API key and select **Connect Prowlarr**. Movie and TV episode requests
+then use the configured indexers, deterministic release ranking, and a strict
+TorBox cached-only check before the Plex manifest changes.
+
 The launcher creates a private local pairing value under the ignored
 `runtime/` directory and carries it in the setup page URL fragment. The
 fragment is removed before any request, is never sent to Plex, and authorizes
@@ -35,6 +45,12 @@ never returned by the API, placed in browser storage, container environment,
 SQLite, logs, telemetry, or cache filenames. The setup page stores only a
 derived session authorization and local pairing value in that page's
 port-scoped `sessionStorage`; neither value is sent to Plex.
+
+The Prowlarr endpoint and API key are stored separately at
+`/var/lib/blackpearl/setup/acquisition/search-provider.json` with a private
+directory and `0600` file mode. The acquisition status API returns only whether
+this connection exists. Neither credential is returned to the browser after it
+is saved.
 
 ## Add it to Plex
 
@@ -97,6 +113,7 @@ Ports are isolated from the existing POCs:
 - BlackPearl media readiness: `http://localhost:8082/readyz`
 - PearlNFS: `localhost:20492`
 - Plex Web: `http://localhost:32402/web`
+- Prowlarr Web: `http://localhost:9697`
 
 `/healthz` passes while setup is incomplete so Plex can mount the empty NFS
 export. `/readyz` reports `setup_required` until a selection is active.
