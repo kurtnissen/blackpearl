@@ -50,7 +50,7 @@ func NewTokenFileSource(path string) (TokenSource, error) {
 
 func newFileTokenSource(path string, format tokenSourceFormat) (TokenSource, error) {
 	if !filepath.IsAbs(path) {
-		return nil, errors.New("Plex token source path must be absolute")
+		return nil, errors.New("plex token source path must be absolute")
 	}
 	return &fileTokenSource{path: path, format: format}, nil
 }

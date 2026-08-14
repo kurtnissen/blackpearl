@@ -31,10 +31,10 @@ type Worker struct {
 // New constructs one process-lifetime refresh worker.
 func New(refresher Refresher, options Options) (*Worker, error) {
 	if refresher == nil {
-		return nil, errors.New("Plex refresher is required")
+		return nil, errors.New("plex refresher is required")
 	}
 	if options.Debounce <= 0 || options.RetryInterval <= 0 {
-		return nil, errors.New("Plex refresh debounce and retry interval must be positive")
+		return nil, errors.New("plex refresh debounce and retry interval must be positive")
 	}
 	onError := options.OnError
 	if onError == nil {

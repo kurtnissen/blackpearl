@@ -103,7 +103,7 @@ func Start(ctx context.Context, address string, filesystem billy.Filesystem) (*S
 		server.reloadable = reloadable
 	}
 	baseHandler := nfshelper.NewNullAuthHandler(filesystem)
-	var handler nfs.Handler = nfshelper.NewCachingHandler(baseHandler, handleCacheSize)
+	handler := nfs.Handler(nfshelper.NewCachingHandler(baseHandler, handleCacheSize))
 	if snapshotter, ok := filesystem.(handleSnapshotter); ok {
 		server.handles = &stableHandleHandler{
 			Handler: baseHandler, live: filesystem, snapshotter: snapshotter,

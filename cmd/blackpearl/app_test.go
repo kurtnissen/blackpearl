@@ -280,7 +280,7 @@ func TestRunRollingTorBoxRegistersRemotePOCAndStartsNFS(t *testing.T) {
 			require.NoError(t, err)
 		case "/v1/api/torrents/requestdl":
 			require.Equal(t, "Bearer secret-token", request.Header.Get("Authorization"))
-			_, err := writer.Write([]byte(fmt.Sprintf(`{"success":true,"detail":"ok","data":%q}`, api.URL+"/cdn/file")))
+			_, err := fmt.Fprintf(writer, `{"success":true,"detail":"ok","data":%q}`, api.URL+"/cdn/file")
 			require.NoError(t, err)
 		case "/cdn/file":
 			require.Empty(t, request.Header.Get("Authorization"))
@@ -412,7 +412,7 @@ func TestRunBrowserSetupObservesPlexWatchlistWithoutAcquiring(t *testing.T) {
 			_, err := writer.Write([]byte(`{"success":true,"detail":"ok","data":{"id":17,"download_finished":true,"download_present":true,"files":[{"id":3,"name":"Existing.Movie.2025.mkv","size":16,"hash":"existing-file-hash","zipped":false,"infected":false}]}}`))
 			require.NoError(t, err)
 		case "/v1/api/torrents/requestdl":
-			_, err := writer.Write([]byte(fmt.Sprintf(`{"success":true,"detail":"ok","data":%q}`, provider.URL+"/cdn/file")))
+			_, err := fmt.Fprintf(writer, `{"success":true,"detail":"ok","data":%q}`, provider.URL+"/cdn/file")
 			require.NoError(t, err)
 		case "/cdn/file":
 			writer.Header().Set("Content-Range", "bytes 0-0/16")
@@ -560,7 +560,7 @@ func TestRunBrowserSetupSeriallyAcquiresCachedWatchlistMovie(t *testing.T) {
 			_, err := fmt.Fprintf(writer, `{"success":true,"detail":"ok","data":{"id":%s,"download_finished":true,"download_present":true,"files":[{"id":%s,"name":%q,"size":16,"hash":"file-hash","zipped":false,"infected":false}]}}`, torrentID, fileID, name)
 			require.NoError(t, err)
 		case "/v1/api/torrents/requestdl":
-			_, err := writer.Write([]byte(fmt.Sprintf(`{"success":true,"detail":"ok","data":%q}`, provider.URL+"/cdn/file")))
+			_, err := fmt.Fprintf(writer, `{"success":true,"detail":"ok","data":%q}`, provider.URL+"/cdn/file")
 			require.NoError(t, err)
 		case "/cdn/file":
 			writer.Header().Set("Content-Range", "bytes 0-0/16")
@@ -677,7 +677,7 @@ func TestRunBrowserSetupConfiguresSearchAndAcquiresCachedMovie(t *testing.T) {
 			_, err := fmt.Fprintf(writer, `{"success":true,"detail":"ok","data":{"id":%s,"download_finished":true,"download_present":true,"files":[{"id":%s,"name":%q,"size":16,"hash":%q,"zipped":false,"infected":false}]}}`, torrentID, fileID, name, fileHash)
 			require.NoError(t, err)
 		case "/v1/api/torrents/requestdl":
-			_, err := writer.Write([]byte(fmt.Sprintf(`{"success":true,"detail":"ok","data":%q}`, torboxAPI.URL+"/cdn/file")))
+			_, err := fmt.Fprintf(writer, `{"success":true,"detail":"ok","data":%q}`, torboxAPI.URL+"/cdn/file")
 			require.NoError(t, err)
 		case "/cdn/file":
 			require.Equal(t, "bytes=0-0", request.Header.Get("Range"))
@@ -830,7 +830,7 @@ func testRunBrowserSetupSelectedMediaUsesConfiguredRangeRetention(t *testing.T, 
 			_, err := writer.Write([]byte(`{"success":true,"detail":"ok","data":[{"id":17,"download_finished":true,"download_present":true,"files":[{"id":3,"name":"Example.mp4","size":16,"hash":"fixture-hash","zipped":false,"infected":false}]}]}`))
 			require.NoError(t, err)
 		case "/v1/api/torrents/requestdl":
-			_, err := writer.Write([]byte(fmt.Sprintf(`{"success":true,"detail":"ok","data":%q}`, provider.URL+"/cdn/file")))
+			_, err := fmt.Fprintf(writer, `{"success":true,"detail":"ok","data":%q}`, provider.URL+"/cdn/file")
 			require.NoError(t, err)
 		case "/cdn/file":
 			require.Equal(t, http.MethodGet, request.Method)
@@ -953,7 +953,7 @@ func testRunBrowserSetupSelectedMediaUsesConfiguredRangeRetention(t *testing.T, 
 	handle, err = activeCatalog.Open(context.Background(), items[0].VirtualPath)
 	require.NoError(t, err)
 	buffer = make([]byte, 4)
-	read, err = handle.ReadAt(context.Background(), buffer, 8)
+	_, err = handle.ReadAt(context.Background(), buffer, 8)
 	require.NoError(t, err)
 	require.Equal(t, content[8:12], buffer)
 	require.NoError(t, handle.Close())

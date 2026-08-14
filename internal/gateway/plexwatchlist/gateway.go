@@ -25,7 +25,7 @@ const (
 )
 
 // ErrUnavailable indicates that a watchlist snapshot could not be read safely.
-var ErrUnavailable = errors.New("Plex watchlist unavailable")
+var ErrUnavailable = errors.New("plex watchlist unavailable")
 
 // Options configures bounded Plex watchlist retrieval.
 type Options struct {
@@ -64,28 +64,28 @@ type wireItem struct {
 func New(options Options, tokens TokenSource, client *http.Client) (*Gateway, error) {
 	parsed, err := url.Parse(options.BaseURL)
 	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
-		return nil, errors.New("Plex watchlist base URL must be absolute HTTP(S) without credentials, query, or fragment")
+		return nil, errors.New("plex watchlist base URL must be absolute HTTP(S) without credentials, query, or fragment")
 	}
 	if tokens == nil || client == nil {
-		return nil, errors.New("Plex watchlist token source and HTTP client are required")
+		return nil, errors.New("plex watchlist token source and HTTP client are required")
 	}
 	pageSize := options.PageSize
 	if pageSize == 0 {
 		pageSize = defaultPageSize
 	}
 	if pageSize < 1 || pageSize > maximumPageSize {
-		return nil, fmt.Errorf("Plex watchlist page size must be between 1 and %d", maximumPageSize)
+		return nil, fmt.Errorf("plex watchlist page size must be between 1 and %d", maximumPageSize)
 	}
 	maximumItems := options.MaximumItems
 	if maximumItems == 0 {
 		maximumItems = defaultMaximumItems
 	}
 	if maximumItems < 1 || maximumItems > maximumItemsLimit {
-		return nil, fmt.Errorf("Plex watchlist maximum items must be between 1 and %d", maximumItemsLimit)
+		return nil, fmt.Errorf("plex watchlist maximum items must be between 1 and %d", maximumItemsLimit)
 	}
 	boundedClient := *client
 	boundedClient.CheckRedirect = func(*http.Request, []*http.Request) error {
-		return errors.New("Plex watchlist redirects are disabled")
+		return errors.New("plex watchlist redirects are disabled")
 	}
 	return &Gateway{baseURL: parsed, pageSize: pageSize, maximumItems: maximumItems, tokens: tokens, client: &boundedClient}, nil
 }

@@ -373,7 +373,6 @@ func (c *generatedCatalog) Open(_ context.Context, virtualPath string) (domain.R
 
 type generatedHandle struct {
 	size   int64
-	offset int64
 	closed bool
 }
 

@@ -35,7 +35,7 @@ func Handler() (http.Handler, error) {
 			return
 		}
 		cleaned := path.Clean("/" + request.URL.Path)
-		if strings.Contains(request.URL.Path, "..") || cleaned != request.URL.Path && !(request.URL.Path == "" && cleaned == "/") {
+		if strings.Contains(request.URL.Path, "..") || cleaned != request.URL.Path && (request.URL.Path != "" || cleaned != "/") {
 			http.NotFound(writer, request)
 			return
 		}

@@ -55,14 +55,14 @@ type releaseResource struct {
 // New constructs a Prowlarr search gateway without network I/O.
 func New(options Options, client *http.Client) (*Gateway, error) {
 	if client == nil {
-		return nil, errors.New("Prowlarr HTTP client is required")
+		return nil, errors.New("prowlarr HTTP client is required")
 	}
 	parsed, err := url.Parse(options.BaseURL)
 	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
-		return nil, errors.New("Prowlarr base URL must be absolute HTTP(S) without credentials, query, or fragment")
+		return nil, errors.New("prowlarr base URL must be absolute HTTP(S) without credentials, query, or fragment")
 	}
 	if options.APIKey == "" || strings.TrimSpace(options.APIKey) != options.APIKey || len(options.APIKey) > maximumAPIKeyBytes || strings.IndexFunc(options.APIKey, unicode.IsControl) >= 0 {
-		return nil, errors.New("Prowlarr API key is required without surrounding whitespace and must not exceed 4096 bytes")
+		return nil, errors.New("prowlarr API key is required without surrounding whitespace and must not exceed 4096 bytes")
 	}
 	isolatedClient := *client
 	isolatedClient.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
@@ -114,17 +114,17 @@ func (g *Gateway) Search(ctx context.Context, search acquisition.SearchRequest) 
 		}
 	}()
 	if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
-		return nil, fmt.Errorf("Prowlarr rejected API credentials: %w", domain.ErrUnauthorized)
+		return nil, fmt.Errorf("prowlarr rejected API credentials: %w", domain.ErrUnauthorized)
 	}
 	if response.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("Prowlarr search returned HTTP status %d", response.StatusCode)
+		return nil, fmt.Errorf("prowlarr search returned HTTP status %d", response.StatusCode)
 	}
 	body, err := io.ReadAll(io.LimitReader(response.Body, maximumSearchBodyBytes+1))
 	if err != nil {
 		return nil, errors.New("read Prowlarr search response")
 	}
 	if len(body) > maximumSearchBodyBytes {
-		return nil, errors.New("Prowlarr search response exceeds 8 MiB")
+		return nil, errors.New("prowlarr search response exceeds 8 MiB")
 	}
 	var resources []releaseResource
 	if err := json.Unmarshal(body, &resources); err != nil {

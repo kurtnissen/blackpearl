@@ -80,6 +80,7 @@ func TestServerReplacementKeepsIssuedNFSFileHandleOnOriginalCatalog(t *testing.T
 	issuedBytes := make([]byte, 4)
 	count, err := oldFile.ReadAt(issuedBytes, 0)
 	require.ErrorIs(t, err, io.EOF)
+	require.Equal(t, 4, count)
 	require.Equal(t, "AAAA", string(issuedBytes))
 
 	previous, err := server.Replace(context.Background(), newCatalog)

@@ -759,7 +759,7 @@ func (s *RollingSource) fetchChunk(
 	}()
 	buffer := make([]byte, expected)
 	count, readErr := remote.ReadAt(ctx, buffer, offset)
-	if readErr != nil && !(errors.Is(readErr, io.EOF) && int64(count) == expected) {
+	if readErr != nil && (!errors.Is(readErr, io.EOF) || int64(count) != expected) {
 		closeErr := temporary.Close()
 		return nil, errors.Join(fmt.Errorf("fetch rolling range at %d: %w", offset, readErr), closeErr)
 	}

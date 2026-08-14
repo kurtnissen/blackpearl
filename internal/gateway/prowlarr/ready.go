@@ -41,17 +41,17 @@ func (g *Gateway) Ready(ctx context.Context) (resultErr error) {
 		}
 	}()
 	if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
-		return fmt.Errorf("Prowlarr rejected API credentials: %w", domain.ErrUnauthorized)
+		return fmt.Errorf("prowlarr rejected API credentials: %w", domain.ErrUnauthorized)
 	}
 	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("Prowlarr health returned HTTP status %d", response.StatusCode)
+		return fmt.Errorf("prowlarr health returned HTTP status %d", response.StatusCode)
 	}
 	body, err := io.ReadAll(io.LimitReader(response.Body, maximumReadyBodyBytes+1))
 	if err != nil {
 		return errors.New("read Prowlarr health response")
 	}
 	if len(body) > maximumReadyBodyBytes {
-		return errors.New("Prowlarr health response exceeds 1 MiB")
+		return errors.New("prowlarr health response exceeds 1 MiB")
 	}
 	return nil
 }

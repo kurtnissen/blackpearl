@@ -54,15 +54,15 @@ type libraryLocation struct {
 func NewLibraryRefresher(baseURL string, tokens TokenSource, roots []string, client *http.Client) (*LibraryRefresher, error) {
 	parsed, err := url.Parse(baseURL)
 	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
-		return nil, errors.New("Plex refresh URL must be absolute HTTP(S) without credentials, query, or fragment")
+		return nil, errors.New("plex refresh URL must be absolute HTTP(S) without credentials, query, or fragment")
 	}
 	if tokens == nil || client == nil {
-		return nil, errors.New("Plex refresh token source and HTTP client are required")
+		return nil, errors.New("plex refresh token source and HTTP client are required")
 	}
 	configuredRoots := make(map[string]struct{}, len(roots))
 	for _, root := range roots {
 		if !strings.HasPrefix(root, "/") || strings.TrimSpace(root) != root || root == "/" {
-			return nil, errors.New("Plex refresh roots must be absolute filesystem paths")
+			return nil, errors.New("plex refresh roots must be absolute filesystem paths")
 		}
 		configuredRoots[root] = struct{}{}
 	}
@@ -192,7 +192,7 @@ func (r *LibraryRefresher) do(request *http.Request) (_ []byte, resultErr error)
 		return nil, errors.New("read Plex library refresh response")
 	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return nil, fmt.Errorf("Plex library refresh returned HTTP status %d", response.StatusCode)
+		return nil, fmt.Errorf("plex library refresh returned HTTP status %d", response.StatusCode)
 	}
 	return content, nil
 }
