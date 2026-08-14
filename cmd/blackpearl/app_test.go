@@ -442,6 +442,12 @@ func TestRunBrowserSetupObservesPlexWatchlistWithoutAcquiring(t *testing.T) {
 	cfg.WatchlistBaseURL = provider.URL
 	cfg.WatchlistPollInterval = time.Hour
 	cfg.WatchlistTokenFile = credentialPath
+	cfg.WatchlistAcquisitionTimeout = 30 * time.Second
+	cfg.WatchlistLeaseDuration = 2 * time.Minute
+	cfg.WatchlistWorkerIdleInterval = time.Second
+	cfg.WatchlistReconcileInterval = 5 * time.Second
+	cfg.WatchlistNotCachedCooldown = time.Minute
+	cfg.WatchlistRetryCooldown = time.Minute
 	setupRepository, err := setuprepo.New(cfg.SetupDir)
 	require.NoError(t, err)
 	existingCandidate, err := domain.NewMediaCandidate("17:3", "Existing.Movie.2025.mkv", 16)

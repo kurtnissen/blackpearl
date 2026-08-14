@@ -569,26 +569,23 @@ func runBrowserSetup(ctx context.Context, cfg config.Config, logger *slog.Logger
 		}
 		watchlistRepository = openedRepository
 		watchlistObserver, err = watchlistservice.NewObserver(watchlistGateway, watchlistRepository, watchlistservice.ObserverOptions{
-			PollInterval:       cfg.WatchlistPollInterval,
-			AcquisitionEnabled: cfg.WatchlistAcquisitionEnabled,
+			PollInterval: cfg.WatchlistPollInterval,
 		})
 		if err != nil {
 			closeErr := watchlistRepository.Close()
 			return errors.Join(fmt.Errorf("configure Plex watchlist observer: %w", err), closeErr)
 		}
-		if cfg.WatchlistAcquisitionEnabled {
-			watchlistWorker, err = watchlistservice.NewWorker(watchlistRepository, acquisitionJobManager, service, watchlistservice.WorkerOptions{
-				LeaseDuration:     cfg.WatchlistLeaseDuration,
-				OperationTimeout:  cfg.WatchlistAcquisitionTimeout,
-				IdleInterval:      cfg.WatchlistWorkerIdleInterval,
-				ReconcileInterval: cfg.WatchlistReconcileInterval,
-				NotCachedCooldown: cfg.WatchlistNotCachedCooldown,
-				RetryCooldown:     cfg.WatchlistRetryCooldown,
-			})
-			if err != nil {
-				closeErr := watchlistRepository.Close()
-				return errors.Join(fmt.Errorf("configure Plex watchlist acquisition worker: %w", err), closeErr)
-			}
+		watchlistWorker, err = watchlistservice.NewWorker(watchlistRepository, acquisitionJobManager, service, watchlistservice.WorkerOptions{
+			LeaseDuration:     cfg.WatchlistLeaseDuration,
+			OperationTimeout:  cfg.WatchlistAcquisitionTimeout,
+			IdleInterval:      cfg.WatchlistWorkerIdleInterval,
+			ReconcileInterval: cfg.WatchlistReconcileInterval,
+			NotCachedCooldown: cfg.WatchlistNotCachedCooldown,
+			RetryCooldown:     cfg.WatchlistRetryCooldown,
+		})
+		if err != nil {
+			closeErr := watchlistRepository.Close()
+			return errors.Join(fmt.Errorf("configure Plex watchlist acquisition worker: %w", err), closeErr)
 		}
 	}
 	startSetupRestore(ctx, service, logger, 2*time.Second)

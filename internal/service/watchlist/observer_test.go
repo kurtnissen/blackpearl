@@ -38,8 +38,9 @@ func TestObserverSyncPersistsSnapshotAndReturnsAggregateStatus(t *testing.T) {
 
 func TestObserverStatusReportsAutomaticAcquisitionPolicy(t *testing.T) {
 	t.Parallel()
-	observer, err := watchlistservice.NewObserver(&fakeSnapshotGateway{}, &fakeQueue{}, watchlistservice.ObserverOptions{
-		PollInterval: time.Hour, AcquisitionEnabled: true,
+	queue := &fakeQueue{acquisitionEnabled: true}
+	observer, err := watchlistservice.NewObserver(&fakeSnapshotGateway{}, queue, watchlistservice.ObserverOptions{
+		PollInterval: time.Hour,
 	})
 	require.NoError(t, err)
 
@@ -51,15 +52,30 @@ func TestObserverStatusReportsAutomaticAcquisitionPolicy(t *testing.T) {
 
 func TestObserverMakesOnlyPostBaselineItemsEligibleForAutomaticAcquisition(t *testing.T) {
 	t.Parallel()
-	queue := &fakeQueue{}
+	queue := &fakeQueue{acquisitionEnabled: true}
 	observer, err := watchlistservice.NewObserver(&fakeSnapshotGateway{}, queue, watchlistservice.ObserverOptions{
-		PollInterval: time.Hour, AcquisitionEnabled: true,
+		PollInterval: time.Hour,
 	})
 	require.NoError(t, err)
 
 	require.NoError(t, observer.Sync(context.Background()))
 	require.NoError(t, observer.Sync(context.Background()))
 
+	require.Equal(t, []bool{false, true}, queue.autoEligibility)
+}
+
+func TestObserverChangesDurableAutomaticAcquisitionPolicyAtRuntime(t *testing.T) {
+	t.Parallel()
+	queue := &fakeQueue{}
+	observer := newObserver(t, &fakeSnapshotGateway{}, queue, time.Hour, time.Now)
+	require.NoError(t, observer.Sync(context.Background()))
+
+	require.NoError(t, observer.SetAcquisitionEnabled(context.Background(), true))
+	require.NoError(t, observer.Sync(context.Background()))
+	status, err := observer.Status(context.Background())
+
+	require.NoError(t, err)
+	require.True(t, status.AcquisitionEnabled)
 	require.Equal(t, []bool{false, true}, queue.autoEligibility)
 }
 
@@ -191,13 +207,15 @@ func (f *fakeSnapshotGateway) Snapshot(context.Context) ([]acquisitiondomain.Wat
 }
 
 type fakeQueue struct {
-	mu              sync.Mutex
-	items           []acquisitiondomain.WatchlistItem
-	observedAt      time.Time
-	upsertErr       error
-	status          acquisitiondomain.WatchlistQueueStatus
-	statusErr       error
-	autoEligibility []bool
+	mu                 sync.Mutex
+	items              []acquisitiondomain.WatchlistItem
+	observedAt         time.Time
+	upsertErr          error
+	status             acquisitiondomain.WatchlistQueueStatus
+	statusErr          error
+	autoEligibility    []bool
+	acquisitionEnabled bool
+	policyErr          error
 }
 
 func (f *fakeQueue) UpsertSnapshot(_ context.Context, items []acquisitiondomain.WatchlistItem, observedAt time.Time) error {
@@ -224,4 +242,20 @@ func (f *fakeQueue) UpsertSnapshotPolicy(
 
 func (f *fakeQueue) Status(context.Context) (acquisitiondomain.WatchlistQueueStatus, error) {
 	return f.status, f.statusErr
+}
+
+func (f *fakeQueue) AcquisitionEnabled(context.Context) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.acquisitionEnabled, f.policyErr
+}
+
+func (f *fakeQueue) SetAcquisitionEnabled(_ context.Context, enabled bool) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.policyErr != nil {
+		return f.policyErr
+	}
+	f.acquisitionEnabled = enabled
+	return nil
 }
