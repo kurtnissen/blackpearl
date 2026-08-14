@@ -184,6 +184,89 @@ func TestRollingSourceReadAheadFollowsForegroundReadsAndMovesAfterSeek(t *testin
 	require.Equal(t, uint64(4), source.Stats().ReadAheadFetches)
 }
 
+func TestRollingSourceSeekCancelsStaleReadAheadWindow(t *testing.T) {
+	t.Parallel()
+	opener := newCancelingRangeOpener([]byte("abcdefghijklmnopqrstuvwxyz012345"), 4)
+	t.Cleanup(opener.releaseBlockedRead)
+	source, _ := newRollingSourceWithReadAheadForTest(t, opener, 32, 4, 2)
+	handle := openRollingHandle(t, source, 32)
+
+	require.Equal(t, "abcd", readRollingExact(t, handle, 0, 4))
+	select {
+	case <-opener.started:
+	case <-time.After(time.Second):
+		require.FailNow(t, "stale read-ahead did not start")
+	}
+	require.Equal(t, "uvwx", readRollingExact(t, handle, 20, 4))
+
+	select {
+	case <-opener.canceled:
+	case <-time.After(time.Second):
+		require.FailNow(t, "seek did not cancel stale read-ahead")
+	}
+	require.Eventually(t, func() bool { return source.Stats().ReservedBytes == 0 }, time.Second, 5*time.Millisecond)
+}
+
+func TestRollingHandleCloseCancelsActiveReadAheadWindow(t *testing.T) {
+	t.Parallel()
+	opener := newCancelingRangeOpener([]byte("abcdefghijkl"), 4)
+	t.Cleanup(opener.releaseBlockedRead)
+	source, _ := newRollingSourceWithReadAheadForTest(t, opener, 12, 4, 1)
+	handle := openRollingHandle(t, source, 12)
+
+	require.Equal(t, "abcd", readRollingExact(t, handle, 0, 4))
+	select {
+	case <-opener.started:
+	case <-time.After(time.Second):
+		require.FailNow(t, "read-ahead did not start")
+	}
+	require.NoError(t, handle.Close())
+
+	select {
+	case <-opener.canceled:
+	case <-time.After(time.Second):
+		require.FailNow(t, "handle close did not cancel read-ahead")
+	}
+	require.Eventually(t, func() bool { return source.Stats().ReservedBytes == 0 }, time.Second, 5*time.Millisecond)
+}
+
+func TestRollingForegroundRetriesWhenSharedReadAheadIsCanceled(t *testing.T) {
+	t.Parallel()
+	opener := newCancelingRangeOpener([]byte("abcdefghijkl"), 4)
+	t.Cleanup(opener.releaseBlockedRead)
+	source, _ := newRollingSourceWithReadAheadForTest(t, opener, 12, 4, 1)
+	readAheadOwner := openRollingHandle(t, source, 12)
+	foreground := openRollingHandle(t, source, 12)
+
+	require.Equal(t, "abcd", readRollingExact(t, readAheadOwner, 0, 4))
+	select {
+	case <-opener.started:
+	case <-time.After(time.Second):
+		require.FailNow(t, "read-ahead did not start")
+	}
+	observed := newObservedContext(context.Background(), 2)
+	result := make(chan string, 1)
+	go func() {
+		buffer := make([]byte, 4)
+		count, err := foreground.ReadAt(observed, buffer, 4)
+		result <- fmt.Sprintf("%d:%v:%s", count, err, buffer)
+	}()
+	select {
+	case <-observed.reached:
+	case <-time.After(time.Second):
+		require.FailNow(t, "foreground did not join read-ahead")
+	}
+	require.NoError(t, readAheadOwner.Close())
+
+	select {
+	case actual := <-result:
+		require.Equal(t, "4:<nil>:efgh", actual)
+	case <-time.After(time.Second):
+		require.FailNow(t, "foreground did not retry canceled read-ahead")
+	}
+	require.Equal(t, int32(2), opener.attempts.Load())
+}
+
 func TestRollingSourceForegroundReadJoinsInflightReadAhead(t *testing.T) {
 	t.Parallel()
 	opener := newOffsetBlockingRangeOpener([]byte("abcdefghijkl"), 4)
@@ -570,6 +653,72 @@ type offsetBlockingRangeOpener struct {
 	release chan struct{}
 	once    sync.Once
 }
+
+type cancelingRangeOpener struct {
+	*fakeRangeOpener
+	offset      int64
+	started     chan struct{}
+	canceled    chan struct{}
+	release     chan struct{}
+	startOnce   sync.Once
+	cancelOnce  sync.Once
+	releaseOnce sync.Once
+	attempts    atomic.Int32
+}
+
+type cancelingRangeSource struct {
+	opener    *cancelingRangeOpener
+	reader    *bytes.Reader
+	validator string
+}
+
+func newCancelingRangeOpener(content []byte, offset int64) *cancelingRangeOpener {
+	return &cancelingRangeOpener{
+		fakeRangeOpener: newFakeRangeOpener(content),
+		offset:          offset,
+		started:         make(chan struct{}),
+		canceled:        make(chan struct{}),
+		release:         make(chan struct{}),
+	}
+}
+
+func (o *cancelingRangeOpener) Open(ctx context.Context, _ domain.BackingRef) (acquisition.RangeSource, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	o.mu.Lock()
+	validator := o.validator
+	o.mu.Unlock()
+	return &cancelingRangeSource{opener: o, reader: bytes.NewReader(o.content), validator: validator}, nil
+}
+
+func (o *cancelingRangeOpener) releaseBlockedRead() {
+	o.releaseOnce.Do(func() { close(o.release) })
+}
+
+func (s *cancelingRangeSource) ReadAt(ctx context.Context, destination []byte, offset int64) (int, error) {
+	if offset == s.opener.offset && s.opener.attempts.Add(1) == 1 {
+		s.opener.startOnce.Do(func() { close(s.opener.started) })
+		select {
+		case <-ctx.Done():
+			if errors.Is(ctx.Err(), context.Canceled) {
+				s.opener.cancelOnce.Do(func() { close(s.opener.canceled) })
+			}
+			return 0, ctx.Err()
+		case <-s.opener.release:
+		}
+	}
+	s.opener.mu.Lock()
+	s.opener.reads[offset]++
+	s.opener.mu.Unlock()
+	return s.reader.ReadAt(destination, offset)
+}
+
+func (s *cancelingRangeSource) Size() int64 { return s.reader.Size() }
+
+func (s *cancelingRangeSource) Validator() string { return s.validator }
+
+func (s *cancelingRangeSource) Close() error { return nil }
 
 func newOffsetBlockingRangeOpener(content []byte, offset int64) *offsetBlockingRangeOpener {
 	return &offsetBlockingRangeOpener{

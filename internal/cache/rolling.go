@@ -132,9 +132,10 @@ type chunkEntry struct {
 }
 
 type fetchCall struct {
-	done chan struct{}
-	err  error
-	kind backgroundFetchKind
+	done   chan struct{}
+	err    error
+	kind   backgroundFetchKind
+	parent context.Context
 }
 
 type backgroundFetchKind uint8
@@ -315,6 +316,13 @@ type rollingHandle struct {
 	closed    atomic.Bool
 	closeOnce sync.Once
 	closeErr  error
+
+	readAheadMu         sync.Mutex
+	readAheadContext    context.Context
+	readAheadCancel     context.CancelFunc
+	readAheadGeneration uint64
+	lastReadEnd         int64
+	hasLastRead         bool
 }
 
 func (h *rollingHandle) Size() int64 {
@@ -337,6 +345,7 @@ func (h *rollingHandle) ReadAt(ctx context.Context, destination []byte, offset i
 	if offset >= h.media.Size {
 		return 0, io.EOF
 	}
+	readAheadContext, readAheadGeneration := h.beginRead(offset)
 	wanted := int64(len(destination))
 	partial := false
 	if remaining := h.media.Size - offset; wanted > remaining {
@@ -365,14 +374,50 @@ func (h *rollingHandle) ReadAt(ctx context.Context, destination []byte, offset i
 		}
 	}
 	lastChunk := (offset + wanted - 1) / h.owner.shared.options.ChunkBytes
-	h.owner.scheduleReadAhead(h.media.Backing, h.validator, h.media.Size, lastChunk+1)
+	h.finishRead(readAheadContext, readAheadGeneration, offset+int64(written), lastChunk+1)
 	if partial {
 		return written, io.EOF
 	}
 	return written, nil
 }
 
+func (h *rollingHandle) beginRead(offset int64) (context.Context, uint64) {
+	h.readAheadMu.Lock()
+	defer h.readAheadMu.Unlock()
+	if h.readAheadContext == nil || (h.hasLastRead && offset != h.lastReadEnd) {
+		if h.readAheadCancel != nil {
+			h.readAheadCancel()
+		}
+		h.readAheadContext, h.readAheadCancel = context.WithCancel(h.owner.shared.lifecycle)
+		h.readAheadGeneration++
+	}
+	return h.readAheadContext, h.readAheadGeneration
+}
+
+func (h *rollingHandle) finishRead(ctx context.Context, generation uint64, end int64, nextChunk int64) {
+	h.readAheadMu.Lock()
+	if generation != h.readAheadGeneration {
+		h.readAheadMu.Unlock()
+		return
+	}
+	h.lastReadEnd = end
+	h.hasLastRead = true
+	h.readAheadMu.Unlock()
+	h.owner.scheduleReadAhead(ctx, h.media.Backing, h.validator, h.media.Size, nextChunk)
+}
+
+func (h *rollingHandle) cancelReadAhead() {
+	h.readAheadMu.Lock()
+	defer h.readAheadMu.Unlock()
+	if h.readAheadCancel != nil {
+		h.readAheadCancel()
+		h.readAheadCancel = nil
+		h.readAheadContext = nil
+	}
+}
+
 func (s *RollingSource) scheduleReadAhead(
+	ctx context.Context,
 	backing domain.BackingRef,
 	validator string,
 	logicalSize int64,
@@ -380,12 +425,13 @@ func (s *RollingSource) scheduleReadAhead(
 ) {
 	protected := chunkKey{object: objectCacheKey(backing, validator), index: startIndex - 1}
 	s.scheduleBackgroundChunks(
-		backing, validator, logicalSize, startIndex, s.shared.options.ReadAheadChunks,
+		ctx, backing, validator, logicalSize, startIndex, s.shared.options.ReadAheadChunks,
 		backgroundFetchReadAhead, &protected,
 	)
 }
 
 func (s *RollingSource) scheduleBackgroundChunks(
+	ctx context.Context,
 	backing domain.BackingRef,
 	validator string,
 	logicalSize int64,
@@ -395,6 +441,9 @@ func (s *RollingSource) scheduleBackgroundChunks(
 	protected *chunkKey,
 ) {
 	for distance := 0; distance < count; distance++ {
+		if ctx.Err() != nil {
+			return
+		}
 		index := startIndex + int64(distance)
 		expected := s.chunkLength(logicalSize, index)
 		if expected <= 0 {
@@ -414,7 +463,7 @@ func (s *RollingSource) scheduleBackgroundChunks(
 			s.shared.mu.Unlock()
 			return
 		}
-		call := &fetchCall{done: make(chan struct{}), kind: kind}
+		call := &fetchCall{done: make(chan struct{}), kind: kind, parent: ctx}
 		s.shared.inflight[key] = call
 		s.recordBackgroundFetchLocked(kind)
 		s.shared.mu.Unlock()
@@ -513,7 +562,7 @@ func (s *RollingSource) prefetchMediaPrefix(media domain.Media) {
 		return
 	}
 	s.scheduleBackgroundChunks(
-		media.Backing, validator, media.Size, 0, s.shared.options.NextEpisodePrefetchChunks,
+		s.shared.lifecycle, media.Backing, validator, media.Size, 0, s.shared.options.NextEpisodePrefetchChunks,
 		backgroundFetchNextEpisode, nil,
 	)
 }
@@ -521,6 +570,7 @@ func (s *RollingSource) prefetchMediaPrefix(media domain.Media) {
 func (h *rollingHandle) Close() error {
 	h.closeOnce.Do(func() {
 		h.closed.Store(true)
+		h.cancelReadAhead()
 		h.closeErr = h.remote.Close()
 	})
 	return h.closeErr
@@ -550,12 +600,16 @@ func (s *RollingSource) acquireChunk(
 		}
 		if call, ok := s.shared.inflight[key]; ok {
 			done := call.done
+			kind := call.kind
 			s.shared.mu.Unlock()
 			select {
 			case <-ctx.Done():
 				return nil, ctx.Err()
 			case <-done:
 				if call.err != nil {
+					if kind != backgroundFetchNone && errors.Is(call.err, context.Canceled) {
+						continue
+					}
 					return nil, call.err
 				}
 				continue
@@ -576,7 +630,7 @@ func (s *RollingSource) acquireChunk(
 				continue
 			}
 		}
-		call := &fetchCall{done: make(chan struct{})}
+		call := &fetchCall{done: make(chan struct{}), parent: s.shared.lifecycle}
 		s.shared.inflight[key] = call
 		s.shared.misses++
 		s.shared.mu.Unlock()
@@ -644,7 +698,7 @@ func (s *RollingSource) runFetch(
 	offset int64,
 	expected int64,
 ) {
-	fetchContext, cancel := context.WithTimeout(s.shared.lifecycle, s.shared.options.FetchTimeout)
+	fetchContext, cancel := context.WithTimeout(call.parent, s.shared.options.FetchTimeout)
 	defer cancel()
 	remote, err := s.opener.Open(fetchContext, backing)
 	if err == nil && remote.Size() != logicalSize {
