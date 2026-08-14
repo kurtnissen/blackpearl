@@ -694,6 +694,7 @@ function acquisitionJobDetail(job: AcquisitionJob): string {
 	if (job.state === "manual_review") return "BlackPearl stopped automatic retries because the provider result was ambiguous.";
 	if (job.errorCode === "no_release") return "No compatible torrent release was available from the configured authorized indexers.";
 	if (job.errorCode === "no_playable_media") return "The prepared item did not contain a matching MP4 or MKV video.";
+	if (job.errorCode === "stalled") return "TorBox could not finish this release because no source was available. Search again to try another verified release.";
 	return "The selected release could not be prepared safely.";
 }
 

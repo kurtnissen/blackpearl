@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 
 	"github.com/blackpearl-media/blackpearl/internal/acquisition"
 	"github.com/blackpearl-media/blackpearl/internal/domain"
@@ -57,6 +58,9 @@ func (g *Gateway) InspectCreatedTorrent(ctx context.Context, created acquisition
 	}
 	if torrent.ID != torrentID {
 		return nil, fmt.Errorf("created TorBox torrent not found: %w", domain.ErrNotFound)
+	}
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(torrent.DownloadState)), "stalled") {
+		return nil, fmt.Errorf("created TorBox torrent has no available source: %w", acquisition.ErrStalled)
 	}
 	if !torrent.DownloadFinished || !torrent.DownloadPresent {
 		return nil, fmt.Errorf("created TorBox torrent is not ready: %w", acquisition.ErrNotReady)

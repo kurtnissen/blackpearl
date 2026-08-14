@@ -11,6 +11,9 @@ var (
 	// ErrNotReady indicates that a created provider object exists but is not yet
 	// available as complete, range-readable media.
 	ErrNotReady = errors.New("acquired object is not ready")
+	// ErrStalled indicates that the provider reports a terminal preparation
+	// state, such as a torrent with no available seeds.
+	ErrStalled = errors.New("acquired object preparation is stalled")
 	// ErrAmbiguousProviderObjects indicates that reconciliation found multiple
 	// account objects for one stable content fingerprint.
 	ErrAmbiguousProviderObjects = errors.New("multiple provider objects match the selected content")

@@ -170,6 +170,18 @@ func TestWorkerClassifiesNoReleaseAndNoPlayableMediaAsTerminal(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, acquisition.JobErrorNoPlayableMedia, job.ErrorCode())
 	})
+
+	t.Run("stalled without seeds", func(t *testing.T) {
+		repository, now, jobID := preparingJob(t, ctx)
+		provider := &fakeJobProvider{inspectionErrs: []error{acquisition.ErrStalled}}
+		worker := newJobWorker(t, repository, provider, &fakeJobPublisher{}, now.Add(4*time.Second))
+		state, err := worker.ProcessOne(ctx)
+		require.NoError(t, err)
+		require.Equal(t, acquisition.JobStateFailed, state)
+		job, err := repository.Get(ctx, jobID)
+		require.NoError(t, err)
+		require.Equal(t, acquisition.JobErrorStalled, job.ErrorCode())
+	})
 }
 
 func queuedJob(t *testing.T, ctx context.Context) (*acquisitionjobrepo.Repository, time.Time, string) {

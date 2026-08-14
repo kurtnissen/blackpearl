@@ -35,6 +35,7 @@ const (
 	JobErrorNoRelease           JobErrorCode = "no_release"
 	JobErrorNoPlayableMedia     JobErrorCode = "no_playable_media"
 	JobErrorMaterialization     JobErrorCode = "materialization_failed"
+	JobErrorStalled             JobErrorCode = "stalled"
 	JobErrorAmbiguousMutation   JobErrorCode = "ambiguous_mutation"
 )
 
@@ -177,7 +178,7 @@ func NewAcquisitionJobSnapshot(input JobSnapshotInput) (AcquisitionJob, error) {
 func validateJobErrorCode(code JobErrorCode) error {
 	switch code {
 	case JobErrorNone, JobErrorProviderUnavailable, JobErrorUnauthorized, JobErrorNoRelease,
-		JobErrorNoPlayableMedia, JobErrorMaterialization, JobErrorAmbiguousMutation:
+		JobErrorNoPlayableMedia, JobErrorMaterialization, JobErrorStalled, JobErrorAmbiguousMutation:
 		return nil
 	default:
 		return fmt.Errorf("unsupported acquisition job error code: %q", code)

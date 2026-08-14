@@ -85,6 +85,7 @@ type apiEnvelope[T any] struct {
 type torrentRecord struct {
 	ID               int64        `json:"id"`
 	Hash             string       `json:"hash"`
+	DownloadState    string       `json:"download_state"`
 	DownloadFinished bool         `json:"download_finished"`
 	DownloadPresent  bool         `json:"download_present"`
 	Files            []fileRecord `json:"files"`

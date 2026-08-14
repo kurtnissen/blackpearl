@@ -210,6 +210,9 @@ func (w *Worker) prepare(ctx context.Context, operationContext context.Context, 
 
 func (w *Worker) publish(ctx context.Context, operationContext context.Context, claim acquisition.AcquisitionJobClaim, providers Providers) (acquisition.JobState, error) {
 	candidates, err := providers.Preparer.InspectCreatedTorrent(operationContext, claim.Job().CreatedObject())
+	if errors.Is(err, acquisition.ErrStalled) {
+		return w.fail(ctx, claim, acquisition.JobErrorStalled, false)
+	}
 	if errors.Is(err, acquisition.ErrNotReady) {
 		return w.deferJob(ctx, claim, acquisition.JobErrorNone, w.options.PreparingPollInterval)
 	}

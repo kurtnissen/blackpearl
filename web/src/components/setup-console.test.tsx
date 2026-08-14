@@ -284,6 +284,35 @@ it("offers explicit TorBox preparation when no instant copy is cached", async ()
 	}));
 });
 
+it("explains when TorBox preparation stalls without a source", async () => {
+	const bootstrap = "b".repeat(64);
+	const active = { objectId: "17:3", name: "Existing.mkv", extension: ".mkv", size: 1024, mediaType: "movie", title: "Existing", year: 2024 };
+	const stalled = {
+		id: "0123456789abcdef0123456789abcdef",
+		state: "failed",
+		mediaType: "movie",
+		title: "Open Movie",
+		year: 2026,
+		progress: 0,
+		errorCode: "stalled",
+		createdAt: "2026-08-14T12:00:00Z",
+		updatedAt: "2026-08-14T12:05:00Z",
+	};
+	window.history.replaceState(null, "", `/#bootstrap=${bootstrap}`);
+	vi.stubGlobal("fetch", vi.fn()
+		.mockResolvedValueOnce(new Response(JSON.stringify({ setupRequired: false, tokenConfigured: true, csrfToken: "csrf", selected: active, selectedItems: [active] }), { status: 200 }))
+		.mockResolvedValueOnce(watchlistResponse())
+		.mockResolvedValueOnce(new Response(JSON.stringify({ configured: true }), { status: 200 }))
+		.mockResolvedValueOnce(new Response(JSON.stringify({ jobs: [stalled] }), { status: 200 })));
+	const user = userEvent.setup();
+	render(<SetupConsole />);
+
+	await user.click(await screen.findByRole("button", { name: "Find something new" }));
+
+	expect(await screen.findByText(/no source was available/i)).toBeInTheDocument();
+	expect(screen.getByText(/Search again to try another verified release/i)).toBeInTheDocument();
+});
+
 it("shows aggregate Plex Watchlist activity without exposing titles or identifiers", async () => {
   const bootstrap = "b".repeat(64);
   const active = { objectId: "17:3", name: "Existing.mkv", extension: ".mkv", size: 1024, mediaType: "movie", title: "Existing", year: 2024 };

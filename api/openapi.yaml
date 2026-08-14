@@ -390,7 +390,7 @@ components:
         progress: { type: integer, minimum: 0, maximum: 100 }
         errorCode:
           type: string
-          enum: [provider_unavailable, unauthorized, no_release, no_playable_media, materialization_failed, ambiguous_mutation]
+          enum: [provider_unavailable, unauthorized, no_release, no_playable_media, materialization_failed, stalled, ambiguous_mutation]
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
     AcquisitionJobSubmission:

@@ -73,6 +73,20 @@ func TestGatewayInspectCreatedTorrentDistinguishesNotReadyAndEmptyMedia(t *testi
 	}
 }
 
+func TestGatewayInspectCreatedTorrentReportsTerminalStall(t *testing.T) {
+	t.Parallel()
+	api := newTestAPI(t, func(writer http.ResponseWriter, _ *http.Request) {
+		writeEnvelope(writer, true, "ok", `{"id":17,"download_state":"stalled (no seeds)","download_finished":false,"download_present":false,"files":[]}`)
+	})
+	gateway := newTestGateway(t, api.URL+"/v1/api/", api.Client())
+	created, err := acquisition.NewCreatedObject(providerName, "17")
+	require.NoError(t, err)
+
+	_, err = gateway.InspectCreatedTorrent(context.Background(), created)
+
+	require.ErrorIs(t, err, acquisition.ErrStalled)
+}
+
 func TestGatewayInspectCreatedTorrentValidatesObjectBeforeRequest(t *testing.T) {
 	t.Parallel()
 	api := newTestAPI(t, func(_ http.ResponseWriter, request *http.Request) {

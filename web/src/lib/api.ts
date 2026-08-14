@@ -94,7 +94,7 @@ export type AcquisitionStatusResult = AcquisitionStatus & {
 
 export type AcquisitionJobState = "queued" | "selected" | "preparing" | "succeeded" | "failed" | "manual_review";
 
-export type AcquisitionJobError = "provider_unavailable" | "unauthorized" | "no_release" | "no_playable_media" | "materialization_failed" | "ambiguous_mutation";
+export type AcquisitionJobError = "provider_unavailable" | "unauthorized" | "no_release" | "no_playable_media" | "materialization_failed" | "stalled" | "ambiguous_mutation";
 
 export type AcquisitionJob = {
 	id: string;
@@ -376,7 +376,7 @@ function isAcquisitionJobState(value: unknown): value is AcquisitionJobState {
 
 function isAcquisitionJobError(value: unknown): value is AcquisitionJobError {
 	return value === "provider_unavailable" || value === "unauthorized" || value === "no_release"
-		|| value === "no_playable_media" || value === "materialization_failed" || value === "ambiguous_mutation";
+		|| value === "no_playable_media" || value === "materialization_failed" || value === "stalled" || value === "ambiguous_mutation";
 }
 
 function isAcquisitionJobSubmission(value: unknown): value is { job: AcquisitionJob; created: boolean } {
