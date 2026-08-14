@@ -12,6 +12,7 @@ BlackPearl is an experimental, open-source Go service that exposes a virtual med
 - Validated movie/episode search intent, a read-only Prowlarr gateway, and provider-neutral release deduplication and ranking.
 - Cached-only TorBox acquisition preflights cache availability, enforces `add_only_if_cached=true` during creation, inspects the resulting account object, selects the requested video, and publishes it through the existing atomic manifest transaction.
 - A paired localhost acquisition console privately configures Prowlarr, accepts validated movie or TV-episode intent, and returns only the updated public Plex manifest. Provider credentials and release locators never return to the browser.
+- Durable Plex Watchlist ingestion observes movies and shows through a bounded, header-authenticated adapter, stores a lease-based SQLite queue, and can serialize cached-only movie acquisition without inventing episode intent for a show.
 - `persistent` and `rolling` configuration modes. Rolling mode fetches strict HTTP ranges into fixed-size chunks, coalesces misses, performs bounded seek-aware read-ahead and next-episode prefix prefetch, and enforces a hard local byte quota with LRU eviction.
 - A generated 8-second H.264/AAC test-pattern MP4 with no third-party media.
 - Docker/Compose files for BlackPearl, a legal range-origin fixture, and isolated opt-in Plex acceptance containers.
@@ -19,7 +20,7 @@ BlackPearl is an experimental, open-source Go service that exposes a virtual med
 - A portable NFS frontend and macOS Docker Desktop Compose profile that need no
   FUSE mount propagation.
 
-BlackPearl now proves provider-neutral progressive range retrieval and rolling eviction through strict HTTP and TorBox torrent-file gateways. The TorBox profile includes a localhost setup page that discovers eligible completed MP4/MKV files and atomically publishes a searchable manifest of up to 100 selected movies or TV episodes without restarting the stack. Live macOS acceptance has verified a mixed movie/episode manifest, Plex movie and TV scans, Direct Play, non-sequential seeks, restart recovery, seek-aware read-ahead, bounded next-episode prefetch, and continued reads from logical files that never existed completely on BlackPearl's disk. Prowlarr search and cached-only TorBox acquisition are exposed through the tested paired API/UI. The bundled Prowlarr container and BlackPearl connection are live locally; adding private indexers and performing the first authorized live acquisition remain operator steps. Automatic metadata/watchlist ingestion also remains a later milestone.
+BlackPearl now proves provider-neutral progressive range retrieval and rolling eviction through strict HTTP and TorBox torrent-file gateways. The TorBox profile includes a localhost setup page that discovers eligible completed MP4/MKV files and atomically publishes a searchable manifest of up to 100 selected movies or TV episodes without restarting the stack. Live macOS acceptance has verified a mixed movie/episode manifest, Plex movie and TV scans, Direct Play, non-sequential seeks, restart recovery, seek-aware read-ahead, bounded next-episode prefetch, and continued reads from logical files that never existed completely on BlackPearl's disk. Prowlarr search and cached-only TorBox acquisition are exposed through the tested paired API/UI. The bundled Prowlarr container and BlackPearl connection are live locally; adding private indexers and performing the first authorized live acquisition remain operator steps. The portable profile now observes the isolated Plex server's Watchlist by default through a read-only config-volume mount. Automatic cached-only movie acquisition is implemented but remains disabled by default until authorized indexers are configured and live acceptance is recorded.
 
 ## Architecture at a glance
 
@@ -106,6 +107,15 @@ one-time authentication and authorized-indexer setup. In BlackPearl, select
 the API key from Prowlarr Settings. BlackPearl will search and add only a result
 that TorBox already reports as cached.
 
+The same isolated profile observes Plex Watchlist movies and shows every 15
+minutes. BlackPearl mounts only this stack's named Plex configuration volume,
+read-only; it does not inspect a host Plex installation. Observation stores no
+Plex token in BlackPearl state and does not acquire anything. After authorized
+indexers are configured and the observe-only counts look correct, automatic
+cached-only movie processing can be enabled explicitly with
+`BLACKPEARL_WATCHLIST_ACQUISITION_ENABLED=true`. Shows remain observation-only
+until an episode policy is configured in a later milestone.
+
 The token and manifest are stored with private permissions only inside
 the named BlackPearl data volume. It is never returned to the browser after
 save and is never written to SQLite, cache filenames, container environment,
@@ -139,7 +149,7 @@ Then open Plex at `http://YOUR_UBUNTU_SERVER_IP:32400/web`, add one Movies libra
 
 - All supplied host binds stay under this repository's ignored `runtime/` directory.
 - The Plex container receives the propagated media mount read-only and receives no FUSE device or elevated capability.
-- BlackPearl does not inspect host media, Plex, or `*arr` directories; TorBox discovery is an explicit read-only setup action.
+- BlackPearl does not inspect host media, production Plex, or `*arr` directories. The TorBox profile mounts only its project-scoped Plex config volume read-only for Watchlist authentication.
 - Cleanup is guarded to the exact repository runtime root.
 - A Plex token is optional, passed by environment, sent as a header, and never written by BlackPearl.
 

@@ -25,6 +25,10 @@ services:
       BLACKPEARL_SETUP_ENABLED: "true"
       BLACKPEARL_SETUP_DIR: /var/lib/blackpearl/setup
       BLACKPEARL_SETUP_BOOTSTRAP_TOKEN: ${BLACKPEARL_SETUP_BOOTSTRAP_TOKEN:?Run ./scripts/torbox-stack.sh start}
+      BLACKPEARL_WATCHLIST_ENABLED: "true"
+      BLACKPEARL_WATCHLIST_PREFERENCES_PATH: /plex-config/Library/Application Support/Plex Media Server/Preferences.xml
+      BLACKPEARL_WATCHLIST_POLL_INTERVAL: ${BLACKPEARL_WATCHLIST_POLL_INTERVAL:-15m}
+      BLACKPEARL_WATCHLIST_ACQUISITION_ENABLED: ${BLACKPEARL_WATCHLIST_ACQUISITION_ENABLED:-false}
       BLACKPEARL_FILESYSTEM_MODE: nfs
       BLACKPEARL_NFS_ADDR: 0.0.0.0:2049
     ports:
@@ -32,6 +36,7 @@ services:
       - 127.0.0.1:${BLACKPEARL_TORBOX_NFS_PORT:-20492}:2049/tcp
     volumes:
       - blackpearl-data:/var/lib/blackpearl
+      - plex-config:/plex-config:ro
     networks:
       - blackpearl-control
     healthcheck:

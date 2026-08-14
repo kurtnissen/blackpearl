@@ -27,6 +27,9 @@ assert environment["BLACKPEARL_RANGE_PROVIDER"] == "torbox-torrent"
 assert environment["BLACKPEARL_SETUP_ENABLED"] == "true"
 assert environment["BLACKPEARL_SETUP_DIR"] == "/var/lib/blackpearl/setup"
 assert environment["BLACKPEARL_SETUP_BOOTSTRAP_TOKEN"] == "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+assert environment["BLACKPEARL_WATCHLIST_ENABLED"] == "true"
+assert environment["BLACKPEARL_WATCHLIST_PREFERENCES_PATH"] == "/plex-config/Library/Application Support/Plex Media Server/Preferences.xml"
+assert environment["BLACKPEARL_WATCHLIST_ACQUISITION_ENABLED"] == "false"
 assert "BLACKPEARL_RANGE_OBJECT_ID" not in environment
 assert "BLACKPEARL_TORBOX_API_TOKEN_FILE" not in environment
 assert "BLACKPEARL_TORBOX_API_TOKEN" not in environment
@@ -43,6 +46,12 @@ assert set(blackpearl["networks"]).isdisjoint(plex["networks"])
 assert set(prowlarr["networks"]).isdisjoint(plex["networks"])
 assert prowlarr["image"] == "lscr.io/linuxserver/prowlarr:latest"
 assert any(volume["target"] == "/config" and volume["type"] == "volume" for volume in prowlarr["volumes"])
+blackpearl_plex_config = next(volume for volume in blackpearl["volumes"] if volume["target"] == "/plex-config")
+plex_config = next(volume for volume in plex["volumes"] if volume["target"] == "/config")
+assert blackpearl_plex_config["type"] == "volume"
+assert blackpearl_plex_config["read_only"] is True
+assert blackpearl_plex_config["source"] == plex_config["source"]
+assert not plex_config.get("read_only", False)
 assert blackpearl["healthcheck"]["test"][-1] == "http://localhost:8080/healthz"
 for service in services.values():
     for port in service.get("ports", []):

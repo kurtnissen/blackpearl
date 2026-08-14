@@ -31,6 +31,28 @@ Prowlarr API key and select **Connect Prowlarr**. Movie and TV episode requests
 then use the configured indexers, deterministic release ranking, and a strict
 TorBox cached-only check before the Plex manifest changes.
 
+This profile also mounts its own `plex-config` named volume into BlackPearl at
+`/plex-config` read-only. Once Plex sign-in has created `Preferences.xml`,
+BlackPearl reads the current account token on demand and observes the Plex
+Watchlist every 15 minutes. The token is sent only in the `X-Plex-Token` header
+to the bounded watchlist adapter; it is not copied into BlackPearl state or
+returned by the API. The paired `/api/watchlist/status` route returns only
+health, last-sync time, and aggregate queue counts—never titles or Plex IDs.
+
+Observation is enabled by default but cannot mutate Prowlarr, TorBox, Plex's
+Watchlist, or the media manifest. After Prowlarr authentication and authorized
+indexers are configured, opt in to serialized cached-only movie processing by
+setting this before launch:
+
+```bash
+BLACKPEARL_WATCHLIST_ACQUISITION_ENABLED=true ./scripts/torbox-stack.sh start
+```
+
+Uncached movies wait six hours before another check. Known transient failures
+wait 15 minutes. Any provider or publication mutation with an ambiguous result
+moves to manual review instead of being retried. Watchlisted shows are counted
+but never acquired because a show alone does not specify season or episode.
+
 The launcher creates a private local pairing value under the ignored
 `runtime/` directory and carries it in the setup page URL fragment. The
 fragment is removed before any request, is never sent to Plex, and authorizes
@@ -127,3 +149,8 @@ a non-sequential seek, the first episode played with its original video stream,
 and BlackPearl restored both library roots after restart. Opening only episode
 one populated exactly the configured 16 MiB prefix of episode two and did not
 store its tail or complete object.
+
+The Watchlist gateway, durable queue, observe-only process wiring, and
+serialized cached-only worker are covered by mocked full-process tests. Live
+observe-only counts and a live Watchlist-triggered provider mutation remain
+separate acceptance gates.

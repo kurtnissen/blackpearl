@@ -106,7 +106,7 @@ SQLite owns catalog metadata only. Cache bytes and the optional FUSE mount live 
 
 ## Extension roadmap
 
-1. Add automatic movie and episode metadata/watchlist ingestion without coupling Plex metadata to provider locators.
+1. Extend the implemented movie-only Watchlist ingestion with an explicit season/episode policy for shows and a stable provider contract or RSS fallback.
 2. Add adaptive throughput-based read scheduling. Seek-aware read-ahead is implemented.
 3. Extend the implemented bounded next-episode prefix prefetch with playback-aware cancellation and prioritization.
 4. Implement provider-backed persistent retention policy alongside rolling mode.
