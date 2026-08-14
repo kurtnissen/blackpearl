@@ -76,6 +76,44 @@ func TestHandlerWatchlistStatusRejectsUnpairedBrowserBeforeReadingQueue(t *testi
 	require.Zero(t, watchlist.statusCalls)
 }
 
+func TestHandlerUpdatesWatchlistAcquisitionPolicyThroughPairedMutation(t *testing.T) {
+	t.Parallel()
+	setup := &fakeService{}
+	watchlist := &fakeWatchlistService{status: watchlistservice.ObserverStatus{Enabled: true, AcquisitionEnabled: true}}
+	handler, err := setuphandler.NewWithAcquisitionAndWatchlist(setup, &fakeAcquisitionService{}, watchlist)
+	require.NoError(t, err)
+	csrf := fetchCSRF(t, handler)
+	request := newMutation(t, http.MethodPut, "/api/watchlist/settings", csrf, `{"acquisitionEnabled":true}`)
+	request.Header.Set("X-BlackPearl-Session", "paired-session")
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	require.Equal(t, http.StatusOK, response.Code)
+	require.JSONEq(t, `{"enabled":true,"healthy":false,"acquisitionEnabled":true,"queue":{"pendingMovies":0,"acquiring":0,"succeeded":0,"notCached":0,"retryable":0,"manualReview":0,"observedShows":0}}`, response.Body.String())
+	require.Equal(t, []bool{true}, watchlist.policyUpdates)
+	require.Equal(t, "paired-session", setup.authorizeSession)
+}
+
+func TestHandlerRejectsInvalidWatchlistAcquisitionPolicyWithoutMutation(t *testing.T) {
+	t.Parallel()
+	tests := []string{`{}`, `{"acquisitionEnabled":true,"extra":false}`, `{"acquisitionEnabled":"yes"}`}
+	for _, body := range tests {
+		watchlist := &fakeWatchlistService{}
+		handler, err := setuphandler.NewWithAcquisitionAndWatchlist(&fakeService{}, &fakeAcquisitionService{}, watchlist)
+		require.NoError(t, err)
+		csrf := fetchCSRF(t, handler)
+		request := newMutation(t, http.MethodPut, "/api/watchlist/settings", csrf, body)
+		request.Header.Set("X-BlackPearl-Session", "paired-session")
+		response := httptest.NewRecorder()
+
+		handler.ServeHTTP(response, request)
+
+		require.Equal(t, http.StatusBadRequest, response.Code)
+		require.Empty(t, watchlist.policyUpdates)
+	}
+}
+
 func TestHandlerAcquisitionStatusReturnsNoPrivateSettings(t *testing.T) {
 	t.Parallel()
 	setup := &fakeService{}
@@ -357,14 +395,21 @@ func acquisitionJobForHandler(t *testing.T, state acquisitiondomain.JobState) ac
 }
 
 type fakeWatchlistService struct {
-	status      watchlistservice.ObserverStatus
-	statusErr   error
-	statusCalls int
+	status        watchlistservice.ObserverStatus
+	statusErr     error
+	statusCalls   int
+	policyUpdates []bool
+	policyErr     error
 }
 
 func (f *fakeWatchlistService) Status(context.Context) (watchlistservice.ObserverStatus, error) {
 	f.statusCalls++
 	return f.status, f.statusErr
+}
+
+func (f *fakeWatchlistService) SetAcquisitionEnabled(_ context.Context, enabled bool) error {
+	f.policyUpdates = append(f.policyUpdates, enabled)
+	return f.policyErr
 }
 
 func (f *fakeAcquisitionService) Status(context.Context) (acquisitionservice.CoordinatorStatus, error) {

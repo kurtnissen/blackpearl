@@ -31,6 +31,7 @@ type AcquisitionJobService interface {
 // WatchlistService returns privacy-safe observation state to a paired browser.
 type WatchlistService interface {
 	Status(ctx context.Context) (watchlistservice.ObserverStatus, error)
+	SetAcquisitionEnabled(ctx context.Context, enabled bool) error
 }
 
 // NewWithAcquisition constructs setup and acquisition routes with one shared
@@ -126,6 +127,48 @@ func (h *handler) serveWatchlistStatus(writer http.ResponseWriter, request *http
 			return
 		}
 		writeError(writer, http.StatusServiceUnavailable, "watchlist_unavailable", "Plex watchlist status is temporarily unavailable.")
+		return
+	}
+	writeJSON(writer, http.StatusOK, status)
+}
+
+func (h *handler) serveWatchlistSettings(writer http.ResponseWriter, request *http.Request) {
+	if h.watchlist == nil {
+		http.NotFound(writer, request)
+		return
+	}
+	if request.Method != http.MethodPut {
+		methodNotAllowed(writer, http.MethodPut)
+		return
+	}
+	if !h.authorizeBrowser(request) {
+		writeError(writer, http.StatusForbidden, "forbidden", "Setup requests are accepted only from this local page.")
+		return
+	}
+	var input struct {
+		AcquisitionEnabled *bool `json:"acquisitionEnabled"`
+	}
+	if err := decodeJSON(writer, request, &input); err != nil || input.AcquisitionEnabled == nil {
+		writeError(writer, http.StatusBadRequest, "invalid_request", "Choose whether BlackPearl should automatically add new Watchlist movies.")
+		return
+	}
+	if err := h.authorizeAcquisition(request); err != nil {
+		h.writeServiceError(writer, request, err)
+		return
+	}
+	if err := h.watchlist.SetAcquisitionEnabled(request.Context(), *input.AcquisitionEnabled); err != nil {
+		h.logger.WarnContext(request.Context(), "watchlist policy update failed", "error", err)
+		writeError(writer, http.StatusServiceUnavailable, "watchlist_unavailable", "The Watchlist setting could not be saved right now.")
+		return
+	}
+	status, err := h.watchlist.Status(request.Context())
+	if err != nil {
+		h.logger.WarnContext(request.Context(), "watchlist status after policy update failed", "error", err)
+		writeError(writer, http.StatusServiceUnavailable, "watchlist_unavailable", "The Watchlist setting was saved, but its status could not be refreshed.")
+		return
+	}
+	if err := h.issueSession(writer, request, ""); err != nil {
+		h.writeServiceError(writer, request, err)
 		return
 	}
 	writeJSON(writer, http.StatusOK, status)

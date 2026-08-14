@@ -150,6 +150,8 @@ func (h *handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		h.serveAcquisitionJobs(writer, request)
 	case "/api/watchlist/status":
 		h.serveWatchlistStatus(writer, request)
+	case "/api/watchlist/settings":
+		h.serveWatchlistSettings(writer, request)
 	default:
 		if strings.HasPrefix(request.URL.Path, "/api/acquisition/jobs/") {
 			h.serveAcquisitionJob(writer, request)

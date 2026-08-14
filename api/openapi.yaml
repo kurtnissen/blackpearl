@@ -255,6 +255,29 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
         "503": { $ref: "#/components/responses/Error" }
+  /api/watchlist/settings:
+    put:
+      operationId: updateWatchlistSettings
+      description: Enables or disables automatic acquisition for movies first observed after the durable post-enable baseline. Existing jobs and published media are not removed.
+      parameters:
+        - $ref: "#/components/parameters/CSRF"
+        - $ref: "#/components/parameters/Session"
+        - $ref: "#/components/parameters/Bootstrap"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WatchlistSettingsInput" }
+      responses:
+        "200":
+          description: Saved Watchlist automatic-acquisition policy and current aggregate status.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WatchlistStatus" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
 components:
   parameters:
     CSRF:
@@ -342,6 +365,12 @@ components:
         acquisitionEnabled: { type: boolean }
         lastSyncAt: { type: string, format: date-time }
         queue: { $ref: "#/components/schemas/WatchlistQueueStatus" }
+    WatchlistSettingsInput:
+      type: object
+      additionalProperties: false
+      required: [acquisitionEnabled]
+      properties:
+        acquisitionEnabled: { type: boolean }
     WatchlistQueueStatus:
       type: object
       additionalProperties: false
