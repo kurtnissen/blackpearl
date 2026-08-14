@@ -33,4 +33,4 @@ entire BlackPearl repository and portable Docker surface.
   in Brave without leaving playback running.
 - [x] Record exact local evidence and retain pending hosted CI, Windows, and
   native-Linux states.
-- [ ] Commit `docs: record release hardening evidence`.
+- [x] Commit `docs: record release hardening evidence`.
