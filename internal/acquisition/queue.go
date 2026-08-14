@@ -1,0 +1,127 @@
+package acquisition
+
+import (
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+	"unicode"
+)
+
+const maximumPublishedObjectIDBytes = 512
+
+// ErrStaleWatchlistClaim means a worker tried to finish a lease that has
+// already expired and been claimed by another worker.
+var ErrStaleWatchlistClaim = errors.New("stale watchlist claim")
+
+// WatchlistQueueState is the durable lifecycle of one observed watchlist item.
+type WatchlistQueueState string
+
+const (
+	// WatchlistQueueStatePending is eligible for its first acquisition attempt.
+	WatchlistQueueStatePending WatchlistQueueState = "pending"
+	// WatchlistQueueStateAcquiring has an active, time-bounded worker lease.
+	WatchlistQueueStateAcquiring WatchlistQueueState = "acquiring"
+	// WatchlistQueueStateSucceeded has been published and is final.
+	WatchlistQueueStateSucceeded WatchlistQueueState = "succeeded"
+	// WatchlistQueueStateNotCached waits for a future cached-only retry.
+	WatchlistQueueStateNotCached WatchlistQueueState = "not_cached"
+	// WatchlistQueueStateRetryable waits after a transient provider failure.
+	WatchlistQueueStateRetryable WatchlistQueueState = "retryable"
+	// WatchlistQueueStateManualReview prevents an ambiguous mutation retry.
+	WatchlistQueueStateManualReview WatchlistQueueState = "manual_review"
+)
+
+// WatchlistClaim is one immutable, versioned queue lease.
+type WatchlistClaim struct {
+	item         WatchlistItem
+	leaseVersion int64
+	attempt      int
+}
+
+// NewWatchlistClaim validates a queue lease loaded from persistence.
+func NewWatchlistClaim(item WatchlistItem, leaseVersion int64, attempt int) (WatchlistClaim, error) {
+	validated, err := NewWatchlistItem(WatchlistItemInput{
+		Source: item.Source(), ExternalID: item.ExternalID(), MediaType: item.MediaType(),
+		Title: item.Title(), Year: item.Year(),
+	})
+	if err != nil {
+		return WatchlistClaim{}, fmt.Errorf("invalid watchlist claim item: %w", err)
+	}
+	if leaseVersion < 1 {
+		return WatchlistClaim{}, errors.New("watchlist claim lease version must be positive")
+	}
+	if attempt < 1 {
+		return WatchlistClaim{}, errors.New("watchlist claim attempt must be positive")
+	}
+	return WatchlistClaim{item: validated, leaseVersion: leaseVersion, attempt: attempt}, nil
+}
+
+// Item returns the validated watchlist intent owned by this lease.
+func (c WatchlistClaim) Item() WatchlistItem { return c.item }
+
+// LeaseVersion returns the optimistic concurrency token for this lease.
+func (c WatchlistClaim) LeaseVersion() int64 { return c.leaseVersion }
+
+// Attempt returns the number of times this item has been claimed.
+func (c WatchlistClaim) Attempt() int { return c.attempt }
+
+// WatchlistCompletion is a validated terminal or deferred lease result.
+type WatchlistCompletion struct {
+	state             WatchlistQueueState
+	nextAttempt       time.Time
+	publishedObjectID string
+}
+
+// NewWatchlistSucceeded creates a final result for published media.
+func NewWatchlistSucceeded(publishedObjectID string) (WatchlistCompletion, error) {
+	for _, character := range publishedObjectID {
+		if unicode.IsControl(character) {
+			return WatchlistCompletion{}, errors.New("published object ID must not contain control characters")
+		}
+	}
+	objectID := strings.TrimSpace(publishedObjectID)
+	if objectID == "" {
+		return WatchlistCompletion{}, errors.New("published object ID is required")
+	}
+	if len(objectID) > maximumPublishedObjectIDBytes {
+		return WatchlistCompletion{}, fmt.Errorf("published object ID must not exceed %d bytes", maximumPublishedObjectIDBytes)
+	}
+	return WatchlistCompletion{state: WatchlistQueueStateSucceeded, publishedObjectID: objectID}, nil
+}
+
+// NewWatchlistDeferred creates a bounded future retry result.
+func NewWatchlistDeferred(state WatchlistQueueState, nextAttempt time.Time) (WatchlistCompletion, error) {
+	if state != WatchlistQueueStateNotCached && state != WatchlistQueueStateRetryable {
+		return WatchlistCompletion{}, errors.New("deferred watchlist state must be not_cached or retryable")
+	}
+	if nextAttempt.IsZero() {
+		return WatchlistCompletion{}, errors.New("deferred watchlist completion requires a next attempt time")
+	}
+	return WatchlistCompletion{state: state, nextAttempt: nextAttempt.UTC()}, nil
+}
+
+// NewWatchlistManualReview creates a final result for an ambiguous mutation.
+func NewWatchlistManualReview() WatchlistCompletion {
+	return WatchlistCompletion{state: WatchlistQueueStateManualReview}
+}
+
+// State returns the validated durable outcome state.
+func (c WatchlistCompletion) State() WatchlistQueueState { return c.state }
+
+// NextAttempt returns the future retry time, or zero for final outcomes.
+func (c WatchlistCompletion) NextAttempt() time.Time { return c.nextAttempt }
+
+// PublishedObjectID returns the published backing object for a success.
+func (c WatchlistCompletion) PublishedObjectID() string { return c.publishedObjectID }
+
+// WatchlistQueueStatus contains privacy-safe aggregate queue counts.
+type WatchlistQueueStatus struct {
+	PendingMovies int
+	Acquiring     int
+	Succeeded     int
+	NotCached     int
+	Retryable     int
+	ManualReview  int
+	ObservedShows int
+}
