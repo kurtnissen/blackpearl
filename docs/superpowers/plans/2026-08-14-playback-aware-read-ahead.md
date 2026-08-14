@@ -18,23 +18,23 @@ process lifecycle and retry if a shared background operation was canceled.
 
 **Files:** `internal/cache/rolling.go`, `internal/cache/rolling_test.go`
 
-- [ ] Add failing race-safe tests for seek cancellation, close cancellation,
+- [x] Add failing race-safe tests for seek cancellation, close cancellation,
   sequential-window continuity, and a second foreground reader retrying after
   shared background cancellation.
-- [ ] Attach a parent context to each fetch call and route read-ahead through a
+- [x] Attach a parent context to each fetch call and route read-ahead through a
   handle-owned generation window.
-- [ ] Cancel and replace the window on discontinuous reads; cancel it on close.
-- [ ] Retry cache acquisition when a joined background call was canceled, while
+- [x] Cancel and replace the window on discontinuous reads; cancel it on close.
+- [x] Retry cache acquisition when a joined background call was canceled, while
   preserving normal foreground errors.
-- [ ] Run the cache race suite repeatedly and commit
+- [x] Run the cache race suite repeatedly and commit
   `feat: cancel stale playback read-ahead`.
 
 ### Task 2: Regression and live acceptance
 
 **Files:** `README.md`, `docs/architecture.md`, `docs/acceptance-evidence.md`
 
-- [ ] Run `make verify`, frontend lint/test/build, and all Compose checks.
-- [ ] Rebuild the normal rolling stack and verify health, manifest recovery,
+- [x] Run `make verify`, frontend lint/test/build, and all Compose checks.
+- [x] Rebuild the normal rolling stack and verify health, manifest recovery,
   cache quota, Direct Play, and a far seek in Brave.
-- [ ] Record automated versus live evidence plus remaining Windows/native-Linux
+- [x] Record automated versus live evidence plus remaining Windows/native-Linux
   status; commit `docs: verify playback-aware read-ahead`.

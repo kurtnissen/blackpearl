@@ -14,7 +14,7 @@ BlackPearl is an experimental, open-source Go service that exposes a virtual med
 - A paired localhost acquisition console privately configures Prowlarr, accepts validated movie or TV-episode intent, and returns only the updated public Plex manifest. Provider credentials and release locators never return to the browser.
 - Durable Plex Watchlist ingestion observes movies and shows through a bounded, header-authenticated adapter, stores a lease-based SQLite queue, and can serialize cached-only movie acquisition without inventing episode intent for a show.
 - Best-effort Plex refresh notifications rescan the exact BlackPearl movie and TV libraries after successful manifest publication without coupling Plex availability to the publication transaction.
-- `persistent` and `rolling` configuration modes. Rolling mode fetches strict HTTP ranges into fixed-size chunks, coalesces misses, performs bounded seek-aware read-ahead and next-episode prefix prefetch, and enforces a hard local byte quota with LRU eviction.
+- `persistent` and `rolling` configuration modes. Rolling mode fetches strict HTTP ranges into fixed-size chunks, coalesces misses, cancels stale handle-scoped read-ahead after seeks or closes, performs bounded next-episode prefix prefetch, and enforces a hard local byte quota with LRU eviction.
 - A generated 8-second H.264/AAC test-pattern MP4 with no third-party media.
 - Docker/Compose files for BlackPearl, a legal range-origin fixture, and isolated opt-in Plex acceptance containers.
 - Unit, integration, safety, and Linux FUSE smoke tests.
@@ -180,7 +180,7 @@ Then open Plex at `http://YOUR_UBUNTU_SERVER_IP:32400/web`, add one Movies libra
 | Mode | Intended deployment | Milestone 1 behavior |
 |---|---|---|
 | `persistent` | Home server with multi-TB storage | Local fixture import plus provider-backed, restart-durable chunk retention with no eviction |
-| `rolling` | Low-compute VPS with roughly 40-80 GB cache | Implemented POC with strict range fetching, hard quota, coalescing, restart recovery, LRU eviction, read-ahead, and bounded next-episode prefetch |
+| `rolling` | Low-compute VPS with roughly 40-80 GB cache | Strict range fetching, hard quota, coalescing, restart recovery, LRU eviction, playback-aware read-ahead cancellation, and bounded next-episode prefetch |
 
 Both modes use the same range-oriented media-source and filesystem contracts.
 Neither mode requires a complete local file before Plex can open, Direct Play,
