@@ -36,6 +36,7 @@ import (
 	"github.com/blackpearl-media/blackpearl/internal/resolver"
 	acquisitionservice "github.com/blackpearl-media/blackpearl/internal/service/acquisition"
 	acquisitionjobservice "github.com/blackpearl-media/blackpearl/internal/service/acquisitionjob"
+	directrangeservice "github.com/blackpearl-media/blackpearl/internal/service/directrange"
 	plexrefreshservice "github.com/blackpearl-media/blackpearl/internal/service/plexrefresh"
 	setupservice "github.com/blackpearl-media/blackpearl/internal/service/setup"
 	watchlistservice "github.com/blackpearl-media/blackpearl/internal/service/watchlist"
@@ -395,6 +396,15 @@ func runBrowserSetup(ctx context.Context, cfg config.Config, logger *slog.Logger
 			MetadataTTL: time.Minute, LinkTTL: 2 * time.Hour,
 		}, &client)
 	}
+	var openMediaGateway *internetarchive.Gateway
+	if cfg.OpenMediaSearchEnabled {
+		client := *deps.httpClient
+		client.Timeout = cfg.AcquisitionOperationTimeout
+		openMediaGateway, err = internetarchive.New(cfg.OpenMediaSearchURL, &client)
+		if err != nil {
+			return fmt.Errorf("configure open-media search gateway: %w", err)
+		}
+	}
 	gatewayFactory := func(token string) (setupservice.Discoverer, error) {
 		return newTorBoxGateway(token)
 	}
@@ -408,9 +418,11 @@ func runBrowserSetup(ctx context.Context, cfg config.Config, logger *slog.Logger
 		if gatewayErr != nil {
 			return nil, fmt.Errorf("configure selected TorBox source: %w", gatewayErr)
 		}
-		router, routerErr := cache.NewRangeRouter(map[string]cache.RangeOpener{
-			"torbox-torrent": gateway,
-		})
+		openers := map[string]cache.RangeOpener{"torbox-torrent": gateway}
+		if openMediaGateway != nil {
+			openers[internetarchive.FileProviderName] = openMediaGateway
+		}
+		router, routerErr := cache.NewRangeRouter(openers)
 		if routerErr != nil {
 			return nil, fmt.Errorf("configure selected range providers: %w", routerErr)
 		}
@@ -470,15 +482,6 @@ func runBrowserSetup(ctx context.Context, cfg config.Config, logger *slog.Logger
 		publisher.notifier = plexRefreshWorker
 	}
 	service := setupservice.New(setupRepository, gatewayFactory, runtimeFactory, publisher, cfg.SetupBootstrapToken)
-	var openMediaGateway *internetarchive.Gateway
-	if cfg.OpenMediaSearchEnabled {
-		client := *deps.httpClient
-		client.Timeout = cfg.AcquisitionOperationTimeout
-		openMediaGateway, err = internetarchive.New(cfg.OpenMediaSearchURL, &client)
-		if err != nil {
-			return fmt.Errorf("configure open-media search gateway: %w", err)
-		}
-	}
 	searchFactory := func(settings acquisitiondomain.SearchProviderSettings) (acquisitionservice.ReadySearchProvider, error) {
 		if settings.Provider() != "prowlarr" {
 			return nil, errors.New("unsupported acquisition search provider")
@@ -509,6 +512,20 @@ func runBrowserSetup(ctx context.Context, cfg config.Config, logger *slog.Logger
 	acquisitionJobManager, err := acquisitionjobservice.NewManager(acquisitionJobRepository, acquisitionjobservice.ManagerOptions{})
 	if err != nil {
 		return fmt.Errorf("configure background acquisition manager: %w", err)
+	}
+	var directResolver acquisitionjobservice.DirectResolver
+	var rangePreparer acquisitionjobservice.RangePreparer
+	if openMediaGateway != nil {
+		configuredResolver, resolverErr := directrangeservice.NewResolver(openMediaGateway)
+		if resolverErr != nil {
+			return fmt.Errorf("configure direct range resolver: %w", resolverErr)
+		}
+		configuredPreparer, preparerErr := directrangeservice.NewPreparer(openMediaGateway)
+		if preparerErr != nil {
+			return fmt.Errorf("configure direct range preparer: %w", preparerErr)
+		}
+		directResolver = configuredResolver
+		rangePreparer = configuredPreparer
 	}
 	jobProviderFactory := func(factoryContext context.Context) (acquisitionjobservice.Providers, error) {
 		settings, loadErr := acquisitionRepository.Load(factoryContext)
@@ -542,6 +559,7 @@ func runBrowserSetup(ctx context.Context, cfg config.Config, logger *slog.Logger
 		}
 		return acquisitionjobservice.Providers{
 			Searcher: jobSearcher, Materializer: materializer, Preparer: preparationGateway,
+			DirectResolver: directResolver, RangePreparer: rangePreparer,
 		}, nil
 	}
 	jobOperationTimeout := cfg.AcquisitionOperationTimeout

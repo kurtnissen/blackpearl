@@ -22,6 +22,7 @@ import (
 	"github.com/blackpearl-media/blackpearl/internal/config"
 	"github.com/blackpearl-media/blackpearl/internal/core"
 	"github.com/blackpearl-media/blackpearl/internal/domain"
+	"github.com/blackpearl-media/blackpearl/internal/gateway/internetarchive"
 	"github.com/blackpearl-media/blackpearl/internal/pearlfs"
 	acquisitionrepo "github.com/blackpearl-media/blackpearl/internal/repository/acquisition"
 	acquisitionjobrepo "github.com/blackpearl-media/blackpearl/internal/repository/acquisitionjob"
@@ -843,6 +844,121 @@ func TestRunBrowserSetupSelectedMediaUsesConfiguredRangeRetention(t *testing.T) 
 			testRunBrowserSetupSelectedMediaUsesConfiguredRangeRetention(t, storageMode)
 		})
 	}
+}
+
+func TestRunBrowserSetupRestoresMixedProviderManifest(t *testing.T) {
+	root := t.TempDir()
+	var provider *httptest.Server
+	provider = httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/v1/api/torrents/mylist":
+			require.Equal(t, "Bearer browser-token", request.Header.Get("Authorization"))
+			_, err := writer.Write([]byte(`{"success":true,"detail":"ok","data":{"id":17,"download_finished":true,"download_present":true,"files":[{"id":3,"name":"TorBox.mp4","size":16,"hash":"fixture-hash","zipped":false,"infected":false}]}}`))
+			require.NoError(t, err)
+		case "/v1/api/torrents/requestdl":
+			_, err := fmt.Fprintf(writer, `{"success":true,"detail":"ok","data":%q}`, provider.URL+"/cdn/file")
+			require.NoError(t, err)
+		case "/cdn/file":
+			writer.Header().Set("Content-Range", "bytes 0-0/16")
+			writer.Header().Set("Content-Length", "1")
+			writer.WriteHeader(http.StatusPartialContent)
+			_, err := writer.Write([]byte("0"))
+			require.NoError(t, err)
+		case "/metadata/fixture":
+			_, err := writer.Write([]byte(`{
+				"metadata":{"licenseurl":"https://creativecommons.org/licenses/by/4.0/"},
+				"files":[{"name":"Archive.mp4","size":16,"sha1":"1111111111111111111111111111111111111111","source":"original"}]
+			}`))
+			require.NoError(t, err)
+		case "/download/fixture/Archive.mp4":
+			writer.Header().Set("Content-Length", "16")
+			writer.Header().Set("ETag", `"archive-etag"`)
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	t.Cleanup(provider.Close)
+
+	archiveGateway, err := internetarchive.New(provider.URL+"/", provider.Client())
+	require.NoError(t, err)
+	release, err := acquisitiondomain.NewRelease(acquisitiondomain.ReleaseInput{
+		Provider: "internet-archive", SourceID: "fixture", Title: "Archive Movie (2026)",
+		Protocol: acquisitiondomain.ReleaseProtocolTorrent, Size: 16, Indexer: "Internet Archive",
+		InfoHash: "0123456789abcdef0123456789abcdef01234567",
+	})
+	require.NoError(t, err)
+	archiveCandidates, err := archiveGateway.ListRangeCandidates(context.Background(), release)
+	require.NoError(t, err)
+	require.Len(t, archiveCandidates, 1)
+	torboxCandidate, err := domain.NewMediaCandidate("17:3", "TorBox.mp4", 16)
+	require.NoError(t, err)
+	torboxConfiguration, err := domain.NewSetupConfiguration(torboxCandidate, "TorBox Movie", 2026)
+	require.NoError(t, err)
+	archiveConfiguration, err := domain.NewSetupConfiguration(archiveCandidates[0].Media(), "Archive Movie", 2026)
+	require.NoError(t, err)
+	manifest, err := domain.NewSetupManifest([]domain.SetupConfiguration{torboxConfiguration, archiveConfiguration})
+	require.NoError(t, err)
+
+	cfg := testConfig(root, "")
+	cfg.StorageMode = domain.StorageModeRolling
+	cfg.CacheMaxBytes = 1024
+	cfg.CacheChunkBytes = 256
+	cfg.FilesystemMode = "nfs"
+	cfg.SetupEnabled = true
+	cfg.SetupDir = filepath.Join(root, "data", "setup")
+	cfg.SetupBootstrapToken = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	cfg.TorBoxAPIURL = provider.URL + "/v1/api/"
+	cfg.OpenMediaSearchEnabled = true
+	cfg.OpenMediaSearchURL = provider.URL + "/"
+	cfg.RangeTimeout = 5 * time.Second
+	setupRepository, err := setuprepo.New(cfg.SetupDir)
+	require.NoError(t, err)
+	require.NoError(t, setupRepository.SaveManifest(context.Background(), "browser-token", manifest))
+
+	var activeCatalog nfsCatalog
+	nfs := &fakeNFSServer{address: fakeAddress("127.0.0.1:2049")}
+	httpStarted := make(chan struct{}, 1)
+	deps := defaultDependencies()
+	deps.httpClient = provider.Client()
+	deps.torBoxClient = provider.Client()
+	deps.serveNFS = func(_ context.Context, _ string, catalog nfsCatalog) (nfsServer, error) {
+		activeCatalog = catalog
+		return nfs, nil
+	}
+	deps.listen = func(network string, address string) (net.Listener, error) {
+		listener, listenErr := net.Listen(network, address)
+		if listenErr == nil {
+			httpStarted <- struct{}{}
+		}
+		return listener, listenErr
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	result := make(chan error, 1)
+	go func() { result <- run(ctx, cfg, testLogger(), deps) }()
+	select {
+	case <-httpStarted:
+	case runErr := <-result:
+		require.NoError(t, runErr)
+		require.FailNow(t, "mixed-provider setup stopped before HTTP startup")
+	case <-time.After(5 * time.Second):
+		require.FailNow(t, "mixed-provider setup did not start HTTP")
+	}
+	require.Eventually(t, func() bool {
+		items, listErr := activeCatalog.List(context.Background())
+		if listErr != nil || len(items) != 2 {
+			return false
+		}
+		for _, item := range items {
+			if item.Backing.Provider == internetarchive.FileProviderName {
+				return true
+			}
+		}
+		return false
+	}, 5*time.Second, 50*time.Millisecond)
+
+	cancel()
+	require.NoError(t, <-result)
 }
 
 func testRunBrowserSetupSelectedMediaUsesConfiguredRangeRetention(t *testing.T, storageMode domain.StorageMode) {
