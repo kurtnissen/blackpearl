@@ -37,6 +37,7 @@ type Service interface {
 type handler struct {
 	service     Service
 	acquisition AcquisitionService
+	watchlist   WatchlistService
 	csrf        string
 	logger      *slog.Logger
 }
@@ -46,7 +47,7 @@ func New(service Service, configuredLogger ...*slog.Logger) (http.Handler, error
 	return newHandler(service, nil, configuredLogger...)
 }
 
-func newHandler(service Service, acquisition AcquisitionService, configuredLogger ...*slog.Logger) (http.Handler, error) {
+func newHandler(service Service, acquisition AcquisitionService, configuredLogger ...*slog.Logger) (*handler, error) {
 	value := make([]byte, 32)
 	if _, err := rand.Read(value); err != nil {
 		return nil, errors.New("generate setup CSRF token")
@@ -144,6 +145,8 @@ func (h *handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		h.serveAcquisitionSettings(writer, request)
 	case "/api/acquisition/acquire":
 		h.serveAcquisition(writer, request)
+	case "/api/watchlist/status":
+		h.serveWatchlistStatus(writer, request)
 	default:
 		http.NotFound(writer, request)
 	}

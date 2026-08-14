@@ -31,6 +31,86 @@ func TestParseUsesIsolatedContainerDefaults(t *testing.T) {
 	require.False(t, cfg.Plex.Enabled())
 	require.Equal(t, "fuse", cfg.FilesystemMode)
 	require.Equal(t, ":2049", cfg.NFSAddr)
+	require.False(t, cfg.WatchlistEnabled)
+	require.Equal(t, "https://discover.provider.plex.tv", cfg.WatchlistBaseURL)
+	require.Equal(t, 15*time.Minute, cfg.WatchlistPollInterval)
+	require.Empty(t, cfg.WatchlistPreferencesPath)
+	require.Empty(t, cfg.WatchlistTokenFile)
+}
+
+func TestParseAcceptsObserveOnlyPlexWatchlistSources(t *testing.T) {
+	t.Parallel()
+	for _, source := range []map[string]string{
+		{"BLACKPEARL_WATCHLIST_PREFERENCES_PATH": "/plex/Preferences.xml"},
+		{"BLACKPEARL_WATCHLIST_TOKEN_FILE": "/run/secrets/plex_watchlist_token"},
+	} {
+		environment := browserSetupEnvironment()
+		environment["BLACKPEARL_WATCHLIST_ENABLED"] = "true"
+		for key, value := range source {
+			environment[key] = value
+		}
+
+		cfg, err := config.Parse(environment)
+
+		require.NoError(t, err)
+		require.True(t, cfg.WatchlistEnabled)
+	}
+}
+
+func TestParseRejectsUnsafePlexWatchlistConfiguration(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		mutate func(map[string]string)
+	}{
+		{name: "requires browser setup", mutate: func(environment map[string]string) {
+			delete(environment, "BLACKPEARL_SETUP_ENABLED")
+			delete(environment, "BLACKPEARL_SETUP_BOOTSTRAP_TOKEN")
+		}},
+		{name: "missing source", mutate: func(map[string]string) {}},
+		{name: "multiple sources", mutate: func(environment map[string]string) {
+			environment["BLACKPEARL_WATCHLIST_PREFERENCES_PATH"] = "/plex/Preferences.xml"
+			environment["BLACKPEARL_WATCHLIST_TOKEN_FILE"] = "/run/secrets/token"
+		}},
+		{name: "relative source", mutate: func(environment map[string]string) {
+			environment["BLACKPEARL_WATCHLIST_TOKEN_FILE"] = "relative/token"
+		}},
+		{name: "insecure endpoint", mutate: func(environment map[string]string) {
+			environment["BLACKPEARL_WATCHLIST_TOKEN_FILE"] = "/run/secrets/token"
+			environment["BLACKPEARL_WATCHLIST_BASE_URL"] = "http://discover.provider.plex.tv"
+		}},
+		{name: "credentialed endpoint", mutate: func(environment map[string]string) {
+			environment["BLACKPEARL_WATCHLIST_TOKEN_FILE"] = "/run/secrets/token"
+			environment["BLACKPEARL_WATCHLIST_BASE_URL"] = "https://user@example.com"
+		}},
+		{name: "short interval", mutate: func(environment map[string]string) {
+			environment["BLACKPEARL_WATCHLIST_TOKEN_FILE"] = "/run/secrets/token"
+			environment["BLACKPEARL_WATCHLIST_POLL_INTERVAL"] = "59s"
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			environment := browserSetupEnvironment()
+			environment["BLACKPEARL_WATCHLIST_ENABLED"] = "true"
+			test.mutate(environment)
+
+			_, err := config.Parse(environment)
+
+			require.ErrorContains(t, err, "WATCHLIST")
+		})
+	}
+}
+
+func browserSetupEnvironment() map[string]string {
+	return map[string]string{
+		"BLACKPEARL_STORAGE_MODE":          "rolling",
+		"BLACKPEARL_CACHE_MAX_BYTES":       "1048576",
+		"BLACKPEARL_RANGE_PROVIDER":        "torbox-torrent",
+		"BLACKPEARL_SETUP_ENABLED":         "true",
+		"BLACKPEARL_SETUP_BOOTSTRAP_TOKEN": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		"BLACKPEARL_FILESYSTEM_MODE":       "nfs",
+	}
 }
 
 func TestParseAcceptsNFSFilesystemMode(t *testing.T) {

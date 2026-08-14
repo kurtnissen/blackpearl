@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	acquisitiondomain "github.com/blackpearl-media/blackpearl/internal/acquisition"
 	"github.com/blackpearl-media/blackpearl/internal/config"
 	"github.com/blackpearl-media/blackpearl/internal/domain"
 	"github.com/blackpearl-media/blackpearl/internal/pearlfs"
@@ -344,6 +345,132 @@ func TestRunBrowserSetupStartsWithoutCredentialsAndServesSetupStatus(t *testing.
 	require.Equal(t, http.StatusOK, response.StatusCode)
 	require.Contains(t, string(body), `"setupRequired":true`)
 	require.NotContains(t, string(body), "tokenFilename")
+	cancel()
+	require.NoError(t, <-result)
+}
+
+func TestRunBrowserSetupObservesPlexWatchlistWithoutAcquiring(t *testing.T) {
+	root := t.TempDir()
+	credentialPath := filepath.Join(root, "plex-token")
+	require.NoError(t, os.WriteFile(credentialPath, []byte("private-plex-token"), 0o600))
+	requested := make(chan struct{}, 1)
+	var provider *httptest.Server
+	provider = httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/library/sections/watchlist/all":
+			require.Equal(t, "private-plex-token", request.Header.Get("X-Plex-Token"))
+			select {
+			case requested <- struct{}{}:
+			default:
+			}
+			writer.Header().Set("Content-Type", "application/json")
+			_, err := writer.Write([]byte(`{"MediaContainer":{"size":2,"totalSize":2,"Metadata":[{"guid":"plex://movie/one","type":"movie","title":"Private Movie","year":2026},{"guid":"plex://show/one","type":"show","title":"Private Show","year":2025}]}}`))
+			require.NoError(t, err)
+		case "/v1/api/torrents/mylist":
+			_, err := writer.Write([]byte(`{"success":true,"detail":"ok","data":{"id":17,"download_finished":true,"download_present":true,"files":[{"id":3,"name":"Existing.Movie.2025.mkv","size":16,"hash":"existing-file-hash","zipped":false,"infected":false}]}}`))
+			require.NoError(t, err)
+		case "/v1/api/torrents/requestdl":
+			_, err := writer.Write([]byte(fmt.Sprintf(`{"success":true,"detail":"ok","data":%q}`, provider.URL+"/cdn/file")))
+			require.NoError(t, err)
+		case "/cdn/file":
+			writer.Header().Set("Content-Range", "bytes 0-0/16")
+			writer.Header().Set("Content-Length", "1")
+			writer.WriteHeader(http.StatusPartialContent)
+			_, err := writer.Write([]byte("0"))
+			require.NoError(t, err)
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	t.Cleanup(provider.Close)
+
+	cfg := testConfig(root, "")
+	cfg.StorageMode = domain.StorageModeRolling
+	cfg.CacheMaxBytes = 1024
+	cfg.CacheChunkBytes = 256
+	cfg.RangeProvider = "torbox-torrent"
+	cfg.FilesystemMode = "nfs"
+	cfg.SetupEnabled = true
+	cfg.SetupDir = filepath.Join(root, "data", "setup")
+	cfg.SetupBootstrapToken = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	cfg.TorBoxAPIURL = provider.URL + "/v1/api/"
+	cfg.WatchlistEnabled = true
+	cfg.WatchlistBaseURL = provider.URL
+	cfg.WatchlistPollInterval = time.Hour
+	cfg.WatchlistTokenFile = credentialPath
+	setupRepository, err := setuprepo.New(cfg.SetupDir)
+	require.NoError(t, err)
+	existingCandidate, err := domain.NewMediaCandidate("17:3", "Existing.Movie.2025.mkv", 16)
+	require.NoError(t, err)
+	existing, err := domain.NewSetupConfiguration(existingCandidate, "Existing Movie", 2025)
+	require.NoError(t, err)
+	existingManifest, err := domain.NewSetupManifest([]domain.SetupConfiguration{existing})
+	require.NoError(t, err)
+	require.NoError(t, setupRepository.SaveManifest(context.Background(), "saved-torbox-token", existingManifest))
+	nfs := &fakeNFSServer{address: fakeAddress("127.0.0.1:2049")}
+	httpAddress := make(chan string, 1)
+	deps := defaultDependencies()
+	deps.httpClient = provider.Client()
+	deps.torBoxClient = provider.Client()
+	deps.serveNFS = func(context.Context, string, nfsCatalog) (nfsServer, error) { return nfs, nil }
+	deps.listen = func(network string, address string) (net.Listener, error) {
+		listener, err := net.Listen(network, address)
+		if err == nil {
+			httpAddress <- listener.Addr().String()
+		}
+		return listener, err
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	result := make(chan error, 1)
+	go func() { result <- run(ctx, cfg, testLogger(), deps) }()
+	address := <-httpAddress
+	select {
+	case <-requested:
+	case <-time.After(5 * time.Second):
+		t.Fatal("watchlist was not observed")
+	}
+	client := &http.Client{Timeout: 5 * time.Second}
+	setupResponse, err := client.Get("http://" + address + "/api/setup/status")
+	require.NoError(t, err)
+	var setupStatus struct {
+		CSRFToken string `json:"csrfToken"`
+	}
+	require.NoError(t, json.NewDecoder(setupResponse.Body).Decode(&setupStatus))
+	require.NoError(t, setupResponse.Body.Close())
+
+	var watchlistStatus struct {
+		Enabled bool                                   `json:"enabled"`
+		Healthy bool                                   `json:"healthy"`
+		Queue   acquisitiondomain.WatchlistQueueStatus `json:"queue"`
+	}
+	require.Eventually(t, func() bool {
+		request, requestErr := http.NewRequest(http.MethodGet, "http://"+address+"/api/watchlist/status", nil)
+		if requestErr != nil {
+			return false
+		}
+		request.Header.Set("Origin", "http://"+address)
+		request.Header.Set("X-BlackPearl-CSRF", setupStatus.CSRFToken)
+		request.Header.Set("X-BlackPearl-Bootstrap", cfg.SetupBootstrapToken)
+		response, responseErr := client.Do(request)
+		if responseErr != nil {
+			return false
+		}
+		body, readErr := io.ReadAll(response.Body)
+		closeErr := response.Body.Close()
+		if readErr != nil || closeErr != nil || response.StatusCode != http.StatusOK {
+			return false
+		}
+		if bytes.Contains(body, []byte("Private Movie")) || bytes.Contains(body, []byte("private-plex-token")) {
+			return false
+		}
+		return json.Unmarshal(body, &watchlistStatus) == nil && watchlistStatus.Healthy
+	}, 5*time.Second, 10*time.Millisecond)
+	require.True(t, watchlistStatus.Enabled)
+	require.Equal(t, 1, watchlistStatus.Queue.PendingMovies)
+	require.Equal(t, 1, watchlistStatus.Queue.ObservedShows)
+	require.Zero(t, watchlistStatus.Queue.Acquiring)
+
 	cancel()
 	require.NoError(t, <-result)
 }

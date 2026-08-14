@@ -166,6 +166,23 @@ paths:
         "409": { $ref: "#/components/responses/Error" }
         "422": { $ref: "#/components/responses/Error" }
         "503": { $ref: "#/components/responses/Error" }
+  /api/watchlist/status:
+    get:
+      operationId: getWatchlistStatus
+      description: Returns only privacy-safe aggregate observation state to an already paired local browser. No titles, identifiers, or credentials are returned.
+      parameters:
+        - $ref: "#/components/parameters/CSRF"
+        - $ref: "#/components/parameters/Session"
+        - $ref: "#/components/parameters/Bootstrap"
+      responses:
+        "200":
+          description: Observe-only Plex watchlist health and queue counts.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WatchlistStatus" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
 components:
   parameters:
     CSRF:
@@ -243,6 +260,27 @@ components:
       required: [configured]
       properties:
         configured: { type: boolean }
+    WatchlistStatus:
+      type: object
+      additionalProperties: false
+      required: [enabled, healthy, queue]
+      properties:
+        enabled: { type: boolean }
+        healthy: { type: boolean }
+        lastSyncAt: { type: string, format: date-time }
+        queue: { $ref: "#/components/schemas/WatchlistQueueStatus" }
+    WatchlistQueueStatus:
+      type: object
+      additionalProperties: false
+      required: [pendingMovies, acquiring, succeeded, notCached, retryable, manualReview, observedShows]
+      properties:
+        pendingMovies: { type: integer, minimum: 0 }
+        acquiring: { type: integer, minimum: 0 }
+        succeeded: { type: integer, minimum: 0 }
+        notCached: { type: integer, minimum: 0 }
+        retryable: { type: integer, minimum: 0 }
+        manualReview: { type: integer, minimum: 0 }
+        observedShows: { type: integer, minimum: 0 }
     ProwlarrSettingsInput:
       type: object
       additionalProperties: false

@@ -7,14 +7,56 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	acquisitiondomain "github.com/blackpearl-media/blackpearl/internal/acquisition"
 	"github.com/blackpearl-media/blackpearl/internal/domain"
 	setuphandler "github.com/blackpearl-media/blackpearl/internal/handler/setup"
 	acquisitionservice "github.com/blackpearl-media/blackpearl/internal/service/acquisition"
 	setupservice "github.com/blackpearl-media/blackpearl/internal/service/setup"
+	watchlistservice "github.com/blackpearl-media/blackpearl/internal/service/watchlist"
 	"github.com/stretchr/testify/require"
 )
+
+func TestHandlerWatchlistStatusRequiresPairingAndReturnsOnlyAggregates(t *testing.T) {
+	t.Parallel()
+	lastSync := time.Date(2026, time.August, 14, 14, 0, 0, 0, time.UTC)
+	setup := &fakeService{}
+	watchlist := &fakeWatchlistService{status: watchlistservice.ObserverStatus{
+		Enabled: true, Healthy: true, LastSyncAt: &lastSync,
+		Queue: acquisitiondomain.WatchlistQueueStatus{PendingMovies: 2, Succeeded: 1, ObservedShows: 3},
+	}}
+	handler, err := setuphandler.NewWithAcquisitionAndWatchlist(setup, &fakeAcquisitionService{}, watchlist)
+	require.NoError(t, err)
+	csrf := fetchCSRF(t, handler)
+	request := newMutation(t, http.MethodGet, "/api/watchlist/status", csrf, "")
+	request.Header.Set("X-BlackPearl-Session", "paired-session")
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	require.Equal(t, http.StatusOK, response.Code)
+	require.JSONEq(t, `{"enabled":true,"healthy":true,"lastSyncAt":"2026-08-14T14:00:00Z","queue":{"pendingMovies":2,"acquiring":0,"succeeded":1,"notCached":0,"retryable":0,"manualReview":0,"observedShows":3}}`, response.Body.String())
+	require.Equal(t, "paired-session", setup.authorizeSession)
+	require.NotContains(t, response.Body.String(), "title")
+	require.NotContains(t, response.Body.String(), "externalId")
+}
+
+func TestHandlerWatchlistStatusRejectsUnpairedBrowserBeforeReadingQueue(t *testing.T) {
+	t.Parallel()
+	setup := &fakeService{authorizeErr: setupservice.ErrSetupUnauthorized}
+	watchlist := &fakeWatchlistService{}
+	handler, err := setuphandler.NewWithAcquisitionAndWatchlist(setup, &fakeAcquisitionService{}, watchlist)
+	require.NoError(t, err)
+	csrf := fetchCSRF(t, handler)
+	request := newMutation(t, http.MethodGet, "/api/watchlist/status", csrf, "")
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	require.Equal(t, http.StatusUnauthorized, response.Code)
+	require.Zero(t, watchlist.statusCalls)
+}
 
 func TestHandlerAcquisitionStatusReturnsNoPrivateSettings(t *testing.T) {
 	t.Parallel()
@@ -196,6 +238,17 @@ type fakeAcquisitionService struct {
 	acquireCalls   int
 	media          acquisitiondomain.AcquiredMedia
 	acquireErr     error
+}
+
+type fakeWatchlistService struct {
+	status      watchlistservice.ObserverStatus
+	statusErr   error
+	statusCalls int
+}
+
+func (f *fakeWatchlistService) Status(context.Context) (watchlistservice.ObserverStatus, error) {
+	f.statusCalls++
+	return f.status, f.statusErr
 }
 
 func (f *fakeAcquisitionService) Status(context.Context) (acquisitionservice.CoordinatorStatus, error) {

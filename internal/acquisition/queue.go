@@ -117,11 +117,11 @@ func (c WatchlistCompletion) PublishedObjectID() string { return c.publishedObje
 
 // WatchlistQueueStatus contains privacy-safe aggregate queue counts.
 type WatchlistQueueStatus struct {
-	PendingMovies int
-	Acquiring     int
-	Succeeded     int
-	NotCached     int
-	Retryable     int
-	ManualReview  int
-	ObservedShows int
+	PendingMovies int `json:"pendingMovies"`
+	Acquiring     int `json:"acquiring"`
+	Succeeded     int `json:"succeeded"`
+	NotCached     int `json:"notCached"`
+	Retryable     int `json:"retryable"`
+	ManualReview  int `json:"manualReview"`
+	ObservedShows int `json:"observedShows"`
 }

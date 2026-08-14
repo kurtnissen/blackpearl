@@ -9,6 +9,7 @@ import (
 	acquisitiondomain "github.com/blackpearl-media/blackpearl/internal/acquisition"
 	"github.com/blackpearl-media/blackpearl/internal/domain"
 	acquisitionservice "github.com/blackpearl-media/blackpearl/internal/service/acquisition"
+	watchlistservice "github.com/blackpearl-media/blackpearl/internal/service/watchlist"
 )
 
 // AcquisitionService is the private configuration and acquisition boundary
@@ -19,6 +20,11 @@ type AcquisitionService interface {
 	Acquire(ctx context.Context, request acquisitiondomain.SearchRequest) (acquisitiondomain.AcquiredMedia, error)
 }
 
+// WatchlistService returns privacy-safe observation state to a paired browser.
+type WatchlistService interface {
+	Status(ctx context.Context) (watchlistservice.ObserverStatus, error)
+}
+
 // NewWithAcquisition constructs setup and acquisition routes with one shared
 // process-local CSRF and browser-pairing boundary.
 func NewWithAcquisition(service Service, acquisition AcquisitionService, configuredLogger ...*slog.Logger) (http.Handler, error) {
@@ -26,6 +32,55 @@ func NewWithAcquisition(service Service, acquisition AcquisitionService, configu
 		return nil, errors.New("acquisition service is required")
 	}
 	return newHandler(service, acquisition, configuredLogger...)
+}
+
+// NewWithAcquisitionAndWatchlist constructs the paired setup, acquisition, and
+// observe-only watchlist API.
+func NewWithAcquisitionAndWatchlist(
+	service Service,
+	acquisition AcquisitionService,
+	watchlist WatchlistService,
+	configuredLogger ...*slog.Logger,
+) (http.Handler, error) {
+	if acquisition == nil || watchlist == nil {
+		return nil, errors.New("acquisition and watchlist services are required")
+	}
+	configured, err := newHandler(service, acquisition, configuredLogger...)
+	if err != nil {
+		return nil, err
+	}
+	configured.watchlist = watchlist
+	return configured, nil
+}
+
+func (h *handler) serveWatchlistStatus(writer http.ResponseWriter, request *http.Request) {
+	if h.watchlist == nil {
+		http.NotFound(writer, request)
+		return
+	}
+	if request.Method != http.MethodGet {
+		methodNotAllowed(writer, http.MethodGet)
+		return
+	}
+	if !h.authorizeBrowser(request) {
+		writeError(writer, http.StatusForbidden, "forbidden", "Setup requests are accepted only from this local page.")
+		return
+	}
+	if err := h.authorizeAcquisition(request); err != nil {
+		h.writeServiceError(writer, request, err)
+		return
+	}
+	status, err := h.watchlist.Status(request.Context())
+	if err != nil {
+		h.logger.WarnContext(request.Context(), "watchlist status failed", "error", err)
+		if errors.Is(err, domain.ErrUnauthorized) {
+			writeError(writer, http.StatusUnauthorized, "plex_unauthorized", "Plex rejected the saved watchlist credential. Sign in to Plex again and retry.")
+			return
+		}
+		writeError(writer, http.StatusServiceUnavailable, "watchlist_unavailable", "Plex watchlist status is temporarily unavailable.")
+		return
+	}
+	writeJSON(writer, http.StatusOK, status)
 }
 
 func (h *handler) serveAcquisitionStatus(writer http.ResponseWriter, request *http.Request) {

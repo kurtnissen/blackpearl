@@ -20,6 +20,7 @@ import (
 	"github.com/blackpearl-media/blackpearl/internal/core"
 	"github.com/blackpearl-media/blackpearl/internal/domain"
 	"github.com/blackpearl-media/blackpearl/internal/gateway/httporigin"
+	"github.com/blackpearl-media/blackpearl/internal/gateway/plexwatchlist"
 	"github.com/blackpearl-media/blackpearl/internal/gateway/prowlarr"
 	"github.com/blackpearl-media/blackpearl/internal/gateway/torbox"
 	setuphandler "github.com/blackpearl-media/blackpearl/internal/handler/setup"
@@ -29,8 +30,10 @@ import (
 	"github.com/blackpearl-media/blackpearl/internal/plex"
 	acquisitionrepo "github.com/blackpearl-media/blackpearl/internal/repository/acquisition"
 	setuprepo "github.com/blackpearl-media/blackpearl/internal/repository/setup"
+	watchlistrepo "github.com/blackpearl-media/blackpearl/internal/repository/watchlist"
 	acquisitionservice "github.com/blackpearl-media/blackpearl/internal/service/acquisition"
 	setupservice "github.com/blackpearl-media/blackpearl/internal/service/setup"
+	watchlistservice "github.com/blackpearl-media/blackpearl/internal/service/watchlist"
 	"github.com/blackpearl-media/blackpearl/internal/state"
 	webui "github.com/blackpearl-media/blackpearl/web"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
@@ -136,6 +139,9 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger, deps depen
 		}
 	}
 
+	if cfg.SetupEnabled {
+		return runBrowserSetup(ctx, cfg, logger, deps)
+	}
 	repository, err := state.Open(ctx, cfg.DBPath)
 	if err != nil {
 		return fmt.Errorf("open catalog state: %w", err)
@@ -143,9 +149,6 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger, deps depen
 	defer func() {
 		runErr = errors.Join(runErr, repository.Close())
 	}()
-	if cfg.SetupEnabled {
-		return runBrowserSetup(ctx, cfg, logger, deps)
-	}
 	var catalog *core.Catalog
 	switch cfg.StorageMode {
 	case domain.StorageModePersistent:
@@ -415,8 +418,51 @@ func runBrowserSetup(ctx context.Context, cfg config.Config, logger *slog.Logger
 	if err != nil {
 		return fmt.Errorf("configure browser acquisition coordinator: %w", err)
 	}
+	var watchlistObserver *watchlistservice.Observer
+	if cfg.WatchlistEnabled {
+		var tokenSource plexwatchlist.TokenSource
+		if cfg.WatchlistPreferencesPath != "" {
+			tokenSource, err = plexwatchlist.NewPreferencesTokenSource(cfg.WatchlistPreferencesPath)
+		} else {
+			tokenSource, err = plexwatchlist.NewTokenFileSource(cfg.WatchlistTokenFile)
+		}
+		if err != nil {
+			return fmt.Errorf("configure Plex watchlist credential: %w", err)
+		}
+		watchlistGateway, gatewayErr := plexwatchlist.New(plexwatchlist.Options{BaseURL: cfg.WatchlistBaseURL}, tokenSource, deps.httpClient)
+		if gatewayErr != nil {
+			return fmt.Errorf("configure Plex watchlist gateway: %w", gatewayErr)
+		}
+		watchlistRepository, repositoryErr := watchlistrepo.Open(ctx, cfg.DBPath)
+		if repositoryErr != nil {
+			return fmt.Errorf("open Plex watchlist queue: %w", repositoryErr)
+		}
+		watchlistObserver, err = watchlistservice.NewObserver(watchlistGateway, watchlistRepository, watchlistservice.ObserverOptions{
+			PollInterval: cfg.WatchlistPollInterval,
+		})
+		if err != nil {
+			closeErr := watchlistRepository.Close()
+			return errors.Join(fmt.Errorf("configure Plex watchlist observer: %w", err), closeErr)
+		}
+		observerContext, stopObserver := context.WithCancel(ctx)
+		observerDone := make(chan struct{})
+		go func() {
+			watchlistObserver.Run(observerContext)
+			close(observerDone)
+		}()
+		defer func() {
+			stopObserver()
+			<-observerDone
+			runErr = errors.Join(runErr, watchlistRepository.Close())
+		}()
+	}
 	startSetupRestore(ctx, service, logger, 2*time.Second)
-	apiHandler, err := setuphandler.NewWithAcquisition(service, acquisitionCoordinator, logger)
+	var apiHandler http.Handler
+	if watchlistObserver != nil {
+		apiHandler, err = setuphandler.NewWithAcquisitionAndWatchlist(service, acquisitionCoordinator, watchlistObserver, logger)
+	} else {
+		apiHandler, err = setuphandler.NewWithAcquisition(service, acquisitionCoordinator, logger)
+	}
 	if err != nil {
 		return err
 	}
