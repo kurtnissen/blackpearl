@@ -258,7 +258,10 @@ func TestRunRollingTorBoxRegistersRemotePOCAndStartsNFS(t *testing.T) {
 	started := make(chan struct{})
 	nfs := &fakeNFSServer{address: fakeAddress("127.0.0.1:2049")}
 	deps := defaultDependencies()
-	deps.httpClient = api.Client()
+	deps.httpClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("instrumented shared client must not receive TorBox secrets")
+	})}
+	deps.torBoxClient = api.Client()
 	deps.serveNFS = func(_ context.Context, _ string, catalog nfsCatalog) (nfsServer, error) {
 		items, err := catalog.List(context.Background())
 		require.NoError(t, err)
@@ -283,6 +286,15 @@ func TestRunRollingTorBoxRegistersRemotePOCAndStartsNFS(t *testing.T) {
 	require.NoError(t, <-result)
 	require.True(t, nfs.closed)
 	require.True(t, nfs.waited)
+}
+
+func TestDefaultDependenciesKeepTorBoxTrafficOutOfInstrumentedClient(t *testing.T) {
+	t.Parallel()
+
+	deps := defaultDependencies()
+
+	require.NotEqual(t, fmt.Sprintf("%T", deps.httpClient.Transport), fmt.Sprintf("%T", deps.torBoxClient.Transport))
+	require.Equal(t, fmt.Sprintf("%T", http.DefaultTransport), fmt.Sprintf("%T", deps.torBoxClient.Transport))
 }
 
 func TestRunValidatesModeAndDependenciesBeforeCreatingPaths(t *testing.T) {
@@ -473,6 +485,12 @@ func (a fakeAddress) Network() string {
 
 func (a fakeAddress) String() string {
 	return string(a)
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (function roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return function(request)
 }
 
 func (f *fakeReadyCatalog) Ready(context.Context) error {

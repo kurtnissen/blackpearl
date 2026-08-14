@@ -19,8 +19,9 @@ import (
 )
 
 const (
-	providerName        = "torbox-torrent"
-	maximumResponseBody = 1 << 20
+	providerName         = "torbox-torrent"
+	maximumResponseBody  = 1 << 20
+	sharedRequestTimeout = 30 * time.Second
 )
 
 // Options configures read-only access to completed TorBox torrent files.
@@ -65,6 +66,14 @@ type linkCall struct {
 	done chan struct{}
 	url  *url.URL
 	err  error
+}
+
+type cdnStatusError struct {
+	status int
+}
+
+func (e *cdnStatusError) Error() string {
+	return fmt.Sprintf("TorBox CDN metadata requires status 200: got %d", e.status)
 }
 
 type apiEnvelope[T any] struct {
@@ -143,8 +152,19 @@ func (g *Gateway) Open(ctx context.Context, backing domain.BackingRef) (acquisit
 		return nil, err
 	}
 	if err := g.validateDownload(ctx, downloadURL, metadata.size); err != nil {
-		return nil, err
+		if !expiredDownloadError(err) {
+			return nil, err
+		}
+		g.invalidateDownloadURL(identifier, metadata.validator, downloadURL)
+		downloadURL, err = g.downloadURL(ctx, identifier, metadata.validator, true)
+		if err != nil {
+			return nil, err
+		}
+		if err := g.validateDownload(ctx, downloadURL, metadata.size); err != nil {
+			return nil, err
+		}
 	}
+	g.cacheDownloadURL(identifier, metadata.validator, downloadURL)
 	return newSource(g, identifier, metadata, downloadURL), nil
 }
 
@@ -159,7 +179,7 @@ func (g *Gateway) validateDownload(ctx context.Context, downloadURL *url.URL, ex
 	}
 	defer func() { resultErr = errors.Join(resultErr, response.Body.Close()) }()
 	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("TorBox CDN metadata requires status 200: got %d", response.StatusCode)
+		return &cdnStatusError{status: response.StatusCode}
 	}
 	if response.ContentLength != expectedSize {
 		return fmt.Errorf("TorBox CDN size mismatch: got %d want %d", response.ContentLength, expectedSize)
@@ -267,17 +287,49 @@ func (g *Gateway) downloadURL(ctx context.Context, identifier objectID, validato
 	call := &linkCall{done: make(chan struct{})}
 	g.inflight[key] = call
 	g.mu.Unlock()
-	downloadURL, downloadErr := g.requestDownloadURL(ctx, identifier)
-	g.mu.Lock()
-	if downloadErr == nil {
-		g.links[key] = cachedLink{url: downloadURL, expires: g.now().Add(g.linkTTL)}
+	go g.resolveDownloadURL(call, key, identifier)
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-call.done:
+		return call.url, call.err
 	}
+}
+
+func (g *Gateway) resolveDownloadURL(call *linkCall, key string, identifier objectID) {
+	requestContext, cancel := context.WithTimeout(context.Background(), sharedRequestTimeout)
+	defer cancel()
+	downloadURL, downloadErr := g.requestDownloadURL(requestContext, identifier)
+	g.mu.Lock()
 	call.url = downloadURL
 	call.err = downloadErr
 	delete(g.inflight, key)
 	close(call.done)
 	g.mu.Unlock()
-	return downloadURL, downloadErr
+}
+
+func (g *Gateway) cacheDownloadURL(identifier objectID, validator string, downloadURL *url.URL) {
+	key := identifier.String() + "\x00" + validator
+	g.mu.Lock()
+	g.links[key] = cachedLink{url: downloadURL, expires: g.now().Add(g.linkTTL)}
+	g.mu.Unlock()
+}
+
+func (g *Gateway) invalidateDownloadURL(identifier objectID, validator string, downloadURL *url.URL) {
+	key := identifier.String() + "\x00" + validator
+	g.mu.Lock()
+	if cached, ok := g.links[key]; ok && cached.url.String() == downloadURL.String() {
+		delete(g.links, key)
+	}
+	g.mu.Unlock()
+}
+
+func expiredDownloadError(err error) bool {
+	var statusError *cdnStatusError
+	if !errors.As(err, &statusError) {
+		return false
+	}
+	return statusError.status == http.StatusUnauthorized || statusError.status == http.StatusForbidden || statusError.status == http.StatusGone
 }
 
 func (g *Gateway) requestDownloadURL(ctx context.Context, identifier objectID) (*url.URL, error) {

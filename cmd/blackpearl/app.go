@@ -43,6 +43,9 @@ type dependencies struct {
 	serveNFS   func(context.Context, string, nfsCatalog) (nfsServer, error)
 	listen     func(network string, address string) (net.Listener, error)
 	httpClient *http.Client
+	// torBoxClient intentionally has no automatic HTTP instrumentation because
+	// TorBox requires secrets in request and signed-URL query strings.
+	torBoxClient *http.Client
 }
 
 func defaultDependencies() dependencies {
@@ -61,6 +64,10 @@ func defaultDependencies() dependencies {
 		httpClient: &http.Client{
 			Timeout:   10 * time.Second,
 			Transport: otelhttp.NewTransport(http.DefaultTransport),
+		},
+		torBoxClient: &http.Client{
+			Timeout:   10 * time.Second,
+			Transport: http.DefaultTransport,
 		},
 	}
 }
@@ -89,6 +96,9 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger, deps depen
 	}
 	if deps.httpClient == nil {
 		deps.httpClient = defaultDependencies().httpClient
+	}
+	if deps.torBoxClient == nil {
+		deps.torBoxClient = defaultDependencies().torBoxClient
 	}
 	directories := []string{cfg.DataDir, cfg.CacheDir}
 	if cfg.FilesystemMode == "fuse" {
@@ -134,12 +144,14 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger, deps depen
 			}
 			gateway = httpGateway
 		case "torbox-torrent":
+			torBoxClient := *deps.torBoxClient
+			torBoxClient.Timeout = cfg.RangeTimeout
 			torboxGateway, gatewayErr := torbox.New(torbox.Options{
 				APIBaseURL:  cfg.TorBoxAPIURL,
 				APIToken:    cfg.TorBoxAPIToken,
 				MetadataTTL: time.Minute,
 				LinkTTL:     2 * time.Hour,
-			}, &rangeClient)
+			}, &torBoxClient)
 			if gatewayErr != nil {
 				return fmt.Errorf("configure TorBox range gateway: %w", gatewayErr)
 			}

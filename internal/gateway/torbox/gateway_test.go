@@ -58,6 +58,47 @@ func TestGatewayCoalescesConcurrentDownloadLinkRequests(t *testing.T) {
 	require.Equal(t, int64(1), linkCalls.Load())
 }
 
+func TestGatewayCoalescedDownloadSurvivesFirstCallerCancellation(t *testing.T) {
+	t.Parallel()
+	cdn := newTestCDN(t, []byte("0123456789abcdef"), nil)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var startOnce sync.Once
+	var linkCalls atomic.Int64
+	api := newTestAPI(t, func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/v1/api/torrents/mylist":
+			writeTorrentMetadata(writer, 17, 3, 16)
+		case "/v1/api/torrents/requestdl":
+			linkCalls.Add(1)
+			startOnce.Do(func() { close(started) })
+			<-release
+			writeEnvelope(writer, true, "ok", fmt.Sprintf("%q", cdn.URL))
+		default:
+			http.NotFound(writer, request)
+		}
+	})
+	gateway := newTestGateway(t, api.URL+"/v1/api/", cdn.Client())
+	identifier := objectID{TorrentID: 17, FileID: 3}
+	leaderContext, cancelLeader := context.WithCancel(context.Background())
+	leaderResult := make(chan error, 1)
+	go func() {
+		_, openErr := gateway.downloadURL(leaderContext, identifier, "validator", false)
+		leaderResult <- openErr
+	}()
+	<-started
+	waiterResult := make(chan error, 1)
+	go func() {
+		_, openErr := gateway.downloadURL(context.Background(), identifier, "validator", false)
+		waiterResult <- openErr
+	}()
+	cancelLeader()
+	require.ErrorIs(t, <-leaderResult, context.Canceled)
+	close(release)
+	require.NoError(t, <-waiterResult)
+	require.Equal(t, int64(1), linkCalls.Load())
+}
+
 func TestGatewayOpenMapsCompletedTorrentFile(t *testing.T) {
 	t.Parallel()
 	content := []byte("0123456789abcdef")
@@ -117,6 +158,42 @@ func TestGatewayOpenRejectsCDNSizeMismatchWithoutLeakingURL(t *testing.T) {
 
 	require.ErrorContains(t, err, "size mismatch")
 	require.NotContains(t, err.Error(), cdn.URL)
+}
+
+func TestGatewayOpenRefreshesCachedLinkThatExpiresBeforeOpen(t *testing.T) {
+	t.Parallel()
+	content := []byte("0123456789abcdef")
+	expired := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		http.Error(writer, "expired", http.StatusGone)
+	}))
+	t.Cleanup(expired.Close)
+	fresh := newTestCDN(t, content, nil)
+	var linkCalls atomic.Int64
+	api := newTestAPI(t, func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/v1/api/torrents/mylist":
+			writeTorrentMetadata(writer, 17, 3, int64(len(content)))
+		case "/v1/api/torrents/requestdl":
+			linkCalls.Add(1)
+			writeEnvelope(writer, true, "ok", fmt.Sprintf("%q", fresh.URL))
+		default:
+			http.NotFound(writer, request)
+		}
+	})
+	client := fresh.Client()
+	client.Transport = expired.Client().Transport
+	gateway := newTestGateway(t, api.URL+"/v1/api/", client)
+	identifier := objectID{TorrentID: 17, FileID: 3}
+	gateway.links[identifier.String()+"\x00torbox:hash:sha256-file:16"] = cachedLink{
+		url:     mustParseURL(t, expired.URL),
+		expires: time.Now().Add(time.Hour),
+	}
+
+	opened, err := gateway.Open(context.Background(), domainBacking("17:3"))
+
+	require.NoError(t, err)
+	require.NoError(t, opened.Close())
+	require.Equal(t, int64(1), linkCalls.Load())
 }
 
 func TestGatewayErrorsNeverExposeConfiguredToken(t *testing.T) {
