@@ -51,24 +51,35 @@ func (g *Gateway) Discover(ctx context.Context) ([]domain.MediaCandidate, error)
 		if torrent.ID <= 0 || !torrent.DownloadFinished || !torrent.DownloadPresent {
 			continue
 		}
-		for _, file := range torrent.Files {
-			if file.ID <= 0 || file.Size <= 0 || file.Zipped || file.Infected || obviousSample(file.Name) {
-				continue
-			}
-			if strings.TrimSpace(file.Hash) == "" && strings.TrimSpace(file.MD5) == "" {
-				continue
-			}
-			candidate, candidateErr := domain.NewMediaCandidate(
-				strconv.FormatInt(torrent.ID, 10)+":"+strconv.FormatInt(file.ID, 10),
-				file.Name,
-				file.Size,
-			)
-			if candidateErr != nil {
-				continue
-			}
-			result = append(result, candidate)
-		}
+		result = append(result, candidatesFromTorrent(torrent)...)
 	}
+	sortMediaCandidates(result)
+	return result, nil
+}
+
+func candidatesFromTorrent(torrent torrentRecord) []domain.MediaCandidate {
+	result := make([]domain.MediaCandidate, 0, len(torrent.Files))
+	for _, file := range torrent.Files {
+		if file.ID <= 0 || file.Size <= 0 || file.Zipped || file.Infected || obviousSample(file.Name) {
+			continue
+		}
+		if strings.TrimSpace(file.Hash) == "" && strings.TrimSpace(file.MD5) == "" {
+			continue
+		}
+		candidate, candidateErr := domain.NewMediaCandidate(
+			strconv.FormatInt(torrent.ID, 10)+":"+strconv.FormatInt(file.ID, 10),
+			file.Name,
+			file.Size,
+		)
+		if candidateErr != nil {
+			continue
+		}
+		result = append(result, candidate)
+	}
+	return result
+}
+
+func sortMediaCandidates(result []domain.MediaCandidate) {
 	sort.Slice(result, func(left int, right int) bool {
 		leftName := strings.ToLower(result[left].Name)
 		rightName := strings.ToLower(result[right].Name)
@@ -77,7 +88,6 @@ func (g *Gateway) Discover(ctx context.Context) ([]domain.MediaCandidate, error)
 		}
 		return leftName < rightName
 	})
-	return result, nil
 }
 
 func obviousSample(name string) bool {

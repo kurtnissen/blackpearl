@@ -7,6 +7,12 @@ import (
 	"github.com/blackpearl-media/blackpearl/internal/domain"
 )
 
+var (
+	// ErrNotReady indicates that a created provider object exists but is not yet
+	// available as complete, range-readable media.
+	ErrNotReady = errors.New("acquired object is not ready")
+)
+
 // CreatedObject identifies one provider account object created by an
 // acquisition gateway. It is not necessarily a directly readable media file.
 type CreatedObject struct {
