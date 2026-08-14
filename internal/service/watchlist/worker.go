@@ -7,9 +7,8 @@ import (
 	"sync"
 	"time"
 
-	acquisitiondomain "github.com/blackpearl-media/blackpearl/internal/acquisition"
+	"github.com/blackpearl-media/blackpearl/internal/acquisition"
 	"github.com/blackpearl-media/blackpearl/internal/domain"
-	acquisitionservice "github.com/blackpearl-media/blackpearl/internal/service/acquisition"
 	"go.opentelemetry.io/otel"
 )
 
@@ -17,45 +16,50 @@ const durableCompletionTimeout = 5 * time.Second
 
 // AcquisitionQueue owns versioned claims and durable outcomes.
 type AcquisitionQueue interface {
-	Claim(ctx context.Context, now time.Time, leaseDuration time.Duration) (acquisitiondomain.WatchlistClaim, error)
-	Complete(ctx context.Context, claim acquisitiondomain.WatchlistClaim, completion acquisitiondomain.WatchlistCompletion) error
+	Claim(ctx context.Context, now time.Time, leaseDuration time.Duration) (acquisition.WatchlistClaim, error)
+	AttachJob(ctx context.Context, claim acquisition.WatchlistClaim, jobID string, nextAttempt time.Time) error
+	DeferJob(ctx context.Context, claim acquisition.WatchlistClaim, nextAttempt time.Time) error
+	Complete(ctx context.Context, claim acquisition.WatchlistClaim, completion acquisition.WatchlistCompletion) error
 }
 
-// MovieAcquirer publishes one validated cached-only movie request.
-type MovieAcquirer interface {
-	Acquire(ctx context.Context, request acquisitiondomain.SearchRequest) (acquisitiondomain.AcquiredMedia, error)
+// JobManager submits and reads restart-safe background acquisition jobs.
+type JobManager interface {
+	Submit(ctx context.Context, request acquisition.SearchRequest) (acquisition.AcquisitionJob, bool, error)
+	Get(ctx context.Context, id string) (acquisition.AcquisitionJob, error)
 }
 
 // WorkerOptions bounds serialized automatic acquisition and retry behavior.
 type WorkerOptions struct {
-	LeaseDuration      time.Duration
-	AcquisitionTimeout time.Duration
-	IdleInterval       time.Duration
-	NotCachedCooldown  time.Duration
-	RetryCooldown      time.Duration
-	Now                func() time.Time
+	LeaseDuration     time.Duration
+	OperationTimeout  time.Duration
+	IdleInterval      time.Duration
+	ReconcileInterval time.Duration
+	NotCachedCooldown time.Duration
+	RetryCooldown     time.Duration
+	Now               func() time.Time
 }
 
 // Worker serially converts eligible movie observations into cached-only
 // acquisition attempts.
 type Worker struct {
-	queue    AcquisitionQueue
-	acquirer MovieAcquirer
-	options  WorkerOptions
-	now      func() time.Time
+	queue   AcquisitionQueue
+	manager JobManager
+	options WorkerOptions
+	now     func() time.Time
 
 	processMu sync.Mutex
 }
 
-// NewWorker constructs a serialized watchlist acquisition worker.
-func NewWorker(queue AcquisitionQueue, acquirer MovieAcquirer, options WorkerOptions) (*Worker, error) {
-	if queue == nil || acquirer == nil {
+// NewWorker constructs a serialized watchlist-to-background-job worker.
+func NewWorker(queue AcquisitionQueue, manager JobManager, options WorkerOptions) (*Worker, error) {
+	if queue == nil || manager == nil {
 		return nil, errors.New("watchlist worker dependencies are required")
 	}
 	for name, value := range map[string]time.Duration{
 		"lease duration":      options.LeaseDuration,
-		"acquisition timeout": options.AcquisitionTimeout,
+		"operation timeout":   options.OperationTimeout,
 		"idle interval":       options.IdleInterval,
+		"reconcile interval":  options.ReconcileInterval,
 		"not-cached cooldown": options.NotCachedCooldown,
 		"retry cooldown":      options.RetryCooldown,
 	} {
@@ -67,11 +71,11 @@ func NewWorker(queue AcquisitionQueue, acquirer MovieAcquirer, options WorkerOpt
 	if now == nil {
 		now = time.Now
 	}
-	return &Worker{queue: queue, acquirer: acquirer, options: options, now: now}, nil
+	return &Worker{queue: queue, manager: manager, options: options, now: now}, nil
 }
 
-// ProcessOne claims and resolves at most one eligible movie.
-func (w *Worker) ProcessOne(ctx context.Context) (acquisitiondomain.WatchlistQueueState, error) {
+// ProcessOne performs one durable Watchlist submission or reconciliation.
+func (w *Worker) ProcessOne(ctx context.Context) (acquisition.WatchlistQueueState, error) {
 	w.processMu.Lock()
 	defer w.processMu.Unlock()
 	ctx, span := otel.Tracer("blackpearl/watchlist").Start(ctx, "watchlist.process_one")
@@ -84,62 +88,112 @@ func (w *Worker) ProcessOne(ctx context.Context) (acquisitiondomain.WatchlistQue
 	if err != nil {
 		return "", workerBoundaryError(ctx, "claim watchlist movie", err)
 	}
-	request, err := claim.Item().SearchRequest()
-	if err != nil {
-		return w.completeDurably(ctx, claim, acquisitiondomain.NewWatchlistManualReview())
+	if claim.BackgroundJobID() == "" {
+		return w.submit(ctx, claim, now)
 	}
-	acquisitionContext, cancel := context.WithTimeout(ctx, w.options.AcquisitionTimeout)
-	media, acquireErr := w.acquirer.Acquire(acquisitionContext, request)
-	cancel()
-	if acquireErr == nil {
-		completion, completionErr := acquisitiondomain.NewWatchlistSucceeded(media.Candidate().ObjectID)
-		if completionErr != nil {
-			return w.completeDurably(ctx, claim, acquisitiondomain.NewWatchlistManualReview())
-		}
-		return w.completeDurably(ctx, claim, completion)
-	}
-	completion, shouldComplete, completionErr := w.classify(acquireErr, now)
-	if completionErr != nil {
-		return "", completionErr
-	}
-	if !shouldComplete {
-		return "", workerBoundaryError(ctx, "acquire watchlist movie", acquireErr)
-	}
-	return w.completeDurably(ctx, claim, completion)
+	return w.reconcile(ctx, claim, now)
 }
 
-func (w *Worker) classify(err error, now time.Time) (acquisitiondomain.WatchlistCompletion, bool, error) {
-	switch {
-	case errors.Is(err, acquisitionservice.ErrAmbiguousMutation), errors.Is(err, acquisitionservice.ErrNoPlayableMedia):
-		return acquisitiondomain.NewWatchlistManualReview(), true, nil
-	case errors.Is(err, acquisitionservice.ErrNotCached):
-		completion, completionErr := acquisitiondomain.NewWatchlistDeferred(
-			acquisitiondomain.WatchlistQueueStateNotCached, now.Add(w.options.NotCachedCooldown),
-		)
-		return completion, true, completionErr
-	case errors.Is(err, domain.ErrUnauthorized), errors.Is(err, domain.ErrNotConfigured), errors.Is(err, acquisitionservice.ErrUnavailable):
-		completion, completionErr := acquisitiondomain.NewWatchlistDeferred(
-			acquisitiondomain.WatchlistQueueStateRetryable, now.Add(w.options.RetryCooldown),
-		)
-		return completion, true, completionErr
-	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
-		return acquisitiondomain.WatchlistCompletion{}, false, nil
+func (w *Worker) submit(ctx context.Context, claim acquisition.WatchlistClaim, now time.Time) (acquisition.WatchlistQueueState, error) {
+	request, err := claim.Item().SearchRequest()
+	if err != nil {
+		return w.completeDurably(ctx, claim, acquisition.NewWatchlistManualReview())
+	}
+	operationContext, cancel := context.WithTimeout(ctx, w.options.OperationTimeout)
+	job, _, submitErr := w.manager.Submit(operationContext, request)
+	cancel()
+	if submitErr != nil {
+		return "", workerBoundaryError(ctx, "submit watchlist background job", submitErr)
+	}
+	if err := w.commitDurably(ctx, func(commitContext context.Context) error {
+		return w.queue.AttachJob(commitContext, claim, job.ID(), now.Add(w.options.ReconcileInterval))
+	}); err != nil {
+		return "", err
+	}
+	return acquisition.WatchlistQueueStateAcquiring, nil
+}
+
+func (w *Worker) reconcile(ctx context.Context, claim acquisition.WatchlistClaim, now time.Time) (acquisition.WatchlistQueueState, error) {
+	operationContext, cancel := context.WithTimeout(ctx, w.options.OperationTimeout)
+	job, err := w.manager.Get(operationContext, claim.BackgroundJobID())
+	cancel()
+	if errors.Is(err, domain.ErrNotFound) {
+		return w.completeDurably(ctx, claim, acquisition.NewWatchlistManualReview())
+	}
+	if err != nil {
+		return "", workerBoundaryError(ctx, "read watchlist background job", err)
+	}
+	switch job.State() {
+	case acquisition.JobStateQueued, acquisition.JobStateSelected, acquisition.JobStatePreparing:
+		if err := w.commitDurably(ctx, func(commitContext context.Context) error {
+			return w.queue.DeferJob(commitContext, claim, now.Add(w.options.ReconcileInterval))
+		}); err != nil {
+			return "", err
+		}
+		return acquisition.WatchlistQueueStateAcquiring, nil
+	case acquisition.JobStateSucceeded:
+		completion, completionErr := acquisition.NewWatchlistSucceeded(job.PublishedObjectID())
+		if completionErr != nil {
+			return w.completeDurably(ctx, claim, acquisition.NewWatchlistManualReview())
+		}
+		return w.completeDurably(ctx, claim, completion)
+	case acquisition.JobStateManualReview:
+		return w.completeDurably(ctx, claim, acquisition.NewWatchlistManualReview())
+	case acquisition.JobStateFailed:
+		return w.completeFailedJob(ctx, claim, job.ErrorCode(), now)
 	default:
-		return acquisitiondomain.NewWatchlistManualReview(), true, nil
+		return w.completeDurably(ctx, claim, acquisition.NewWatchlistManualReview())
+	}
+}
+
+func (w *Worker) completeFailedJob(
+	ctx context.Context,
+	claim acquisition.WatchlistClaim,
+	code acquisition.JobErrorCode,
+	now time.Time,
+) (acquisition.WatchlistQueueState, error) {
+	switch code {
+	case acquisition.JobErrorNoRelease, acquisition.JobErrorStalled:
+		completion, err := acquisition.NewWatchlistDeferred(
+			acquisition.WatchlistQueueStateNotCached, now.Add(w.options.NotCachedCooldown),
+		)
+		if err != nil {
+			return "", err
+		}
+		return w.completeDurably(ctx, claim, completion)
+	case acquisition.JobErrorUnauthorized, acquisition.JobErrorProviderUnavailable:
+		completion, err := acquisition.NewWatchlistDeferred(
+			acquisition.WatchlistQueueStateRetryable, now.Add(w.options.RetryCooldown),
+		)
+		if err != nil {
+			return "", err
+		}
+		return w.completeDurably(ctx, claim, completion)
+	default:
+		return w.completeDurably(ctx, claim, acquisition.NewWatchlistManualReview())
 	}
 }
 
 func (w *Worker) completeDurably(
 	ctx context.Context,
-	claim acquisitiondomain.WatchlistClaim,
-	completion acquisitiondomain.WatchlistCompletion,
-) (acquisitiondomain.WatchlistQueueState, error) {
-	completionContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), durableCompletionTimeout)
-	defer cancel()
-	if err := w.queue.Complete(completionContext, claim, completion); err != nil {
-		return "", workerBoundaryError(completionContext, "complete watchlist movie", err)
+	claim acquisition.WatchlistClaim,
+	completion acquisition.WatchlistCompletion,
+) (acquisition.WatchlistQueueState, error) {
+	if err := w.commitDurably(ctx, func(commitContext context.Context) error {
+		return w.queue.Complete(commitContext, claim, completion)
+	}); err != nil {
+		return "", err
 	}
 	return completion.State(), nil
+}
+
+func (w *Worker) commitDurably(ctx context.Context, transition func(context.Context) error) error {
+	completionContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), durableCompletionTimeout)
+	defer cancel()
+	if err := transition(completionContext); err != nil {
+		return workerBoundaryError(completionContext, "commit watchlist transition", err)
+	}
+	return nil
 }
 
 // Run drains eligible movies one at a time and waits when no work is ready.
@@ -175,8 +229,8 @@ func workerBoundaryError(ctx context.Context, operation string, err error) error
 	if errors.Is(err, context.DeadlineExceeded) {
 		return fmt.Errorf("%s: %w", operation, context.DeadlineExceeded)
 	}
-	if errors.Is(err, acquisitiondomain.ErrStaleWatchlistClaim) {
-		return fmt.Errorf("%s: %w", operation, acquisitiondomain.ErrStaleWatchlistClaim)
+	if errors.Is(err, acquisition.ErrStaleWatchlistClaim) {
+		return fmt.Errorf("%s: %w", operation, acquisition.ErrStaleWatchlistClaim)
 	}
 	return fmt.Errorf("%s: %w", operation, ErrUnavailable)
 }

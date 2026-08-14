@@ -53,13 +53,13 @@
 - Consumes: Watchlist `Claim`, `AttachJob`, `DeferJob`, and `Complete`.
 - Produces: a serialized worker whose `ProcessOne` performs exactly one submit or reconciliation transition.
 
-- [ ] Replace the fake cached acquirer tests with failing tests for submit, active defer, success, no-release/stalled cooldown, manual review, deduplication, and cancellation-safe attachment.
-- [ ] Run `go test ./internal/service/watchlist` and confirm the new behavior fails.
-- [ ] Define the consumer-owned `JobManager` interface and update `WorkerOptions` with a bounded reconciliation interval.
-- [ ] Implement submit-or-reconcile logic and map only privacy-safe durable job states/error codes to Watchlist outcomes.
-- [ ] Keep completion commits on bounded `context.WithoutCancel` contexts so an attached provider mutation is never lost on shutdown.
-- [ ] Run `go test -race ./internal/service/watchlist` and confirm it passes.
-- [ ] Commit `feat: acquire watchlist movies durably`.
+- [x] Replace the fake cached acquirer tests with failing tests for submit, active defer, success, no-release/stalled cooldown, manual review, deduplication, and cancellation-safe attachment.
+- [x] Run `go test ./internal/service/watchlist` and confirm the new behavior fails.
+- [x] Define the consumer-owned `JobManager` interface and update `WorkerOptions` with a bounded reconciliation interval.
+- [x] Implement submit-or-reconcile logic and map only privacy-safe durable job states/error codes to Watchlist outcomes.
+- [x] Keep completion commits on bounded `context.WithoutCancel` contexts so an attached provider mutation is never lost on shutdown.
+- [x] Run `go test -race ./internal/service/watchlist` and confirm it passes.
+- [x] Commit `feat: acquire watchlist movies durably`.
 
 ### Task 3: Wire the process and preserve safe defaults
 
