@@ -147,3 +147,97 @@ func TestNewAcquisitionJobClaimRequiresPositiveLeaseVersion(t *testing.T) {
 	require.Error(t, err)
 
 }
+
+func TestNewJobCandidateValidatesBoundedDurableReleaseOutcome(t *testing.T) {
+	t.Parallel()
+	selection := mustCandidateSelection(t)
+
+	candidate, err := acquisition.NewJobCandidate(selection, 0, acquisition.CandidateOutcomeSelected)
+
+	require.NoError(t, err)
+	require.Equal(t, 0, candidate.Ordinal())
+	require.Equal(t, selection.InfoHash(), candidate.Selection().InfoHash())
+	require.Equal(t, acquisition.CandidateOutcomeSelected, candidate.Outcome())
+
+	for _, input := range []struct {
+		ordinal int
+		outcome acquisition.CandidateOutcome
+	}{
+		{ordinal: -1, outcome: acquisition.CandidateOutcomePending},
+		{ordinal: 5, outcome: acquisition.CandidateOutcomePending},
+		{ordinal: 1, outcome: acquisition.CandidateOutcome("private provider error")},
+	} {
+		_, candidateErr := acquisition.NewJobCandidate(selection, input.ordinal, input.outcome)
+		require.Error(t, candidateErr)
+	}
+}
+
+func TestAcquisitionJobCandidateProvenanceRequiresCompatibleStage(t *testing.T) {
+	t.Parallel()
+	request, err := acquisition.NewMovieSearch("Example Movie", 2026)
+	require.NoError(t, err)
+	selection := mustCandidateSelection(t)
+	created, err := acquisition.NewCreatedObject("torbox-torrent", "17")
+	require.NoError(t, err)
+	at := time.Date(2026, time.August, 14, 12, 0, 0, 0, time.UTC)
+	ordinal := 0
+
+	preparing, err := acquisition.NewAcquisitionJobSnapshot(acquisition.JobSnapshotInput{
+		ID: "0123456789abcdef0123456789abcdef", Request: request,
+		State: acquisition.JobStatePreparing, Selection: &selection, CreatedObject: &created,
+		SelectedCandidateOrdinal: &ordinal, CreatedByJob: true,
+		CreatedAt: at, UpdatedAt: at,
+	})
+
+	require.NoError(t, err)
+	actualOrdinal, planned := preparing.SelectedCandidateOrdinal()
+	require.True(t, planned)
+	require.Equal(t, 0, actualOrdinal)
+	require.True(t, preparing.CreatedByJob())
+
+	for _, input := range []acquisition.JobSnapshotInput{
+		{
+			ID: "0123456789abcdef0123456789abcdef", Request: request,
+			State: acquisition.JobStateQueued, SelectedCandidateOrdinal: &ordinal,
+			CreatedAt: at, UpdatedAt: at,
+		},
+		{
+			ID: "0123456789abcdef0123456789abcdef", Request: request,
+			State: acquisition.JobStateSelected, Selection: &selection,
+			SelectedCandidateOrdinal: &ordinal, CreatedByJob: true,
+			CreatedAt: at, UpdatedAt: at,
+		},
+		{
+			ID: "0123456789abcdef0123456789abcdef", Request: request,
+			State: acquisition.JobStatePreparing, Selection: &selection,
+			SelectedCandidateOrdinal: &ordinal, CreatedByJob: true,
+			CreatedAt: at, UpdatedAt: at,
+		},
+	} {
+		_, snapshotErr := acquisition.NewAcquisitionJobSnapshot(input)
+		require.Error(t, snapshotErr)
+	}
+
+	legacy, err := acquisition.NewAcquisitionJobSnapshot(acquisition.JobSnapshotInput{
+		ID: "0123456789abcdef0123456789abcdef", Request: request,
+		State: acquisition.JobStateSelected, Selection: &selection,
+		CreatedAt: at, UpdatedAt: at,
+	})
+	require.NoError(t, err)
+	_, planned = legacy.SelectedCandidateOrdinal()
+	require.False(t, planned)
+	require.False(t, legacy.CreatedByJob())
+}
+
+func mustCandidateSelection(t *testing.T) acquisition.JobSelection {
+	t.Helper()
+	release, err := acquisition.NewRelease(acquisition.ReleaseInput{
+		Provider: "prowlarr", SourceID: "result-1", Title: "Example.Movie.2026",
+		Protocol: acquisition.ReleaseProtocolTorrent, Size: 100, Indexer: "authorized-indexer",
+		InfoHash: "0123456789abcdef0123456789abcdef01234567",
+	})
+	require.NoError(t, err)
+	selection, err := acquisition.NewJobSelection(release)
+	require.NoError(t, err)
+	return selection
+}

@@ -11,6 +11,9 @@ import (
 
 var jobIDPattern = regexp.MustCompile(`^[0-9a-f]{32}$`)
 
+// MaximumJobCandidates caps automatic provider mutations for one durable job.
+const MaximumJobCandidates = 5
+
 // JobState is the durable lifecycle stage of one explicitly requested
 // background acquisition.
 type JobState string
@@ -44,6 +47,54 @@ const (
 type JobSelection struct {
 	release Release
 }
+
+// CandidateOutcome is the public-safe durable state of one release candidate.
+type CandidateOutcome string
+
+const (
+	CandidateOutcomePending    CandidateOutcome = "pending"
+	CandidateOutcomeSelected   CandidateOutcome = "selected"
+	CandidateOutcomeStalled    CandidateOutcome = "stalled"
+	CandidateOutcomeMissing    CandidateOutcome = "missing"
+	CandidateOutcomeUnplayable CandidateOutcome = "unplayable"
+)
+
+// JobCandidate is one locator-free release in a bounded durable fallback plan.
+type JobCandidate struct {
+	selection JobSelection
+	ordinal   int
+	outcome   CandidateOutcome
+}
+
+// NewJobCandidate validates one ordered durable release candidate.
+func NewJobCandidate(selection JobSelection, ordinal int, outcome CandidateOutcome) (JobCandidate, error) {
+	if !selection.valid() {
+		return JobCandidate{}, errors.New("acquisition job candidate requires a valid selection")
+	}
+	if ordinal < 0 || ordinal >= MaximumJobCandidates {
+		return JobCandidate{}, fmt.Errorf("acquisition job candidate ordinal must be between 0 and %d", MaximumJobCandidates-1)
+	}
+	switch outcome {
+	case CandidateOutcomePending, CandidateOutcomeSelected, CandidateOutcomeStalled,
+		CandidateOutcomeMissing, CandidateOutcomeUnplayable:
+	default:
+		return JobCandidate{}, fmt.Errorf("unsupported acquisition job candidate outcome: %q", outcome)
+	}
+	validated, err := NewJobSelection(selection.Release())
+	if err != nil {
+		return JobCandidate{}, fmt.Errorf("validate acquisition job candidate selection: %w", err)
+	}
+	return JobCandidate{selection: validated, ordinal: ordinal, outcome: outcome}, nil
+}
+
+// Selection returns locator-free release metadata.
+func (c JobCandidate) Selection() JobSelection { return c.selection }
+
+// Ordinal returns the zero-based fallback position.
+func (c JobCandidate) Ordinal() int { return c.ordinal }
+
+// Outcome returns the public-safe candidate state.
+func (c JobCandidate) Outcome() CandidateOutcome { return c.outcome }
 
 // NewJobSelection strips ephemeral locators from a validated torrent release.
 func NewJobSelection(release Release) (JobSelection, error) {
@@ -98,34 +149,39 @@ func (s JobSelection) HasSeeders() bool { return s.release.HasSeeders() }
 // JobSnapshotInput is the persistence-boundary representation used to validate
 // a durable acquisition job loaded from storage.
 type JobSnapshotInput struct {
-	ID                string
-	Request           SearchRequest
-	State             JobState
-	Selection         *JobSelection
-	CreatedObject     *CreatedObject
-	PublishedObjectID string
-	ErrorCode         JobErrorCode
-	Attempt           int
-	Progress          int
-	CreatedAt         time.Time
-	UpdatedAt         time.Time
+	ID                       string
+	Request                  SearchRequest
+	State                    JobState
+	Selection                *JobSelection
+	CreatedObject            *CreatedObject
+	SelectedCandidateOrdinal *int
+	CreatedByJob             bool
+	PublishedObjectID        string
+	ErrorCode                JobErrorCode
+	Attempt                  int
+	Progress                 int
+	CreatedAt                time.Time
+	UpdatedAt                time.Time
 }
 
 // AcquisitionJob is one immutable, privacy-safe durable job snapshot.
 type AcquisitionJob struct {
-	id                string
-	request           SearchRequest
-	state             JobState
-	selection         JobSelection
-	hasSelection      bool
-	createdObject     CreatedObject
-	hasCreatedObject  bool
-	publishedObjectID string
-	errorCode         JobErrorCode
-	attempt           int
-	progress          int
-	createdAt         time.Time
-	updatedAt         time.Time
+	id                       string
+	request                  SearchRequest
+	state                    JobState
+	selection                JobSelection
+	hasSelection             bool
+	createdObject            CreatedObject
+	hasCreatedObject         bool
+	selectedCandidateOrdinal int
+	hasCandidatePlan         bool
+	createdByJob             bool
+	publishedObjectID        string
+	errorCode                JobErrorCode
+	attempt                  int
+	progress                 int
+	createdAt                time.Time
+	updatedAt                time.Time
 }
 
 // NewAcquisitionJobSnapshot validates a job loaded from or written to durable
@@ -165,14 +221,56 @@ func NewAcquisitionJobSnapshot(input JobSnapshotInput) (AcquisitionJob, error) {
 	if err := validateJobStage(input.State, hasSelection, hasCreated, published, input.ErrorCode, input.Progress); err != nil {
 		return AcquisitionJob{}, err
 	}
+	selectedOrdinal, hasCandidatePlan, err := validateSelectedCandidateOrdinal(input.State, hasSelection, input.SelectedCandidateOrdinal)
+	if err != nil {
+		return AcquisitionJob{}, err
+	}
+	if err := validateCreatedByJob(input.State, hasCreated, input.CreatedByJob); err != nil {
+		return AcquisitionJob{}, err
+	}
 	return AcquisitionJob{
 		id: input.ID, request: request, state: input.State,
 		selection: selection, hasSelection: hasSelection,
 		createdObject: created, hasCreatedObject: hasCreated,
+		selectedCandidateOrdinal: selectedOrdinal, hasCandidatePlan: hasCandidatePlan,
+		createdByJob:      input.CreatedByJob,
 		publishedObjectID: published, errorCode: input.ErrorCode,
 		attempt: input.Attempt, progress: input.Progress,
 		createdAt: input.CreatedAt.UTC(), updatedAt: input.UpdatedAt.UTC(),
 	}, nil
+}
+
+func validateSelectedCandidateOrdinal(state JobState, hasSelection bool, ordinal *int) (int, bool, error) {
+	if ordinal == nil {
+		return 0, false, nil
+	}
+	if *ordinal < 0 || *ordinal >= MaximumJobCandidates {
+		return 0, false, fmt.Errorf("selected acquisition candidate ordinal must be between 0 and %d", MaximumJobCandidates-1)
+	}
+	if !hasSelection {
+		return 0, false, errors.New("selected acquisition candidate requires a release selection")
+	}
+	switch state {
+	case JobStateSelected, JobStatePreparing, JobStateSucceeded, JobStateManualReview:
+		return *ordinal, true, nil
+	default:
+		return 0, false, errors.New("acquisition job stage cannot contain a selected candidate ordinal")
+	}
+}
+
+func validateCreatedByJob(state JobState, hasCreated bool, createdByJob bool) error {
+	if !createdByJob {
+		return nil
+	}
+	if !hasCreated {
+		return errors.New("BlackPearl-created provenance requires a provider object")
+	}
+	switch state {
+	case JobStatePreparing, JobStateSucceeded, JobStateManualReview:
+		return nil
+	default:
+		return errors.New("acquisition job stage cannot own a provider object")
+	}
 }
 
 func validateJobErrorCode(code JobErrorCode) error {
@@ -281,6 +379,15 @@ func (j AcquisitionJob) HasCreatedObject() bool { return j.hasCreatedObject }
 
 // CreatedObject returns the provider object, or a zero value when absent.
 func (j AcquisitionJob) CreatedObject() CreatedObject { return j.createdObject }
+
+// SelectedCandidateOrdinal returns the current fallback position and whether
+// this job owns a durable candidate plan. Legacy jobs return false.
+func (j AcquisitionJob) SelectedCandidateOrdinal() (int, bool) {
+	return j.selectedCandidateOrdinal, j.hasCandidatePlan
+}
+
+// CreatedByJob reports whether BlackPearl created the attached provider object.
+func (j AcquisitionJob) CreatedByJob() bool { return j.createdByJob }
 
 // PublishedObjectID returns the range-readable media object after success.
 func (j AcquisitionJob) PublishedObjectID() string { return j.publishedObjectID }
