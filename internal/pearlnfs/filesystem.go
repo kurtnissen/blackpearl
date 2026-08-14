@@ -13,8 +13,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/kurtnissen/blackpearl/internal/domain"
 	"github.com/go-git/go-billy/v5"
+	"github.com/kurtnissen/blackpearl/internal/domain"
 )
 
 // Catalog is the business boundary consumed by PearlNFS.

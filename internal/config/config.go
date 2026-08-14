@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kurtnissen/blackpearl/internal/domain"
 	"github.com/caarlos0/env/v11"
+	"github.com/kurtnissen/blackpearl/internal/domain"
 )
 
 // Plex contains optional settings for refreshing one Plex library.

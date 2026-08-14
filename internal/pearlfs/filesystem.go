@@ -13,9 +13,9 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/kurtnissen/blackpearl/internal/domain"
 	"github.com/hanwen/go-fuse/v2/fs"
 	"github.com/hanwen/go-fuse/v2/fuse"
+	"github.com/kurtnissen/blackpearl/internal/domain"
 )
 
 // Catalog is the business boundary consumed by PearlFS.
