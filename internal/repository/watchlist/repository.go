@@ -441,6 +441,122 @@ func (r *Repository) Complete(ctx context.Context, claim acquisitiondomain.Watch
 	return nil
 }
 
+// CanAdvanceEpisode reports whether one exact published show episode remains
+// eligible for automatic progression under the current durable policy.
+func (r *Repository) CanAdvanceEpisode(
+	ctx context.Context,
+	source string,
+	externalID string,
+	publishedObjectID string,
+	current domain.EpisodeCoordinate,
+	observedAfter time.Time,
+) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, fmt.Errorf("check watchlist episode advancement: %w", err)
+	}
+	identity, err := validateEpisodeFrontier(source, externalID, publishedObjectID, current, observedAfter)
+	if err != nil {
+		return false, fmt.Errorf("validate watchlist episode advancement: %w", err)
+	}
+	var eligible int
+	err = r.db.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM watchlist_queue
+			WHERE source = ?
+			  AND external_id = ?
+			  AND media_type = 'show'
+			  AND state = 'succeeded'
+			  AND auto_eligible = 1
+			  AND published_object_id = ?
+			  AND intent_season = ?
+			  AND intent_episode = ?
+			  AND last_observed_unix_ms >= ?
+			  AND EXISTS (
+				SELECT 1
+				FROM watchlist_settings
+				WHERE singleton = 1
+				  AND acquisition_enabled = 1
+				  AND show_policy = 'pilot'
+			  )
+		)
+	`, identity.source, identity.externalID, identity.publishedObjectID,
+		identity.coordinate.Season(), identity.coordinate.Episode(), identity.observedAfterUnixMillis).Scan(&eligible)
+	if err != nil {
+		return false, fmt.Errorf("check watchlist episode advancement: %w", err)
+	}
+	return eligible == 1, nil
+}
+
+// AdvanceEpisode atomically moves one exact succeeded episode frontier to the
+// next pending intent while preserving the already-published media manifest.
+func (r *Repository) AdvanceEpisode(
+	ctx context.Context,
+	source string,
+	externalID string,
+	publishedObjectID string,
+	current domain.EpisodeCoordinate,
+	next domain.EpisodeCoordinate,
+	observedAfter time.Time,
+	now time.Time,
+) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, fmt.Errorf("advance watchlist episode: %w", err)
+	}
+	identity, err := validateEpisodeFrontier(source, externalID, publishedObjectID, current, observedAfter)
+	if err != nil {
+		return false, fmt.Errorf("validate watchlist episode advancement: %w", err)
+	}
+	validatedNext, err := domain.NewEpisodeCoordinate(next.Season(), next.Episode())
+	if err != nil {
+		return false, fmt.Errorf("validate next watchlist episode: %w", err)
+	}
+	if !validatedNext.After(identity.coordinate) {
+		return false, errors.New("next watchlist episode must follow the current episode")
+	}
+	if now.IsZero() {
+		return false, errors.New("watchlist episode advancement time is required")
+	}
+	result, err := r.db.ExecContext(ctx, `
+		UPDATE watchlist_queue
+		SET state = 'pending',
+			attempt_count = 0,
+			lease_until_unix_ms = 0,
+			next_attempt_unix_ms = 0,
+			published_object_id = '',
+			background_job_id = '',
+			intent_season = ?,
+			intent_episode = ?,
+			updated_unix_ms = ?
+		WHERE source = ?
+		  AND external_id = ?
+		  AND media_type = 'show'
+		  AND state = 'succeeded'
+		  AND auto_eligible = 1
+		  AND published_object_id = ?
+		  AND intent_season = ?
+		  AND intent_episode = ?
+		  AND last_observed_unix_ms >= ?
+		  AND EXISTS (
+			SELECT 1
+			FROM watchlist_settings
+			WHERE singleton = 1
+			  AND acquisition_enabled = 1
+			  AND show_policy = 'pilot'
+		  )
+	`, validatedNext.Season(), validatedNext.Episode(), now.UTC().UnixMilli(),
+		identity.source, identity.externalID, identity.publishedObjectID,
+		identity.coordinate.Season(), identity.coordinate.Episode(), identity.observedAfterUnixMillis)
+	if err != nil {
+		return false, fmt.Errorf("advance watchlist episode: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("inspect watchlist episode advancement: %w", err)
+	}
+	return rows == 1, nil
+}
+
 // Status returns aggregate counts without exposing private watchlist titles.
 func (r *Repository) Status(ctx context.Context) (acquisitiondomain.WatchlistQueueStatus, error) {
 	if err := ctx.Err(); err != nil {
@@ -549,4 +665,43 @@ func validateCompletion(completion acquisitiondomain.WatchlistCompletion) (acqui
 	default:
 		return acquisitiondomain.WatchlistCompletion{}, errors.New("invalid watchlist completion state")
 	}
+}
+
+type episodeFrontierIdentity struct {
+	source                  string
+	externalID              string
+	publishedObjectID       string
+	coordinate              domain.EpisodeCoordinate
+	observedAfterUnixMillis int64
+}
+
+func validateEpisodeFrontier(
+	source string,
+	externalID string,
+	publishedObjectID string,
+	coordinate domain.EpisodeCoordinate,
+	observedAfter time.Time,
+) (episodeFrontierIdentity, error) {
+	item, err := acquisitiondomain.NewWatchlistItem(acquisitiondomain.WatchlistItemInput{
+		Source: source, ExternalID: externalID, MediaType: acquisitiondomain.WatchlistMediaTypeShow,
+		Title: "Episode frontier", Year: 2026,
+	})
+	if err != nil {
+		return episodeFrontierIdentity{}, err
+	}
+	completion, err := acquisitiondomain.NewWatchlistSucceeded(publishedObjectID)
+	if err != nil {
+		return episodeFrontierIdentity{}, err
+	}
+	validatedCoordinate, err := domain.NewEpisodeCoordinate(coordinate.Season(), coordinate.Episode())
+	if err != nil {
+		return episodeFrontierIdentity{}, err
+	}
+	if observedAfter.IsZero() {
+		return episodeFrontierIdentity{}, errors.New("watchlist observation cutoff is required")
+	}
+	return episodeFrontierIdentity{
+		source: item.Source(), externalID: item.ExternalID(), publishedObjectID: completion.PublishedObjectID(),
+		coordinate: validatedCoordinate, observedAfterUnixMillis: observedAfter.UTC().UnixMilli(),
+	}, nil
 }

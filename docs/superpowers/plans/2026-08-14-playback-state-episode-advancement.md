@@ -249,7 +249,7 @@ AdvanceEpisode(ctx context.Context, source, externalID, objectID string, current
 
 - Consumes: existing `watchlist_settings`, `watchlist_queue`, `intent_season`, `intent_episode`, and succeeded publication state; no migration is required.
 
-- [ ] **Step 1: Write failing repository transition tests**
+- [x] **Step 1: Write failing repository transition tests**
 
 Prove one successful S01E01 to S01E02 transition resets the row to pending with no background job or published attachment; disabled acquisition, `off` show policy, stale observation, wrong source/GUID/object/current coordinates, movie row, non-succeeded state, backward/equal next coordinates, and terminal coordinates are no-ops or validation errors. Open two repository instances against one SQLite file and prove concurrent advances have exactly one winner.
 
@@ -264,17 +264,17 @@ require.Equal(t, 1, request.Season())
 require.Equal(t, 2, request.Episode())
 ```
 
-- [ ] **Step 2: Run repository tests and verify RED**
+- [x] **Step 2: Run repository tests and verify RED**
 
 Run: `go test ./internal/repository/watchlist -run 'TestRepository.*AdvanceEpisode' -count=1`
 
 Expected: build failure because the methods do not exist.
 
-- [ ] **Step 3: Implement optimistic read and update queries**
+- [x] **Step 3: Implement optimistic read and update queries**
 
 Validate all inputs before SQL. `CanAdvanceEpisode` uses one query joining the singleton policy and requiring `last_observed_unix_ms >= observedAfter`. `AdvanceEpisode` repeats every predicate in one `UPDATE`, sets `state='pending'`, stores next coordinates, clears `background_job_id` and `published_object_id`, resets attempts/leases/cooldowns, and returns `RowsAffected()==1`. It must never delete an acquisition job or manifest item.
 
-- [ ] **Step 4: Run repository race tests**
+- [x] **Step 4: Run repository race tests**
 
 Run:
 
@@ -284,7 +284,7 @@ go test -race ./internal/repository/watchlist -count=1
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit the durable frontier**
+- [x] **Step 5: Commit the durable frontier**
 
 ```bash
 git add internal/repository/watchlist/repository.go internal/repository/watchlist/repository_test.go

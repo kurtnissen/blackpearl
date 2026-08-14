@@ -337,6 +337,162 @@ func TestRepositoryPersistsPilotPolicyAndClaimsExactShowIntent(t *testing.T) {
 	require.Equal(t, 1, retry.Episode())
 }
 
+func TestRepositoryAdvancesOnlyCurrentRecentlyObservedPublishedEpisode(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "blackpearl.db")
+	repository := openRepository(t, path)
+	now := time.Date(2026, time.August, 14, 18, 0, 0, 0, time.UTC)
+	showID := "plex://show/0123456789abcdef01234567"
+	objectID := "archive-mariposa-s01e01"
+	current := mustCoordinate(t, 1, 1)
+	next := mustCoordinate(t, 1, 2)
+	seedSucceededShow(t, repository, showID, objectID, current, now)
+
+	eligible, err := repository.CanAdvanceEpisode(
+		context.Background(), "plex-watchlist", showID, objectID, current, now.Add(-time.Minute),
+	)
+	require.NoError(t, err)
+	require.True(t, eligible)
+	eligible, err = repository.CanAdvanceEpisode(
+		context.Background(), "plex-watchlist", showID, objectID, current, now.Add(time.Millisecond),
+	)
+	require.NoError(t, err)
+	require.False(t, eligible)
+
+	advanced, err := repository.AdvanceEpisode(
+		context.Background(), "plex-watchlist", showID, objectID, current, next, now.Add(-time.Minute), now.Add(time.Minute),
+	)
+	require.NoError(t, err)
+	require.True(t, advanced)
+	advanced, err = repository.AdvanceEpisode(
+		context.Background(), "plex-watchlist", showID, objectID, current, next, now.Add(-time.Minute), now.Add(2*time.Minute),
+	)
+	require.NoError(t, err)
+	require.False(t, advanced)
+	require.NoError(t, repository.Close())
+	repository = openRepository(t, path)
+
+	claim, err := repository.Claim(context.Background(), now.Add(2*time.Minute), time.Minute)
+	require.NoError(t, err)
+	require.Equal(t, 1, claim.Attempt())
+	require.Equal(t, next.Season(), claim.Season())
+	require.Equal(t, next.Episode(), claim.Episode())
+	request, err := claim.SearchRequest()
+	require.NoError(t, err)
+	require.Equal(t, "Pilot Show S01E02", request.Query())
+}
+
+func TestRepositoryEpisodeAdvanceRespectsPolicyAndExactPublishedIdentity(t *testing.T) {
+	t.Parallel()
+	repository := openRepository(t, filepath.Join(t.TempDir(), "blackpearl.db"))
+	now := time.Date(2026, time.August, 14, 18, 0, 0, 0, time.UTC)
+	showID := "plex://show/1123456789abcdef01234567"
+	objectID := "archive-mariposa-s01e01"
+	current := mustCoordinate(t, 1, 1)
+	seedSucceededShow(t, repository, showID, objectID, current, now)
+
+	tests := []struct {
+		name       string
+		showID     string
+		objectID   string
+		coordinate domain.EpisodeCoordinate
+	}{
+		{name: "different show", showID: "plex://show/2123456789abcdef01234567", objectID: objectID, coordinate: current},
+		{name: "different object", showID: showID, objectID: "other-object", coordinate: current},
+		{name: "different episode", showID: showID, objectID: objectID, coordinate: mustCoordinate(t, 1, 2)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			eligible, err := repository.CanAdvanceEpisode(
+				context.Background(), "plex-watchlist", test.showID, test.objectID, test.coordinate, now.Add(-time.Minute),
+			)
+			require.NoError(t, err)
+			require.False(t, eligible)
+		})
+	}
+
+	off, err := acquisitiondomain.NewWatchlistPolicy(true, acquisitiondomain.WatchlistShowPolicyOff)
+	require.NoError(t, err)
+	require.NoError(t, repository.SetPolicy(context.Background(), off))
+	eligible, err := repository.CanAdvanceEpisode(
+		context.Background(), "plex-watchlist", showID, objectID, current, now.Add(-time.Minute),
+	)
+	require.NoError(t, err)
+	require.False(t, eligible)
+	disabled, err := acquisitiondomain.NewWatchlistPolicy(false, acquisitiondomain.WatchlistShowPolicyPilot)
+	require.NoError(t, err)
+	require.NoError(t, repository.SetPolicy(context.Background(), disabled))
+	advanced, err := repository.AdvanceEpisode(
+		context.Background(), "plex-watchlist", showID, objectID, current, mustCoordinate(t, 1, 2),
+		now.Add(-time.Minute), now.Add(time.Minute),
+	)
+	require.NoError(t, err)
+	require.False(t, advanced)
+}
+
+func TestRepositoryAllowsOnlyOneConcurrentEpisodeAdvance(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "blackpearl.db")
+	repository := openRepository(t, path)
+	secondRepository := openRepository(t, path)
+	now := time.Date(2026, time.August, 14, 18, 0, 0, 0, time.UTC)
+	showID := "plex://show/3123456789abcdef01234567"
+	objectID := "archive-mariposa-s01e01"
+	current := mustCoordinate(t, 1, 1)
+	next := mustCoordinate(t, 1, 2)
+	seedSucceededShow(t, repository, showID, objectID, current, now)
+
+	const workers = 16
+	results := make(chan bool, workers)
+	errors := make(chan error, workers)
+	var group sync.WaitGroup
+	group.Add(workers)
+	for index := range workers {
+		candidate := repository
+		if index%2 == 1 {
+			candidate = secondRepository
+		}
+		go func(queue *watchlistrepo.Repository) {
+			defer group.Done()
+			advanced, err := queue.AdvanceEpisode(
+				context.Background(), "plex-watchlist", showID, objectID, current, next,
+				now.Add(-time.Minute), now.Add(time.Minute),
+			)
+			results <- advanced
+			errors <- err
+		}(candidate)
+	}
+	group.Wait()
+	close(results)
+	close(errors)
+	for err := range errors {
+		require.NoError(t, err)
+	}
+	successes := 0
+	for advanced := range results {
+		if advanced {
+			successes++
+		}
+	}
+	require.Equal(t, 1, successes)
+}
+
+func TestRepositoryEpisodeAdvanceRejectsInvalidArgumentsAndCancellation(t *testing.T) {
+	t.Parallel()
+	repository := openRepository(t, filepath.Join(t.TempDir(), "blackpearl.db"))
+	now := time.Date(2026, time.August, 14, 18, 0, 0, 0, time.UTC)
+	current := mustCoordinate(t, 1, 1)
+	next := mustCoordinate(t, 1, 2)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := repository.CanAdvanceEpisode(ctx, "plex-watchlist", "plex://show/0123456789abcdef01234567", "object", current, now)
+	require.ErrorIs(t, err, context.Canceled)
+	_, err = repository.AdvanceEpisode(context.Background(), "plex-watchlist", "plex://show/0123456789abcdef01234567", "object", current, current, now, now)
+	require.Error(t, err)
+	_, err = repository.AdvanceEpisode(context.Background(), "plex-watchlist", "plex://show/0123456789abcdef01234567", "object", current, next, time.Time{}, now)
+	require.Error(t, err)
+}
+
 func TestRepositoryNeverRetroactivelyEnablesPreviouslyObservedShow(t *testing.T) {
 	t.Parallel()
 	repository := openRepository(t, filepath.Join(t.TempDir(), "blackpearl.db"))
@@ -368,4 +524,38 @@ func mustItem(t *testing.T, externalID string, mediaType acquisitiondomain.Watch
 	})
 	require.NoError(t, err)
 	return item
+}
+
+func mustCoordinate(t *testing.T, season int, episode int) domain.EpisodeCoordinate {
+	t.Helper()
+	coordinate, err := domain.NewEpisodeCoordinate(season, episode)
+	require.NoError(t, err)
+	return coordinate
+}
+
+func seedSucceededShow(
+	t *testing.T,
+	repository *watchlistrepo.Repository,
+	externalID string,
+	objectID string,
+	coordinate domain.EpisodeCoordinate,
+	observedAt time.Time,
+) {
+	t.Helper()
+	policy, err := acquisitiondomain.NewWatchlistPolicy(true, acquisitiondomain.WatchlistShowPolicyPilot)
+	require.NoError(t, err)
+	require.NoError(t, repository.SetPolicy(context.Background(), policy))
+	show := mustItem(t, externalID, acquisitiondomain.WatchlistMediaTypeShow, "Pilot Show")
+	observation, err := acquisitiondomain.NewWatchlistObservation(
+		show, true, coordinate.Season(), coordinate.Episode(),
+	)
+	require.NoError(t, err)
+	require.NoError(t, repository.UpsertObservations(
+		context.Background(), []acquisitiondomain.WatchlistObservation{observation}, observedAt,
+	))
+	claim, err := repository.Claim(context.Background(), observedAt, time.Minute)
+	require.NoError(t, err)
+	completion, err := acquisitiondomain.NewWatchlistSucceeded(objectID)
+	require.NoError(t, err)
+	require.NoError(t, repository.Complete(context.Background(), claim, completion))
 }
