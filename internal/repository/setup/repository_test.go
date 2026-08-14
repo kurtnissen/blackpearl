@@ -163,6 +163,29 @@ func TestRepositorySaveManifestSurvivesReopenWithMultipleItems(t *testing.T) {
 	require.ErrorIs(t, err, os.ErrNotExist)
 }
 
+func TestRepositorySaveManifestSurvivesReopenWithProviderAwareEpisode(t *testing.T) {
+	t.Parallel()
+	root := filepath.Join(t.TempDir(), "setup")
+	repository, err := setuprepo.New(root)
+	require.NoError(t, err)
+	backing, err := domain.NewBackingRef("internet-archive-file", "opaque")
+	require.NoError(t, err)
+	candidate, err := domain.NewProviderMediaCandidate(backing, "Example.Show.S01E01.mp4", 1024)
+	require.NoError(t, err)
+	episode, err := domain.NewSetupEpisodeConfiguration(candidate, "Example Show", 2026, 1, 1, "Episode 1")
+	require.NoError(t, err)
+	manifest, err := domain.NewSetupManifest([]domain.SetupConfiguration{episode})
+	require.NoError(t, err)
+
+	require.NoError(t, repository.SaveManifest(context.Background(), "private-token", manifest))
+	reopened, err := setuprepo.New(root)
+	require.NoError(t, err)
+	_, loaded, err := reopened.LoadManifest(context.Background())
+
+	require.NoError(t, err)
+	require.Equal(t, backing, loaded.Items[0].Backing())
+}
+
 func TestRepositoryLoadManifestMigratesLegacySingleConfiguration(t *testing.T) {
 	t.Parallel()
 	root := filepath.Join(t.TempDir(), "setup")

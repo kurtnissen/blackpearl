@@ -10,11 +10,14 @@ import (
 
 var setupObjectIDPattern = regexp.MustCompile(`^[1-9][0-9]*:[1-9][0-9]*$`)
 
+const defaultSetupProvider = "torbox-torrent"
+
 // MaximumSetupManifestItems bounds setup work, API payloads, and Plex scan fan-out.
 const MaximumSetupManifestItems = 100
 
 // MediaCandidate is public metadata for one range-readable provider object.
 type MediaCandidate struct {
+	Provider  string `json:"provider,omitempty"`
 	ObjectID  string `json:"objectId"`
 	Name      string `json:"name"`
 	Extension string `json:"extension"`
@@ -23,6 +26,7 @@ type MediaCandidate struct {
 
 // SetupConfiguration is the non-secret persisted selection shown to Plex.
 type SetupConfiguration struct {
+	Provider  string    `json:"provider,omitempty"`
 	ObjectID  string    `json:"objectId"`
 	Name      string    `json:"name"`
 	Extension string    `json:"extension"`
@@ -45,6 +49,19 @@ func NewMediaCandidate(objectID string, name string, size int64) (MediaCandidate
 	if !setupObjectIDPattern.MatchString(objectID) {
 		return MediaCandidate{}, errors.New("media candidate object ID must use canonical positive torrent:file form")
 	}
+	backing, err := NewBackingRef(defaultSetupProvider, objectID)
+	if err != nil {
+		return MediaCandidate{}, fmt.Errorf("validate media candidate backing: %w", err)
+	}
+	return NewProviderMediaCandidate(backing, name, size)
+}
+
+// NewProviderMediaCandidate validates provider-neutral media metadata.
+func NewProviderMediaCandidate(backing BackingRef, name string, size int64) (MediaCandidate, error) {
+	validatedBacking, err := NewBackingRef(backing.Provider, backing.ObjectID)
+	if err != nil {
+		return MediaCandidate{}, fmt.Errorf("validate media candidate backing: %w", err)
+	}
 	cleanName := strings.TrimSpace(strings.ReplaceAll(name, "\\", "/"))
 	if cleanName == "" || strings.ContainsRune(cleanName, 0) || path.IsAbs(cleanName) || path.Clean(cleanName) != cleanName {
 		return MediaCandidate{}, errors.New("media candidate name must be a safe relative path")
@@ -61,12 +78,15 @@ func NewMediaCandidate(objectID string, name string, size int64) (MediaCandidate
 	if size <= 0 {
 		return MediaCandidate{}, fmt.Errorf("media candidate size must be positive: %d", size)
 	}
-	return MediaCandidate{ObjectID: objectID, Name: cleanName, Extension: extension, Size: size}, nil
+	return MediaCandidate{
+		Provider: validatedBacking.Provider, ObjectID: validatedBacking.ObjectID,
+		Name: cleanName, Extension: extension, Size: size,
+	}, nil
 }
 
 // NewSetupConfiguration validates one Plex-visible selection.
 func NewSetupConfiguration(candidate MediaCandidate, title string, year int) (SetupConfiguration, error) {
-	validated, err := NewMediaCandidate(candidate.ObjectID, candidate.Name, candidate.Size)
+	validated, err := validateMediaCandidate(candidate)
 	if err != nil {
 		return SetupConfiguration{}, fmt.Errorf("validate media candidate: %w", err)
 	}
@@ -81,6 +101,7 @@ func NewSetupConfiguration(candidate MediaCandidate, title string, year int) (Se
 		return SetupConfiguration{}, fmt.Errorf("year must be between 1888 and 2100: %d", year)
 	}
 	return SetupConfiguration{
+		Provider:  validated.Provider,
 		ObjectID:  validated.ObjectID,
 		Name:      validated.Name,
 		Extension: validated.Extension,
@@ -93,7 +114,7 @@ func NewSetupConfiguration(candidate MediaCandidate, title string, year int) (Se
 
 // NewSetupEpisodeConfiguration validates one Plex-visible TV episode selection.
 func NewSetupEpisodeConfiguration(candidate MediaCandidate, showTitle string, year int, season int, episode int, episodeTitle string) (SetupConfiguration, error) {
-	validated, err := NewMediaCandidate(candidate.ObjectID, candidate.Name, candidate.Size)
+	validated, err := validateMediaCandidate(candidate)
 	if err != nil {
 		return SetupConfiguration{}, fmt.Errorf("validate media candidate: %w", err)
 	}
@@ -110,7 +131,7 @@ func NewSetupEpisodeConfiguration(candidate MediaCandidate, showTitle string, ye
 		return SetupConfiguration{}, err
 	}
 	return SetupConfiguration{
-		ObjectID: validated.ObjectID, Name: validated.Name, Extension: validated.Extension,
+		Provider: validated.Provider, ObjectID: validated.ObjectID, Name: validated.Name, Extension: validated.Extension,
 		Size: validated.Size, MediaType: MediaTypeEpisode, Title: cleanEpisodeTitle, Year: year,
 		ShowTitle: cleanShowTitle, Season: season, Episode: episode,
 	}, nil
@@ -118,7 +139,21 @@ func NewSetupEpisodeConfiguration(candidate MediaCandidate, showTitle string, ye
 
 // Candidate returns the provider metadata embedded in the selection.
 func (c SetupConfiguration) Candidate() MediaCandidate {
-	return MediaCandidate{ObjectID: c.ObjectID, Name: c.Name, Extension: c.Extension, Size: c.Size}
+	return MediaCandidate{Provider: c.providerOrDefault(), ObjectID: c.ObjectID, Name: c.Name, Extension: c.Extension, Size: c.Size}
+}
+
+// Backing returns the provider-neutral object selected for this configuration.
+func (c SetupConfiguration) Backing() BackingRef {
+	return BackingRef{Provider: c.providerOrDefault(), ObjectID: c.ObjectID}
+}
+
+// Backing returns the provider-neutral object represented by this candidate.
+func (c MediaCandidate) Backing() BackingRef {
+	provider := c.Provider
+	if provider == "" {
+		provider = defaultSetupProvider
+	}
+	return BackingRef{Provider: provider, ObjectID: c.ObjectID}
 }
 
 // NewSetupManifest validates and copies one bounded Plex media manifest.
@@ -130,14 +165,15 @@ func NewSetupManifest(items []SetupConfiguration) (SetupManifest, error) {
 		return SetupManifest{}, fmt.Errorf("setup manifest supports at most %d items", MaximumSetupManifestItems)
 	}
 	validated := make([]SetupConfiguration, 0, len(items))
-	objectIDs := make(map[string]struct{}, len(items))
+	objects := make(map[string]struct{}, len(items))
 	virtualPaths := make(map[string]struct{}, len(items))
 	for index := range items {
 		item, err := validateSetupConfiguration(items[index])
 		if err != nil {
 			return SetupManifest{}, fmt.Errorf("validate setup manifest item %d: %w", index, err)
 		}
-		if _, exists := objectIDs[item.ObjectID]; exists {
+		objectKey := item.Provider + "\x00" + item.ObjectID
+		if _, exists := objects[objectKey]; exists {
 			return SetupManifest{}, fmt.Errorf("setup manifest contains duplicate object ID at item %d", index)
 		}
 		virtualPath, err := setupVirtualPath(item)
@@ -147,7 +183,7 @@ func NewSetupManifest(items []SetupConfiguration) (SetupManifest, error) {
 		if _, exists := virtualPaths[virtualPath]; exists {
 			return SetupManifest{}, fmt.Errorf("setup manifest contains duplicate Plex path at item %d", index)
 		}
-		objectIDs[item.ObjectID] = struct{}{}
+		objects[objectKey] = struct{}{}
 		virtualPaths[virtualPath] = struct{}{}
 		validated = append(validated, item)
 	}
@@ -169,7 +205,7 @@ func validateSetupConfiguration(configuration SetupConfiguration) (SetupConfigur
 }
 
 func setupVirtualPath(configuration SetupConfiguration) (string, error) {
-	backing := BackingRef{Provider: "setup", ObjectID: configuration.ObjectID}
+	backing := configuration.Backing()
 	if configuration.MediaType == MediaTypeEpisode {
 		media, err := NewEpisode(
 			"setup-path", configuration.ShowTitle, configuration.Year, configuration.Season,
@@ -179,4 +215,22 @@ func setupVirtualPath(configuration SetupConfiguration) (string, error) {
 	}
 	media, err := NewMovie("setup-path", configuration.Title, configuration.Year, configuration.Extension, configuration.Size, backing)
 	return media.VirtualPath, err
+}
+
+func validateMediaCandidate(candidate MediaCandidate) (MediaCandidate, error) {
+	validated, err := NewProviderMediaCandidate(candidate.Backing(), candidate.Name, candidate.Size)
+	if err != nil {
+		return MediaCandidate{}, err
+	}
+	if candidate.Extension != "" && strings.ToLower(candidate.Extension) != validated.Extension {
+		return MediaCandidate{}, errors.New("media candidate extension does not match its name")
+	}
+	return validated, nil
+}
+
+func (c SetupConfiguration) providerOrDefault() string {
+	if c.Provider == "" {
+		return defaultSetupProvider
+	}
+	return c.Provider
 }

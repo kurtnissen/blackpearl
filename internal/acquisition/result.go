@@ -58,7 +58,7 @@ func NewPreparationInspection(candidates []domain.MediaCandidate, progress int) 
 	}
 	validated := make([]domain.MediaCandidate, 0, len(candidates))
 	for _, candidate := range candidates {
-		item, err := domain.NewMediaCandidate(candidate.ObjectID, candidate.Name, candidate.Size)
+		item, err := domain.NewProviderMediaCandidate(candidate.Backing(), candidate.Name, candidate.Size)
 		if err != nil {
 			return PreparationInspection{}, fmt.Errorf("validate preparation candidate: %w", err)
 		}
@@ -95,7 +95,7 @@ func NewAcquiredMedia(request SearchRequest, release Release, candidate domain.M
 	if release.Protocol() != ReleaseProtocolTorrent || release.Provider() == "" || release.SourceID() == "" || release.InfoHash() == "" {
 		return AcquiredMedia{}, errors.New("acquired media requires a validated torrent release with info hash")
 	}
-	validatedCandidate, err := domain.NewMediaCandidate(candidate.ObjectID, candidate.Name, candidate.Size)
+	validatedCandidate, err := domain.NewProviderMediaCandidate(candidate.Backing(), candidate.Name, candidate.Size)
 	if err != nil {
 		return AcquiredMedia{}, fmt.Errorf("validate acquired media candidate: %w", err)
 	}
@@ -103,6 +103,22 @@ func NewAcquiredMedia(request SearchRequest, release Release, candidate domain.M
 		return AcquiredMedia{}, errors.New("acquired media candidate extension does not match its name")
 	}
 	return AcquiredMedia{request: validatedRequest, release: release, candidate: validatedCandidate}, nil
+}
+
+// NewRangeAcquiredMedia constructs an immutable provider-range acquisition result.
+func NewRangeAcquiredMedia(request SearchRequest, candidate domain.MediaCandidate) (AcquiredMedia, error) {
+	validatedRequest, err := validateSearchRequest(request)
+	if err != nil {
+		return AcquiredMedia{}, err
+	}
+	validatedCandidate, err := domain.NewProviderMediaCandidate(candidate.Backing(), candidate.Name, candidate.Size)
+	if err != nil {
+		return AcquiredMedia{}, fmt.Errorf("validate acquired range media candidate: %w", err)
+	}
+	if candidate.Extension != "" && candidate.Extension != validatedCandidate.Extension {
+		return AcquiredMedia{}, errors.New("acquired range media candidate extension does not match its name")
+	}
+	return AcquiredMedia{request: validatedRequest, candidate: validatedCandidate}, nil
 }
 
 func validateSearchRequest(request SearchRequest) (SearchRequest, error) {

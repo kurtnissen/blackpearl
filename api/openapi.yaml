@@ -308,6 +308,7 @@ components:
       additionalProperties: false
       required: [objectId, name, extension, size]
       properties:
+        provider: { type: string, pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$" }
         objectId: { type: string }
         name: { type: string }
         extension: { type: string, enum: [.mp4, .mkv] }

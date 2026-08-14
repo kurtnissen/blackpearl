@@ -127,6 +127,23 @@ func TestNewAcquiredMediaPreservesValidatedIntentReleaseAndCandidate(t *testing.
 	require.Equal(t, candidate, result.Candidate())
 }
 
+func TestNewRangeAcquiredMediaPreservesValidatedIntentAndProviderCandidate(t *testing.T) {
+	t.Parallel()
+	request, err := acquisition.NewEpisodeSearch("Example Show", 2026, 1, 1)
+	require.NoError(t, err)
+	backing, err := domain.NewBackingRef("internet-archive-file", "opaque")
+	require.NoError(t, err)
+	candidate, err := domain.NewProviderMediaCandidate(backing, "Example.Show.S01E01.mp4", 1024)
+	require.NoError(t, err)
+
+	result, err := acquisition.NewRangeAcquiredMedia(request, candidate)
+
+	require.NoError(t, err)
+	require.Equal(t, request, result.Request())
+	require.Equal(t, candidate, result.Candidate())
+	require.Equal(t, backing, result.Candidate().Backing())
+}
+
 func TestNewAcquiredMediaRejectsZeroOrMismatchedValues(t *testing.T) {
 	t.Parallel()
 	movie, err := acquisition.NewMovieSearch("Example", 2026)

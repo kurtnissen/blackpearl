@@ -1,4 +1,5 @@
 export type MediaCandidate = {
+  provider?: string;
   objectId: string;
   name: string;
   extension: ".mp4" | ".mkv";
@@ -310,6 +311,7 @@ function isErrorEnvelope(value: unknown): value is { code: string; message: stri
 
 function isCandidate(value: unknown): value is MediaCandidate {
   return isRecord(value)
+    && (value.provider === undefined || typeof value.provider === "string")
     && typeof value.objectId === "string"
     && typeof value.name === "string"
     && (value.extension === ".mp4" || value.extension === ".mkv")

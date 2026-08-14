@@ -65,6 +65,36 @@ func TestServicePublishAcquiredReplacesSameLogicalMediaPath(t *testing.T) {
 	require.Equal(t, "Example", prepared.Items[0].Title)
 }
 
+func TestServicePublishAcquiredKeysObjectReplacementByProvider(t *testing.T) {
+	t.Parallel()
+	previous := mustConfiguration(t)
+	repository := &fakeSetupRepository{token: "saved-token", configuration: previous}
+	request, err := acquisitiondomain.NewMovieSearch("Archive Movie", 2025)
+	require.NoError(t, err)
+	backing, err := domain.NewBackingRef("internet-archive-file", previous.ObjectID)
+	require.NoError(t, err)
+	candidate, err := domain.NewProviderMediaCandidate(backing, "Archive.Movie.2025.mp4", 1024)
+	require.NoError(t, err)
+	media, err := acquisitiondomain.NewRangeAcquiredMedia(request, candidate)
+	require.NoError(t, err)
+	var prepared domain.SetupManifest
+	service := setupservice.New(repository,
+		func(string) (setupservice.Discoverer, error) { return &fakeDiscoverer{}, nil },
+		func(_ context.Context, _ string, manifest domain.SetupManifest) (core.CatalogService, error) {
+			prepared = manifest
+			return &fakeCatalog{}, nil
+		},
+		&fakePublisher{},
+	)
+
+	err = service.PublishAcquired(context.Background(), media)
+
+	require.NoError(t, err)
+	require.Len(t, prepared.Items, 2)
+	require.Equal(t, previous.Backing(), prepared.Items[0].Backing())
+	require.Equal(t, backing, prepared.Items[1].Backing())
+}
+
 func TestServiceFindPublishedMovieReadsCurrentManifest(t *testing.T) {
 	t.Parallel()
 	previous := mustConfiguration(t)

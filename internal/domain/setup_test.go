@@ -15,11 +15,49 @@ func TestNewMediaCandidateAcceptsCanonicalVideos(t *testing.T) {
 
 	require.NoError(t, err)
 	require.Equal(t, domain.MediaCandidate{
+		Provider:  "torbox-torrent",
 		ObjectID:  "17:3",
 		Name:      "Films/Example.MKV",
 		Extension: ".mkv",
 		Size:      9_876,
 	}, candidate)
+}
+
+func TestNewProviderMediaCandidatePreservesBackingAcrossEpisodeAndManifest(t *testing.T) {
+	t.Parallel()
+	backing, err := domain.NewBackingRef("internet-archive-file", "aWRlbnRpZmllcg~ZmlsZS5tcDQ")
+	require.NoError(t, err)
+
+	candidate, err := domain.NewProviderMediaCandidate(backing, "Show.S01E01.mp4", 175_099_607)
+	require.NoError(t, err)
+	configuration, err := domain.NewSetupEpisodeConfiguration(candidate, "Show", 2006, 1, 1, "Episode 1")
+	require.NoError(t, err)
+	manifest, err := domain.NewSetupManifest([]domain.SetupConfiguration{configuration})
+
+	require.NoError(t, err)
+	require.Equal(t, backing, candidate.Backing())
+	require.Equal(t, backing, configuration.Backing())
+	require.Equal(t, backing, manifest.Items[0].Candidate().Backing())
+}
+
+func TestNewSetupManifestDefaultsLegacyProviderAndKeysObjectsByProvider(t *testing.T) {
+	t.Parallel()
+	legacy := domain.SetupConfiguration{
+		ObjectID: "17:3", Name: "Legacy.mp4", Extension: ".mp4", Size: 100,
+		MediaType: domain.MediaTypeMovie, Title: "Legacy", Year: 2024,
+	}
+	archiveBacking, err := domain.NewBackingRef("internet-archive-file", "17:3")
+	require.NoError(t, err)
+	archiveCandidate, err := domain.NewProviderMediaCandidate(archiveBacking, "Archive.mp4", 100)
+	require.NoError(t, err)
+	archive, err := domain.NewSetupConfiguration(archiveCandidate, "Archive", 2024)
+	require.NoError(t, err)
+
+	manifest, err := domain.NewSetupManifest([]domain.SetupConfiguration{legacy, archive})
+
+	require.NoError(t, err)
+	require.Equal(t, domain.BackingRef{Provider: "torbox-torrent", ObjectID: "17:3"}, manifest.Items[0].Backing())
+	require.Equal(t, archiveBacking, manifest.Items[1].Backing())
 }
 
 func TestNewMediaCandidateRejectsUnsafeOrUnsupportedValues(t *testing.T) {

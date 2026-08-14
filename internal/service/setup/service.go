@@ -250,7 +250,7 @@ func (s *Service) PublishAcquired(ctx context.Context, media acquisitiondomain.A
 	items := append([]domain.SetupConfiguration(nil), current.Items...)
 	replaced := false
 	for index := range items {
-		if items[index].ObjectID == configuration.ObjectID || sameLogicalMedia(items[index], configuration) {
+		if items[index].Backing() == configuration.Backing() || sameLogicalMedia(items[index], configuration) {
 			items[index] = configuration
 			replaced = true
 			break
