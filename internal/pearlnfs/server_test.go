@@ -1,14 +1,19 @@
 package pearlnfs_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
+	"time"
 
+	"github.com/kurtnissen/blackpearl/internal/acquisition"
+	"github.com/kurtnissen/blackpearl/internal/cache"
 	"github.com/kurtnissen/blackpearl/internal/domain"
 	"github.com/kurtnissen/blackpearl/internal/pearlnfs"
 	"github.com/stretchr/testify/require"
@@ -153,6 +158,53 @@ func TestServerReplacementDoesNotRaceWithIssuedNFSFileHandleReads(t *testing.T) 
 	}
 }
 
+func TestServerRecoversTransientProviderRangeFailureThroughRollingCache(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	opener := &transientRangeOpener{content: []byte("abcdefgh")}
+	source, err := cache.NewRolling(ctx, cache.RollingOptions{
+		Root: t.TempDir(), MaxBytes: 4, ChunkBytes: 4, FetchTimeout: time.Second,
+	}, opener)
+	require.NoError(t, err)
+	backing, err := domain.NewBackingRef("transient-range", "movie.mp4")
+	require.NoError(t, err)
+	media, err := domain.NewMovie("transient", "Transient Range", 2026, ".mp4", 8, backing)
+	require.NoError(t, err)
+	filesystem, err := pearlnfs.NewReloadable(ctx, &rangeCatalog{media: media, source: source})
+	require.NoError(t, err)
+	server, err := pearlnfs.Start(ctx, "127.0.0.1:0", filesystem)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, server.Close())
+		require.NoError(t, server.Wait())
+	})
+	target := mountTarget(t, server.Addr().String())
+	file, err := target.Open(media.VirtualPath)
+	require.NoError(t, err)
+
+	content := make([]byte, 4)
+	count, err := file.ReadAt(content, 0)
+
+	require.NoError(t, err)
+	require.Equal(t, 4, count)
+	require.Equal(t, "abcd", string(content))
+	require.Equal(t, int32(2), opener.reads.Load())
+	tail := make([]byte, 4)
+	count, err = file.ReadAt(tail, 4)
+	require.ErrorIs(t, err, io.EOF)
+	require.Equal(t, 4, count)
+	require.Equal(t, "efgh", string(tail))
+	count, err = file.ReadAt(content, 0)
+	require.NoError(t, err)
+	require.Equal(t, 4, count)
+	require.Equal(t, "abcd", string(content))
+	require.Equal(t, int32(4), opener.reads.Load())
+	stats := source.Stats()
+	require.Equal(t, int64(4), stats.CurrentBytes)
+	require.Zero(t, stats.ReservedBytes)
+	require.Equal(t, uint64(2), stats.Evictions)
+}
+
 func mountTarget(t *testing.T, address string) *nfsclient.Target {
 	t.Helper()
 	var client *rpc.Client
@@ -177,6 +229,55 @@ type byteCatalog struct {
 	media domain.Media
 	value byte
 }
+
+type rangeCatalog struct {
+	media  domain.Media
+	source *cache.RollingSource
+}
+
+func (c *rangeCatalog) List(context.Context) ([]domain.Media, error) {
+	return []domain.Media{c.media}, nil
+}
+
+func (c *rangeCatalog) Open(ctx context.Context, virtualPath string) (domain.ReadHandle, error) {
+	if virtualPath != c.media.VirtualPath {
+		return nil, fmt.Errorf("unexpected virtual path %q", virtualPath)
+	}
+	return c.source.Open(ctx, c.media)
+}
+
+type transientRangeOpener struct {
+	content []byte
+	reads   atomic.Int32
+}
+
+func (o *transientRangeOpener) Open(ctx context.Context, _ domain.BackingRef) (acquisition.RangeSource, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return &transientRangeSource{opener: o, reader: bytes.NewReader(o.content)}, nil
+}
+
+func (*transientRangeOpener) Ready(ctx context.Context) error { return ctx.Err() }
+
+type transientRangeSource struct {
+	opener *transientRangeOpener
+	reader *bytes.Reader
+}
+
+func (s *transientRangeSource) ReadAt(ctx context.Context, destination []byte, offset int64) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	if s.opener.reads.Add(1) == 1 {
+		return 0, errors.New("temporary provider range failure")
+	}
+	return s.reader.ReadAt(destination, offset)
+}
+
+func (s *transientRangeSource) Size() int64     { return s.reader.Size() }
+func (*transientRangeSource) Validator() string { return "transient-v1" }
+func (*transientRangeSource) Close() error      { return nil }
 
 func newByteCatalog(t *testing.T, value byte) *byteCatalog {
 	t.Helper()
