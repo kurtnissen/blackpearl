@@ -160,12 +160,18 @@ adapter or deployment constraint; **no** fails a critical requirement.
 | Platform | Status | Evidence or remaining gate |
 |---|---|---|
 | macOS Docker Desktop | Confirmed | Compose NFS-volume probe, official Plex scan, and original-media range response passed. |
-| Windows Docker Desktop, Linux containers | Architecturally compatible; unconfirmed | The mount occurs in Docker Desktop's Linux daemon/WSL2 environment, not on the Windows host. Run the acceptance suite on a Windows machine before claiming support. |
+| Windows Docker Desktop, Linux containers | Architecturally compatible; unconfirmed | The mount occurs in Docker Desktop's Linux daemon/WSL2 environment, not on the Windows host. A disposable Windows Server 2025 hosted-runner probe found Docker 29.1.5 with only a Windows-container engine, so hosted CI cannot substitute for a real Docker Desktop/WSL2 machine. |
 | Native Linux Docker | Confirmed server-side on Ubuntu 24.04 AMD64 | A disposable hosted run mounted PearlFS into the official Plex container, indexed the fixture, matched a non-sequential Plex-served range, logged `Direct play OK`, and verified clean unmount. A human-visible remote client session was outside that runner's scope. |
 
 Windows remains deliberately unconfirmed until it has Docker Desktop runtime
 evidence. Native Linux has server-side runtime evidence; its remaining client
 gate is kept distinct rather than inferred from the Plex decision log.
+
+The hosted Windows capability probe is recorded in
+[GitHub Actions run 31846805030](https://github.com/kurtnissen/blackpearl/actions/runs/31846805030).
+Its Linux-container smoke step was intentionally skipped after the engine
+reported `windows`; this is runner-capability evidence, not BlackPearl runtime
+acceptance.
 
 ## Production design constraints
 
