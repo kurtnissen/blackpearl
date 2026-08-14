@@ -5,8 +5,11 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"log/slog"
 	"net/http"
+
+	"github.com/blackpearl-media/blackpearl/internal/domain"
 )
 
 // Readiness is the business-level dependency checked by /readyz.
@@ -14,8 +17,14 @@ type Readiness interface {
 	Ready(ctx context.Context) error
 }
 
+// Options adds optional browser setup routes to the diagnostics server.
+type Options struct {
+	SetupAPI http.Handler
+	UI       http.Handler
+}
+
 // New builds the diagnostics handler.
-func New(readiness Readiness, logger *slog.Logger) http.Handler {
+func New(readiness Readiness, logger *slog.Logger, configured ...Options) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", getOnly(func(writer http.ResponseWriter, _ *http.Request) {
 		writeStatus(writer, http.StatusOK, `{"status":"ok"}`, logger)
@@ -23,11 +32,24 @@ func New(readiness Readiness, logger *slog.Logger) http.Handler {
 	mux.HandleFunc("/readyz", getOnly(func(writer http.ResponseWriter, request *http.Request) {
 		if err := readiness.Ready(request.Context()); err != nil {
 			logger.WarnContext(request.Context(), "readiness check failed", "error", err)
+			if errors.Is(err, domain.ErrNotConfigured) {
+				writeStatus(writer, http.StatusServiceUnavailable, `{"status":"setup_required"}`, logger)
+				return
+			}
 			writeStatus(writer, http.StatusServiceUnavailable, `{"status":"not_ready"}`, logger)
 			return
 		}
 		writeStatus(writer, http.StatusOK, `{"status":"ready"}`, logger)
 	}))
+	if len(configured) > 0 {
+		options := configured[0]
+		if options.SetupAPI != nil {
+			mux.Handle("/api/setup/", options.SetupAPI)
+		}
+		if options.UI != nil {
+			mux.Handle("/", options.UI)
+		}
+	}
 	return withRequestID(mux, logger)
 }
 

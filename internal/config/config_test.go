@@ -132,6 +132,55 @@ func TestParseAcceptsRollingTorBoxSecretFile(t *testing.T) {
 	require.Equal(t, "/run/secrets/torbox_api_token", cfg.TorBoxAPITokenFile)
 }
 
+func TestParseAcceptsBrowserSetupModeWithoutCredentialOrSelection(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := config.Parse(map[string]string{
+		"BLACKPEARL_STORAGE_MODE":    "rolling",
+		"BLACKPEARL_CACHE_MAX_BYTES": "1048576",
+		"BLACKPEARL_RANGE_PROVIDER":  "torbox-torrent",
+		"BLACKPEARL_SETUP_ENABLED":   "true",
+		"BLACKPEARL_SETUP_DIR":       "/private/setup",
+		"BLACKPEARL_FILESYSTEM_MODE": "nfs",
+	})
+
+	require.NoError(t, err)
+	require.True(t, cfg.SetupEnabled)
+	require.Equal(t, "/private/setup", cfg.SetupDir)
+	require.Empty(t, cfg.RangeObjectID)
+	require.Empty(t, cfg.TorBoxAPIToken)
+}
+
+func TestParseRejectsBrowserSetupOutsideRollingTorBoxNFS(t *testing.T) {
+	t.Parallel()
+	base := map[string]string{
+		"BLACKPEARL_STORAGE_MODE":    "rolling",
+		"BLACKPEARL_CACHE_MAX_BYTES": "1048576",
+		"BLACKPEARL_RANGE_PROVIDER":  "torbox-torrent",
+		"BLACKPEARL_SETUP_ENABLED":   "true",
+		"BLACKPEARL_FILESYSTEM_MODE": "nfs",
+	}
+	tests := []struct{ name, key, value string }{
+		{name: "persistent", key: "BLACKPEARL_STORAGE_MODE", value: "persistent"},
+		{name: "HTTP range", key: "BLACKPEARL_RANGE_PROVIDER", value: "http-range"},
+		{name: "FUSE", key: "BLACKPEARL_FILESYSTEM_MODE", value: "fuse"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			environment := make(map[string]string, len(base))
+			for key, value := range base {
+				environment[key] = value
+			}
+			environment[test.key] = test.value
+
+			_, err := config.Parse(environment)
+
+			require.ErrorContains(t, err, "SETUP_ENABLED")
+		})
+	}
+}
+
 func TestParseRejectsInvalidTorBoxSecretFileConfiguration(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

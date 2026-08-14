@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -288,6 +289,57 @@ func TestRunRollingTorBoxRegistersRemotePOCAndStartsNFS(t *testing.T) {
 	require.True(t, nfs.waited)
 }
 
+func TestRunBrowserSetupStartsWithoutCredentialsAndServesSetupStatus(t *testing.T) {
+	root := t.TempDir()
+	cfg := testConfig(root, "")
+	cfg.StorageMode = domain.StorageModeRolling
+	cfg.CacheMaxBytes = 1024
+	cfg.CacheChunkBytes = 256
+	cfg.RangeProvider = "torbox-torrent"
+	cfg.FilesystemMode = "nfs"
+	cfg.SetupEnabled = true
+	cfg.SetupDir = filepath.Join(root, "data", "setup")
+	cfg.TorBoxAPIURL = "https://api.example.invalid/v1/api/"
+	nfsStarted := make(chan struct{})
+	nfs := &fakeNFSServer{address: fakeAddress("127.0.0.1:2049")}
+	httpAddress := make(chan string, 1)
+	deps := defaultDependencies()
+	deps.serveNFS = func(_ context.Context, _ string, catalog nfsCatalog) (nfsServer, error) {
+		items, err := catalog.List(context.Background())
+		require.NoError(t, err)
+		require.Empty(t, items)
+		close(nfsStarted)
+		return nfs, nil
+	}
+	deps.listen = func(network string, address string) (net.Listener, error) {
+		listener, err := net.Listen(network, address)
+		if err == nil {
+			httpAddress <- listener.Addr().String()
+		}
+		return listener, err
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() { result <- run(ctx, cfg, testLogger(), deps) }()
+
+	select {
+	case <-nfsStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("setup NFS did not start")
+	}
+	address := <-httpAddress
+	response, err := http.Get("http://" + address + "/api/setup/status")
+	require.NoError(t, err)
+	body, err := io.ReadAll(response.Body)
+	require.NoError(t, err)
+	require.NoError(t, response.Body.Close())
+	require.Equal(t, http.StatusOK, response.StatusCode)
+	require.Contains(t, string(body), `"setupRequired":true`)
+	require.NotContains(t, string(body), "tokenFilename")
+	cancel()
+	require.NoError(t, <-result)
+}
+
 func TestDefaultDependenciesKeepTorBoxTrafficOutOfInstrumentedClient(t *testing.T) {
 	t.Parallel()
 
@@ -500,6 +552,10 @@ type fakeNFSServer struct {
 
 func (f *fakeNFSServer) Addr() net.Addr {
 	return f.address
+}
+
+func (f *fakeNFSServer) Reload(context.Context) error {
+	return nil
 }
 
 func (f *fakeNFSServer) Close() error {

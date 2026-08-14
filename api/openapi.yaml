@@ -1,0 +1,121 @@
+openapi: 3.1.0
+info:
+  title: BlackPearl Local Setup API
+  version: 0.1.0
+  description: Localhost-only browser setup. TorBox tokens are write-only and never appear in responses.
+servers:
+  - url: http://localhost:8082
+paths:
+  /api/setup/status:
+    get:
+      operationId: getSetupStatus
+      responses:
+        "200":
+          description: Public setup state and process-local CSRF value.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SetupStatus" }
+  /api/setup/discover:
+    post:
+      operationId: discoverMedia
+      parameters:
+        - $ref: "#/components/parameters/CSRF"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                token: { type: string, minLength: 1, maxLength: 4096, writeOnly: true }
+      responses:
+        "200":
+          description: Eligible completed account videos.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [candidates]
+                properties:
+                  candidates: { type: array, items: { $ref: "#/components/schemas/MediaCandidate" } }
+        "401": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /api/setup/configuration:
+    put:
+      operationId: applySetupConfiguration
+      parameters:
+        - $ref: "#/components/parameters/CSRF"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [objectId, title, year]
+              properties:
+                token: { type: string, minLength: 1, maxLength: 4096, writeOnly: true }
+                objectId: { type: string, pattern: "^[1-9][0-9]*:[1-9][0-9]*$" }
+                title: { type: string, minLength: 1, maxLength: 200 }
+                year: { type: integer, minimum: 1888, maximum: 2100 }
+      responses:
+        "200":
+          description: Activated public selection.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [selected]
+                properties:
+                  selected: { $ref: "#/components/schemas/SetupConfiguration" }
+        "401": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+components:
+  parameters:
+    CSRF:
+      in: header
+      name: X-BlackPearl-CSRF
+      required: true
+      schema: { type: string, minLength: 64, maxLength: 64 }
+  schemas:
+    MediaCandidate:
+      type: object
+      additionalProperties: false
+      required: [objectId, name, extension, size]
+      properties:
+        objectId: { type: string }
+        name: { type: string }
+        extension: { type: string, enum: [.mp4, .mkv] }
+        size: { type: integer, format: int64, minimum: 1 }
+    SetupConfiguration:
+      allOf:
+        - $ref: "#/components/schemas/MediaCandidate"
+        - type: object
+          required: [title, year]
+          properties:
+            title: { type: string }
+            year: { type: integer }
+    SetupStatus:
+      type: object
+      additionalProperties: false
+      required: [setupRequired, tokenConfigured, csrfToken]
+      properties:
+        setupRequired: { type: boolean }
+        tokenConfigured: { type: boolean }
+        csrfToken: { type: string }
+        selected: { $ref: "#/components/schemas/SetupConfiguration" }
+    Error:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code: { type: string }
+        message: { type: string }
+  responses:
+    Error:
+      description: Public-safe error. It never includes tokens, signed URLs, or provider response bodies.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }

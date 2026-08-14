@@ -46,6 +46,8 @@ type Config struct {
 	TorBoxAPIURL       string             `env:"BLACKPEARL_TORBOX_API_URL" envDefault:"https://api.torbox.app/v1/api/"`
 	TorBoxAPIToken     string             `env:"BLACKPEARL_TORBOX_API_TOKEN"`
 	TorBoxAPITokenFile string             `env:"BLACKPEARL_TORBOX_API_TOKEN_FILE"`
+	SetupEnabled       bool               `env:"BLACKPEARL_SETUP_ENABLED" envDefault:"false"`
+	SetupDir           string             `env:"BLACKPEARL_SETUP_DIR" envDefault:"/var/lib/blackpearl/setup"`
 	FilesystemMode     string             `env:"BLACKPEARL_FILESYSTEM_MODE" envDefault:"fuse"`
 	NFSAddr            string             `env:"BLACKPEARL_NFS_ADDR" envDefault:":2049"`
 	Plex               Plex
@@ -90,6 +92,9 @@ func (c Config) validate() error {
 	default:
 		return fmt.Errorf("BLACKPEARL_FILESYSTEM_MODE must be fuse or nfs: %q", c.FilesystemMode)
 	}
+	if c.SetupEnabled && (c.StorageMode != domain.StorageModeRolling || c.RangeProvider != "torbox-torrent" || c.FilesystemMode != "nfs") {
+		return errors.New("BLACKPEARL_SETUP_ENABLED requires rolling storage, torbox-torrent provider, and nfs filesystem mode")
+	}
 	switch c.StorageMode {
 	case domain.StorageModePersistent:
 		if c.CacheMaxBytes < 0 {
@@ -114,7 +119,7 @@ func (c Config) validate() error {
 		if c.POCSource != "" {
 			return errors.New("BLACKPEARL_POC_SOURCE must be empty in rolling mode")
 		}
-		if strings.TrimSpace(c.RangeObjectID) == "" || strings.ContainsRune(c.RangeObjectID, 0) {
+		if !c.SetupEnabled && (strings.TrimSpace(c.RangeObjectID) == "" || strings.ContainsRune(c.RangeObjectID, 0)) {
 			return errors.New("BLACKPEARL_RANGE_OBJECT_ID is required and must not contain NUL in rolling mode")
 		}
 		switch c.RangeProvider {
@@ -132,7 +137,11 @@ func (c Config) validate() error {
 			}
 			hasInlineToken := c.TorBoxAPIToken != ""
 			hasTokenFile := c.TorBoxAPITokenFile != ""
-			if hasInlineToken == hasTokenFile {
+			if c.SetupEnabled {
+				if hasInlineToken || hasTokenFile || c.RangeObjectID != "" {
+					return errors.New("browser setup mode requires TorBox token and object ID to be absent from environment")
+				}
+			} else if hasInlineToken == hasTokenFile {
 				return errors.New("exactly one of BLACKPEARL_TORBOX_API_TOKEN or BLACKPEARL_TORBOX_API_TOKEN_FILE is required")
 			}
 			if hasInlineToken && (strings.TrimSpace(c.TorBoxAPIToken) == "" || strings.TrimSpace(c.TorBoxAPIToken) != c.TorBoxAPIToken) {
@@ -145,7 +154,7 @@ func (c Config) validate() error {
 			if err != nil || torboxURL.Scheme != "https" || torboxURL.Host == "" || torboxURL.User != nil || torboxURL.RawQuery != "" || torboxURL.Fragment != "" {
 				return errors.New("BLACKPEARL_TORBOX_API_URL must be an absolute HTTPS URL without credentials, query, or fragment")
 			}
-			if !canonicalTorBoxObjectID(c.RangeObjectID) {
+			if !c.SetupEnabled && !canonicalTorBoxObjectID(c.RangeObjectID) {
 				return errors.New("BLACKPEARL_RANGE_OBJECT_ID must use canonical positive <torrent-id>:<file-id> form for TorBox")
 			}
 		default:
@@ -164,6 +173,7 @@ func (c Config) validate() error {
 		{variable: "BLACKPEARL_CACHE_DIR", value: c.CacheDir},
 		{variable: "BLACKPEARL_MOUNT_PATH", value: c.MountPath},
 		{variable: "BLACKPEARL_POC_SOURCE", value: c.POCSource, optional: true},
+		{variable: "BLACKPEARL_SETUP_DIR", value: c.SetupDir},
 	}
 	for _, configuredPath := range paths {
 		if configuredPath.optional && configuredPath.value == "" {

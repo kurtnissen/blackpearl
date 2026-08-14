@@ -19,11 +19,15 @@ import (
 	"github.com/blackpearl-media/blackpearl/internal/domain"
 	"github.com/blackpearl-media/blackpearl/internal/gateway/httporigin"
 	"github.com/blackpearl-media/blackpearl/internal/gateway/torbox"
+	setuphandler "github.com/blackpearl-media/blackpearl/internal/handler/setup"
 	"github.com/blackpearl-media/blackpearl/internal/httpserver"
 	"github.com/blackpearl-media/blackpearl/internal/pearlfs"
 	"github.com/blackpearl-media/blackpearl/internal/pearlnfs"
 	"github.com/blackpearl-media/blackpearl/internal/plex"
+	setuprepo "github.com/blackpearl-media/blackpearl/internal/repository/setup"
+	setupservice "github.com/blackpearl-media/blackpearl/internal/service/setup"
 	"github.com/blackpearl-media/blackpearl/internal/state"
+	webui "github.com/blackpearl-media/blackpearl/web"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
@@ -36,6 +40,7 @@ type nfsCatalog = pearlnfs.Catalog
 
 type nfsServer interface {
 	Addr() net.Addr
+	Reload(context.Context) error
 	Close() error
 	Wait() error
 }
@@ -56,7 +61,7 @@ func defaultDependencies() dependencies {
 			return pearlfs.Mount(ctx, mountPath, root)
 		},
 		serveNFS: func(ctx context.Context, address string, catalog nfsCatalog) (nfsServer, error) {
-			filesystem, err := pearlnfs.New(ctx, catalog)
+			filesystem, err := pearlnfs.NewReloadable(ctx, catalog)
 			if err != nil {
 				return nil, err
 			}
@@ -119,6 +124,9 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger, deps depen
 	defer func() {
 		runErr = errors.Join(runErr, repository.Close())
 	}()
+	if cfg.SetupEnabled {
+		return runBrowserSetup(ctx, cfg, logger, deps, repository)
+	}
 	var catalog *core.Catalog
 	switch cfg.StorageMode {
 	case domain.StorageModePersistent:
@@ -274,6 +282,114 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger, deps depen
 	case serveErr := <-serveErrors:
 		if !errors.Is(serveErr, http.ErrServerClosed) {
 			runErr = fmt.Errorf("serve diagnostics HTTP: %w", serveErr)
+		}
+	}
+	return runErr
+}
+
+func runBrowserSetup(ctx context.Context, cfg config.Config, logger *slog.Logger, deps dependencies, repository *state.Repository) (runErr error) {
+	switcher := core.NewCatalogSwitch()
+	nfs, err := deps.serveNFS(ctx, cfg.NFSAddr, switcher)
+	if err != nil {
+		return fmt.Errorf("start setup PearlNFS: %w", err)
+	}
+	defer func() {
+		closeErr := nfs.Close()
+		if closeErr == nil {
+			runErr = errors.Join(runErr, nfs.Wait())
+		} else {
+			runErr = errors.Join(runErr, fmt.Errorf("stop setup NFS: %w", closeErr))
+		}
+	}()
+
+	setupRepository, err := setuprepo.New(cfg.SetupDir)
+	if err != nil {
+		return fmt.Errorf("open browser setup repository: %w", err)
+	}
+	gatewayFactory := func(token string) (setupservice.Discoverer, error) {
+		client := *deps.torBoxClient
+		client.Timeout = cfg.RangeTimeout
+		return torbox.New(torbox.Options{
+			APIBaseURL: cfg.TorBoxAPIURL, APIToken: token,
+			MetadataTTL: time.Minute, LinkTTL: 2 * time.Hour,
+		}, &client)
+	}
+	runtimeFactory := func(runtimeContext context.Context, token string, configuration domain.SetupConfiguration) (core.CatalogService, error) {
+		client := *deps.torBoxClient
+		client.Timeout = cfg.RangeTimeout
+		gateway, gatewayErr := torbox.New(torbox.Options{
+			APIBaseURL: cfg.TorBoxAPIURL, APIToken: token,
+			MetadataTTL: time.Minute, LinkTTL: 2 * time.Hour,
+		}, &client)
+		if gatewayErr != nil {
+			return nil, fmt.Errorf("configure selected TorBox source: %w", gatewayErr)
+		}
+		backing, backingErr := domain.NewBackingRef("torbox-torrent", configuration.ObjectID)
+		if backingErr != nil {
+			return nil, fmt.Errorf("construct selected backing: %w", backingErr)
+		}
+		metadata, openErr := gateway.Open(runtimeContext, backing)
+		if openErr != nil {
+			return nil, fmt.Errorf("validate selected TorBox source: %w", openErr)
+		}
+		logicalSize := metadata.Size()
+		if closeErr := metadata.Close(); closeErr != nil {
+			return nil, fmt.Errorf("close selected TorBox metadata: %w", closeErr)
+		}
+		if logicalSize != configuration.Size {
+			return nil, fmt.Errorf("selected TorBox size changed: got %d want %d", logicalSize, configuration.Size)
+		}
+		rolling, rollingErr := cache.NewRolling(runtimeContext, cache.RollingOptions{
+			Root: cfg.CacheDir, MaxBytes: cfg.CacheMaxBytes,
+			ChunkBytes: cfg.CacheChunkBytes, FetchTimeout: cfg.RangeTimeout,
+		}, gateway)
+		if rollingErr != nil {
+			return nil, fmt.Errorf("open selected rolling cache: %w", rollingErr)
+		}
+		catalog := core.NewCatalog(repository, nil, rolling)
+		if _, registerErr := catalog.RegisterRemoteMovie(runtimeContext, configuration, backing); registerErr != nil {
+			return nil, registerErr
+		}
+		return catalog, nil
+	}
+	service := setupservice.New(setupRepository, gatewayFactory, runtimeFactory, switcher, nfs)
+	if restoreErr := service.Restore(ctx); restoreErr != nil && !errors.Is(restoreErr, domain.ErrNotFound) {
+		logger.WarnContext(ctx, "saved browser setup could not be restored", "error", restoreErr)
+	}
+	apiHandler, err := setuphandler.New(service)
+	if err != nil {
+		return err
+	}
+	uiHandler, err := webui.Handler()
+	if err != nil {
+		return err
+	}
+
+	gate := &readinessGate{delegate: switcher}
+	handler := otelhttp.NewHandler(httpserver.New(gate, logger, httpserver.Options{SetupAPI: apiHandler, UI: uiHandler}), "blackpearl.control")
+	listener, err := deps.listen("tcp", cfg.HTTPAddr)
+	if err != nil {
+		return fmt.Errorf("listen on setup address %s: %w", cfg.HTTPAddr, err)
+	}
+	server := &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second}
+	serveErrors := make(chan error, 1)
+	go func() { serveErrors <- server.Serve(listener) }()
+	gate.ready.Store(true)
+	defer func() {
+		gate.ready.Store(false)
+		shutdownContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if shutdownErr := server.Shutdown(shutdownContext); shutdownErr != nil {
+			runErr = errors.Join(runErr, fmt.Errorf("shut down setup HTTP: %w", shutdownErr))
+		}
+	}()
+	logger.InfoContext(ctx, "BlackPearl browser setup available", "httpAddress", listener.Addr().String(), "filesystemEndpoint", nfs.Addr().String())
+
+	select {
+	case <-ctx.Done():
+	case serveErr := <-serveErrors:
+		if !errors.Is(serveErr, http.ErrServerClosed) {
+			runErr = fmt.Errorf("serve setup HTTP: %w", serveErr)
 		}
 	}
 	return runErr

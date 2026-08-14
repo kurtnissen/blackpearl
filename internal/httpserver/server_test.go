@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/blackpearl-media/blackpearl/internal/domain"
 	"github.com/blackpearl-media/blackpearl/internal/httpserver"
 	"github.com/stretchr/testify/require"
 )
@@ -39,6 +40,7 @@ func TestReadinessReflectsDependencyState(t *testing.T) {
 	}{
 		{name: "ready", wantStatus: http.StatusOK, wantBody: `{"status":"ready"}`},
 		{name: "not ready", err: errors.New("catalog empty"), wantStatus: http.StatusServiceUnavailable, wantBody: `{"status":"not_ready"}`},
+		{name: "setup required", err: domain.ErrNotConfigured, wantStatus: http.StatusServiceUnavailable, wantBody: `{"status":"setup_required"}`},
 	}
 
 	for _, test := range tests {
@@ -56,6 +58,25 @@ func TestReadinessReflectsDependencyState(t *testing.T) {
 			require.True(t, readiness.called)
 		})
 	}
+}
+
+func TestServerRoutesSetupAPIAndEmbeddedUI(t *testing.T) {
+	t.Parallel()
+	api := http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusAccepted)
+	})
+	ui := http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusCreated)
+	})
+	handler := httpserver.New(&fakeReadiness{}, testLogger(), httpserver.Options{SetupAPI: api, UI: ui})
+
+	apiResponse := httptest.NewRecorder()
+	handler.ServeHTTP(apiResponse, httptest.NewRequest(http.MethodGet, "/api/setup/status", nil))
+	uiResponse := httptest.NewRecorder()
+	handler.ServeHTTP(uiResponse, httptest.NewRequest(http.MethodGet, "/", nil))
+
+	require.Equal(t, http.StatusAccepted, apiResponse.Code)
+	require.Equal(t, http.StatusCreated, uiResponse.Code)
 }
 
 func TestEndpointsRejectUnsupportedMethods(t *testing.T) {
