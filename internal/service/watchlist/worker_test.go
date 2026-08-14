@@ -2,6 +2,7 @@ package watchlist_test
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -30,6 +31,42 @@ func TestWorkerSubmitsAndDurablyAttachesNewWatchlistJob(t *testing.T) {
 	require.Equal(t, claim.Item().Title(), manager.submitted.Title())
 	require.Equal(t, testJobID, queue.attachedJobID)
 	require.Equal(t, now.Add(30*time.Second), queue.nextAttempt)
+	require.Empty(t, queue.completions)
+}
+
+func TestWorkerCompletesAlreadyPublishedMovieWithoutSubmittingJob(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, time.August, 14, 16, 0, 0, 0, time.UTC)
+	claim := mustClaim(t, "plex://movie/published", 1, "")
+	queue := &fakeWorkerQueue{claims: []acquisition.WatchlistClaim{claim}}
+	manager := &fakeJobManager{}
+	index := &fakePublishedMediaIndex{objectID: "76429581:3", found: true}
+	worker := newWorkerWithIndex(t, queue, manager, index, now)
+
+	state, err := worker.ProcessOne(context.Background())
+
+	require.NoError(t, err)
+	require.Equal(t, acquisition.WatchlistQueueStateSucceeded, state)
+	require.Zero(t, manager.submitCalls)
+	require.Equal(t, claim.Item().Title(), index.title)
+	require.Equal(t, claim.Item().Year(), index.year)
+	require.Len(t, queue.completions, 1)
+	require.Equal(t, "76429581:3", queue.completions[0].PublishedObjectID())
+}
+
+func TestWorkerDoesNotSubmitWhenPublishedMediaLookupFails(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, time.August, 14, 16, 0, 0, 0, time.UTC)
+	claim := mustClaim(t, "plex://movie/index-failure", 1, "")
+	queue := &fakeWorkerQueue{claims: []acquisition.WatchlistClaim{claim}}
+	manager := &fakeJobManager{}
+	index := &fakePublishedMediaIndex{err: errors.New("manifest unavailable")}
+	worker := newWorkerWithIndex(t, queue, manager, index, now)
+
+	_, err := worker.ProcessOne(context.Background())
+
+	require.ErrorIs(t, err, watchlistservice.ErrUnavailable)
+	require.Zero(t, manager.submitCalls)
 	require.Empty(t, queue.completions)
 }
 
@@ -153,11 +190,14 @@ func TestWorkerReportsNoWorkAndValidatesOptions(t *testing.T) {
 		LeaseDuration: time.Minute, OperationTimeout: 10 * time.Second, IdleInterval: time.Second,
 		ReconcileInterval: 30 * time.Second, NotCachedCooldown: time.Hour, RetryCooldown: time.Minute,
 	}
-	_, err = watchlistservice.NewWorker(nil, manager, valid)
+	index := &fakePublishedMediaIndex{}
+	_, err = watchlistservice.NewWorker(nil, manager, index, valid)
 	require.Error(t, err)
-	_, err = watchlistservice.NewWorker(queue, nil, valid)
+	_, err = watchlistservice.NewWorker(queue, nil, index, valid)
 	require.Error(t, err)
-	_, err = watchlistservice.NewWorker(queue, manager, watchlistservice.WorkerOptions{})
+	_, err = watchlistservice.NewWorker(queue, manager, nil, valid)
+	require.Error(t, err)
+	_, err = watchlistservice.NewWorker(queue, manager, index, watchlistservice.WorkerOptions{})
 	require.Error(t, err)
 }
 
@@ -184,13 +224,38 @@ func TestWorkerRunStopsAfterProcessCancellation(t *testing.T) {
 
 func newWorker(t *testing.T, queue *fakeWorkerQueue, manager *fakeJobManager, now time.Time) *watchlistservice.Worker {
 	t.Helper()
-	worker, err := watchlistservice.NewWorker(queue, manager, watchlistservice.WorkerOptions{
+	return newWorkerWithIndex(t, queue, manager, &fakePublishedMediaIndex{}, now)
+}
+
+func newWorkerWithIndex(
+	t *testing.T,
+	queue *fakeWorkerQueue,
+	manager *fakeJobManager,
+	index *fakePublishedMediaIndex,
+	now time.Time,
+) *watchlistservice.Worker {
+	t.Helper()
+	worker, err := watchlistservice.NewWorker(queue, manager, index, watchlistservice.WorkerOptions{
 		LeaseDuration: time.Minute, OperationTimeout: 10 * time.Second, IdleInterval: time.Millisecond,
 		ReconcileInterval: 30 * time.Second, NotCachedCooldown: 6 * time.Hour,
 		RetryCooldown: 15 * time.Minute, Now: func() time.Time { return now },
 	})
 	require.NoError(t, err)
 	return worker
+}
+
+type fakePublishedMediaIndex struct {
+	objectID string
+	found    bool
+	err      error
+	title    string
+	year     int
+}
+
+func (f *fakePublishedMediaIndex) FindPublishedMovie(_ context.Context, title string, year int) (string, bool, error) {
+	f.title = title
+	f.year = year
+	return f.objectID, f.found, f.err
 }
 
 func mustClaim(t *testing.T, externalID string, attempt int, jobID string) acquisition.WatchlistClaim {

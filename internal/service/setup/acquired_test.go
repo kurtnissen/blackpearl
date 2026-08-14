@@ -65,6 +65,62 @@ func TestServicePublishAcquiredReplacesSameLogicalMediaPath(t *testing.T) {
 	require.Equal(t, "Example", prepared.Items[0].Title)
 }
 
+func TestServiceFindPublishedMovieReadsCurrentManifest(t *testing.T) {
+	t.Parallel()
+	previous := mustConfiguration(t)
+	repository := &fakeSetupRepository{token: "saved-token", configuration: previous}
+	service := setupservice.New(repository,
+		func(string) (setupservice.Discoverer, error) { return &fakeDiscoverer{}, nil },
+		func(context.Context, string, domain.SetupManifest) (core.CatalogService, error) {
+			return &fakeCatalog{}, nil
+		},
+		&fakePublisher{},
+	)
+
+	objectID, found, err := service.FindPublishedMovie(context.Background(), previous.Title, previous.Year)
+
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, previous.ObjectID, objectID)
+
+	objectID, found, err = service.FindPublishedMovie(context.Background(), "Something Else", previous.Year)
+	require.NoError(t, err)
+	require.False(t, found)
+	require.Empty(t, objectID)
+}
+
+func TestServiceFindPublishedMovieTreatsMissingSetupAsEmpty(t *testing.T) {
+	t.Parallel()
+	service := setupservice.New(&fakeSetupRepository{},
+		func(string) (setupservice.Discoverer, error) { return &fakeDiscoverer{}, nil },
+		func(context.Context, string, domain.SetupManifest) (core.CatalogService, error) {
+			return &fakeCatalog{}, nil
+		},
+		&fakePublisher{},
+	)
+
+	objectID, found, err := service.FindPublishedMovie(context.Background(), "Example", 2026)
+
+	require.NoError(t, err)
+	require.False(t, found)
+	require.Empty(t, objectID)
+}
+
+func TestServiceFindPublishedMovieMapsRepositoryFailure(t *testing.T) {
+	t.Parallel()
+	service := setupservice.New(&fakeSetupRepository{loadErr: errors.New("disk failed")},
+		func(string) (setupservice.Discoverer, error) { return &fakeDiscoverer{}, nil },
+		func(context.Context, string, domain.SetupManifest) (core.CatalogService, error) {
+			return &fakeCatalog{}, nil
+		},
+		&fakePublisher{},
+	)
+
+	_, _, err := service.FindPublishedMovie(context.Background(), "Example", 2026)
+
+	require.ErrorIs(t, err, setupservice.ErrUnavailable)
+}
+
 func TestServicePublishAcquiredMapsEpisodeIntent(t *testing.T) {
 	t.Parallel()
 	previous := mustConfiguration(t)

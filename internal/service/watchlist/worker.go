@@ -28,6 +28,12 @@ type JobManager interface {
 	Get(ctx context.Context, id string) (acquisition.AcquisitionJob, error)
 }
 
+// PublishedMediaIndex finds movie intent already exposed through the active
+// Plex manifest. It prevents duplicate provider mutations for published media.
+type PublishedMediaIndex interface {
+	FindPublishedMovie(ctx context.Context, title string, year int) (objectID string, found bool, err error)
+}
+
 // WorkerOptions bounds serialized automatic acquisition and retry behavior.
 type WorkerOptions struct {
 	LeaseDuration     time.Duration
@@ -44,6 +50,7 @@ type WorkerOptions struct {
 type Worker struct {
 	queue   AcquisitionQueue
 	manager JobManager
+	index   PublishedMediaIndex
 	options WorkerOptions
 	now     func() time.Time
 
@@ -51,8 +58,8 @@ type Worker struct {
 }
 
 // NewWorker constructs a serialized watchlist-to-background-job worker.
-func NewWorker(queue AcquisitionQueue, manager JobManager, options WorkerOptions) (*Worker, error) {
-	if queue == nil || manager == nil {
+func NewWorker(queue AcquisitionQueue, manager JobManager, index PublishedMediaIndex, options WorkerOptions) (*Worker, error) {
+	if queue == nil || manager == nil || index == nil {
 		return nil, errors.New("watchlist worker dependencies are required")
 	}
 	for name, value := range map[string]time.Duration{
@@ -71,7 +78,7 @@ func NewWorker(queue AcquisitionQueue, manager JobManager, options WorkerOptions
 	if now == nil {
 		now = time.Now
 	}
-	return &Worker{queue: queue, manager: manager, options: options, now: now}, nil
+	return &Worker{queue: queue, manager: manager, index: index, options: options, now: now}, nil
 }
 
 // ProcessOne performs one durable Watchlist submission or reconciliation.
@@ -95,7 +102,19 @@ func (w *Worker) ProcessOne(ctx context.Context) (acquisition.WatchlistQueueStat
 }
 
 func (w *Worker) submit(ctx context.Context, claim acquisition.WatchlistClaim, now time.Time) (acquisition.WatchlistQueueState, error) {
-	request, err := claim.Item().SearchRequest()
+	item := claim.Item()
+	objectID, found, err := w.index.FindPublishedMovie(ctx, item.Title(), item.Year())
+	if err != nil {
+		return "", workerBoundaryError(ctx, "read published media index", err)
+	}
+	if found {
+		completion, completionErr := acquisition.NewWatchlistSucceeded(objectID)
+		if completionErr != nil {
+			return w.completeDurably(ctx, claim, acquisition.NewWatchlistManualReview())
+		}
+		return w.completeDurably(ctx, claim, completion)
+	}
+	request, err := item.SearchRequest()
 	if err != nil {
 		return w.completeDurably(ctx, claim, acquisition.NewWatchlistManualReview())
 	}

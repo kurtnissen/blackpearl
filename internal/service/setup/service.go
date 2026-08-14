@@ -270,6 +270,25 @@ func (s *Service) PublishAcquired(ctx context.Context, media acquisitiondomain.A
 	return err
 }
 
+// FindPublishedMovie reports whether one movie intent is already present in
+// the durable Plex manifest, without exposing the saved provider credential.
+func (s *Service) FindPublishedMovie(ctx context.Context, title string, year int) (string, bool, error) {
+	_, manifest, err := s.repository.LoadManifest(ctx)
+	if err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("load published media manifest: %w", ErrUnavailable)
+	}
+	for index := range manifest.Items {
+		item := manifest.Items[index]
+		if item.MediaType == domain.MediaTypeMovie && item.Title == title && item.Year == year {
+			return item.ObjectID, true, nil
+		}
+	}
+	return "", false, nil
+}
+
 func (s *Service) commitManifest(ctx context.Context, token string, manifest domain.SetupManifest) (domain.SetupManifest, error) {
 	runtime, err := s.runtimeFactory(ctx, token, manifest)
 	if err != nil {

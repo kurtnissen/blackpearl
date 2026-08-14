@@ -580,7 +580,7 @@ func runBrowserSetup(ctx context.Context, cfg config.Config, logger *slog.Logger
 			return errors.Join(fmt.Errorf("configure Plex watchlist observer: %w", err), closeErr)
 		}
 		if cfg.WatchlistAcquisitionEnabled {
-			watchlistWorker, err = watchlistservice.NewWorker(watchlistRepository, acquisitionJobManager, watchlistservice.WorkerOptions{
+			watchlistWorker, err = watchlistservice.NewWorker(watchlistRepository, acquisitionJobManager, service, watchlistservice.WorkerOptions{
 				LeaseDuration:     cfg.WatchlistLeaseDuration,
 				OperationTimeout:  cfg.WatchlistAcquisitionTimeout,
 				IdleInterval:      cfg.WatchlistWorkerIdleInterval,
