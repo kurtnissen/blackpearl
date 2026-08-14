@@ -33,6 +33,67 @@ func TestWorkerPersistsSelectionInOneLeaseBeforeAnyProviderMutation(t *testing.T
 	require.Equal(t, mustJobRelease(t).InfoHash(), selected.Selection().InfoHash())
 }
 
+func TestWorkerPlansCachedFirstBoundedCandidateSetBeforeAnyProviderMutation(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	repository, now, jobID := queuedJob(t, ctx)
+	releases := []acquisition.Release{
+		mustJobReleaseAt(t, 0), mustJobReleaseAt(t, 1), mustJobReleaseAt(t, 2),
+		mustJobReleaseAt(t, 2), mustJobReleaseAt(t, 3), mustJobReleaseAt(t, 4),
+		mustJobReleaseAt(t, 5),
+	}
+	provider := &fakeJobProvider{
+		releases: releases,
+		cached:   []acquisition.Release{mustJobReleaseAt(t, 2), mustJobReleaseAt(t, 4)},
+	}
+	worker := newJobWorker(t, repository, provider, &fakeJobPublisher{}, now)
+
+	state, err := worker.ProcessOne(ctx)
+
+	require.NoError(t, err)
+	require.Equal(t, acquisition.JobStateSelected, state)
+	require.Equal(t, 1, provider.cacheCalls)
+	require.Len(t, provider.cacheInput, acquisition.MaximumJobCandidates)
+	require.Zero(t, provider.findCalls)
+	require.Zero(t, provider.createCalls)
+	candidates, err := repository.Candidates(ctx, jobID)
+	require.NoError(t, err)
+	require.Len(t, candidates, acquisition.MaximumJobCandidates)
+	require.Equal(t, []string{
+		mustJobReleaseAt(t, 2).InfoHash(),
+		mustJobReleaseAt(t, 4).InfoHash(),
+		mustJobReleaseAt(t, 0).InfoHash(),
+		mustJobReleaseAt(t, 1).InfoHash(),
+		mustJobReleaseAt(t, 3).InfoHash(),
+	}, candidateHashes(candidates))
+	require.Equal(t, acquisition.CandidateOutcomeSelected, candidates[0].Outcome())
+	for _, candidate := range candidates[1:] {
+		require.Equal(t, acquisition.CandidateOutcomePending, candidate.Outcome())
+	}
+}
+
+func TestWorkerDefersCandidatePlanningWhenCacheLookupIsUnavailable(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	repository, now, jobID := queuedJob(t, ctx)
+	provider := &fakeJobProvider{
+		releases: []acquisition.Release{mustJobRelease(t)},
+		cacheErr: errors.New("private cache lookup failed"),
+	}
+	worker := newJobWorker(t, repository, provider, &fakeJobPublisher{}, now)
+
+	state, err := worker.ProcessOne(ctx)
+
+	require.NoError(t, err)
+	require.Equal(t, acquisition.JobStateQueued, state)
+	job, err := repository.Get(ctx, jobID)
+	require.NoError(t, err)
+	require.Equal(t, acquisition.JobErrorProviderUnavailable, job.ErrorCode())
+	candidates, err := repository.Candidates(ctx, jobID)
+	require.NoError(t, err)
+	require.Empty(t, candidates)
+}
+
 func TestWorkerReconcilesSelectedHashBeforeCreate(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -239,6 +300,10 @@ func newJobWorker(
 type fakeJobProvider struct {
 	releases         []acquisition.Release
 	searchErr        error
+	cached           []acquisition.Release
+	cacheErr         error
+	cacheInput       []acquisition.Release
+	cacheCalls       int
 	material         acquisition.TorrentInput
 	materializeErr   error
 	materializeCalls int
@@ -257,6 +322,12 @@ type fakeJobProvider struct {
 
 func (f *fakeJobProvider) Search(context.Context, acquisition.SearchRequest) ([]acquisition.Release, error) {
 	return append([]acquisition.Release(nil), f.releases...), f.searchErr
+}
+
+func (f *fakeJobProvider) CachedTorrents(_ context.Context, releases []acquisition.Release) ([]acquisition.Release, error) {
+	f.cacheCalls++
+	f.cacheInput = append([]acquisition.Release(nil), releases...)
+	return append([]acquisition.Release(nil), f.cached...), f.cacheErr
 }
 
 func (f *fakeJobProvider) Materialize(context.Context, acquisition.Release) (acquisition.TorrentInput, error) {
@@ -306,14 +377,37 @@ func (f *fakeJobPublisher) PublishAcquired(_ context.Context, media acquisition.
 
 func mustJobRelease(t *testing.T) acquisition.Release {
 	t.Helper()
+	return mustJobReleaseAt(t, 0)
+}
+
+func mustJobReleaseAt(t *testing.T, ordinal int) acquisition.Release {
+	t.Helper()
+	hashes := []string{
+		"0123456789abcdef0123456789abcdef01234567",
+		"1123456789abcdef0123456789abcdef01234567",
+		"2123456789abcdef0123456789abcdef01234567",
+		"3123456789abcdef0123456789abcdef01234567",
+		"4123456789abcdef0123456789abcdef01234567",
+		"5123456789abcdef0123456789abcdef01234567",
+	}
+	require.GreaterOrEqual(t, ordinal, 0)
+	require.Less(t, ordinal, len(hashes))
+	hash := hashes[ordinal]
 	release, err := acquisition.NewRelease(acquisition.ReleaseInput{
-		Provider: "prowlarr", SourceID: "result-1", Title: "Example.Movie.2026",
-		Protocol: acquisition.ReleaseProtocolTorrent, Size: 100, Indexer: "authorized-indexer",
-		InfoHash:  "0123456789abcdef0123456789abcdef01234567",
-		MagnetURL: "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567",
+		Provider: "prowlarr", SourceID: "result-" + hash[:1], Title: "Example.Movie.2026",
+		Protocol: acquisition.ReleaseProtocolTorrent, Size: int64(100 + ordinal), Indexer: "authorized-indexer",
+		InfoHash: hash, MagnetURL: "magnet:?xt=urn:btih:" + hash,
 	})
 	require.NoError(t, err)
 	return release
+}
+
+func candidateHashes(candidates []acquisition.JobCandidate) []string {
+	hashes := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		hashes = append(hashes, candidate.Selection().InfoHash())
+	}
+	return hashes
 }
 
 func mustJobSelection(t *testing.T) acquisition.JobSelection {

@@ -18,8 +18,9 @@ const durableTransitionTimeout = 5 * time.Second
 // WorkerQueue is the lease and transition boundary consumed by the worker.
 type WorkerQueue interface {
 	Claim(ctx context.Context, now time.Time, leaseDuration time.Duration) (acquisition.AcquisitionJobClaim, error)
-	Select(ctx context.Context, claim acquisition.AcquisitionJobClaim, selection acquisition.JobSelection, now time.Time) error
-	Attach(ctx context.Context, claim acquisition.AcquisitionJobClaim, created acquisition.CreatedObject, now time.Time) error
+	Plan(ctx context.Context, claim acquisition.AcquisitionJobClaim, candidates []acquisition.JobCandidate, now time.Time) error
+	AttachPrepared(ctx context.Context, claim acquisition.AcquisitionJobClaim, created acquisition.CreatedObject, createdByJob bool, now time.Time) error
+	Advance(ctx context.Context, claim acquisition.AcquisitionJobClaim, outcome acquisition.CandidateOutcome, terminalCode acquisition.JobErrorCode, now time.Time) (bool, error)
 	Defer(ctx context.Context, claim acquisition.AcquisitionJobClaim, nextAttempt time.Time, code acquisition.JobErrorCode, progress int, now time.Time) error
 	Succeed(ctx context.Context, claim acquisition.AcquisitionJobClaim, publishedObjectID string, now time.Time) error
 	Fail(ctx context.Context, claim acquisition.AcquisitionJobClaim, code acquisition.JobErrorCode, manualReview bool, now time.Time) error
@@ -37,6 +38,7 @@ type Materializer interface {
 
 // Preparer reconciles, creates, and inspects provider account objects.
 type Preparer interface {
+	CachedTorrents(ctx context.Context, releases []acquisition.Release) ([]acquisition.Release, error)
 	FindTorrentByHash(ctx context.Context, infoHash string) (acquisition.CreatedObject, error)
 	CreateTorrent(ctx context.Context, input acquisition.TorrentInput, allowDownload bool) (acquisition.CreatedObject, error)
 	InspectCreatedTorrent(ctx context.Context, created acquisition.CreatedObject) ([]domain.MediaCandidate, error)
@@ -139,26 +141,80 @@ func (w *Worker) resolve(ctx context.Context, operationContext context.Context, 
 	if err != nil {
 		return w.deferProviderFailure(ctx, claim, err)
 	}
-	var selected acquisition.Release
+	eligible := make([]acquisition.Release, 0, acquisition.MaximumJobCandidates)
+	seen := make(map[string]struct{}, acquisition.MaximumJobCandidates)
 	for _, release := range releases {
-		if release.Protocol() == acquisition.ReleaseProtocolTorrent && release.InfoHash() != "" {
-			selected = release
+		if release.Protocol() != acquisition.ReleaseProtocolTorrent || release.InfoHash() == "" {
+			continue
+		}
+		hash := release.InfoHash()
+		if _, exists := seen[hash]; exists {
+			continue
+		}
+		seen[hash] = struct{}{}
+		eligible = append(eligible, release)
+		if len(eligible) == acquisition.MaximumJobCandidates {
 			break
 		}
 	}
-	if selected.InfoHash() == "" {
+	if len(eligible) == 0 {
 		return w.fail(ctx, claim, acquisition.JobErrorNoRelease, false)
 	}
-	selection, err := acquisition.NewJobSelection(selected)
+	cached, err := providers.Preparer.CachedTorrents(operationContext, eligible)
 	if err != nil {
+		return w.deferProviderFailure(ctx, claim, err)
+	}
+	ordered := cachedFirst(eligible, cached)
+	candidates := make([]acquisition.JobCandidate, 0, len(ordered))
+	for ordinal, release := range ordered {
+		selection, selectionErr := acquisition.NewJobSelection(release)
+		if selectionErr != nil {
+			continue
+		}
+		outcome := acquisition.CandidateOutcomePending
+		if len(candidates) == 0 {
+			outcome = acquisition.CandidateOutcomeSelected
+		}
+		candidate, candidateErr := acquisition.NewJobCandidate(selection, ordinal, outcome)
+		if candidateErr != nil {
+			continue
+		}
+		candidates = append(candidates, candidate)
+	}
+	if len(candidates) == 0 {
 		return w.fail(ctx, claim, acquisition.JobErrorNoRelease, false)
 	}
 	if err := w.commit(ctx, func(commitContext context.Context) error {
-		return w.queue.Select(commitContext, claim, selection, w.now().UTC())
+		return w.queue.Plan(commitContext, claim, candidates, w.now().UTC())
 	}); err != nil {
 		return "", err
 	}
 	return acquisition.JobStateSelected, nil
+}
+
+func cachedFirst(eligible []acquisition.Release, cached []acquisition.Release) []acquisition.Release {
+	cachedHashes := make(map[string]struct{}, len(cached))
+	eligibleHashes := make(map[string]struct{}, len(eligible))
+	for _, release := range eligible {
+		eligibleHashes[release.InfoHash()] = struct{}{}
+	}
+	for _, release := range cached {
+		if _, eligible := eligibleHashes[release.InfoHash()]; eligible {
+			cachedHashes[release.InfoHash()] = struct{}{}
+		}
+	}
+	ordered := make([]acquisition.Release, 0, len(eligible))
+	for _, release := range eligible {
+		if _, isCached := cachedHashes[release.InfoHash()]; isCached {
+			ordered = append(ordered, release)
+		}
+	}
+	for _, release := range eligible {
+		if _, isCached := cachedHashes[release.InfoHash()]; !isCached {
+			ordered = append(ordered, release)
+		}
+	}
+	return ordered
 }
 
 func (w *Worker) prepare(ctx context.Context, operationContext context.Context, claim acquisition.AcquisitionJobClaim, providers Providers) (acquisition.JobState, error) {
@@ -243,7 +299,7 @@ func (w *Worker) publish(ctx context.Context, operationContext context.Context, 
 
 func (w *Worker) attach(ctx context.Context, claim acquisition.AcquisitionJobClaim, created acquisition.CreatedObject) (acquisition.JobState, error) {
 	if err := w.commit(ctx, func(commitContext context.Context) error {
-		return w.queue.Attach(commitContext, claim, created, w.now().UTC())
+		return w.queue.AttachPrepared(commitContext, claim, created, false, w.now().UTC())
 	}); err != nil {
 		return "", err
 	}

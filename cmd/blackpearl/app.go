@@ -529,10 +529,7 @@ func runBrowserSetup(ctx context.Context, cfg config.Config, logger *slog.Logger
 		var jobSearcher acquisitionjobservice.Searcher = resolver.NewSearcher(searchGateway)
 		var materializer acquisitionjobservice.Materializer = searchGateway
 		if openMediaGateway != nil {
-			jobSearcher, gatewayErr = resolver.NewPreferredSearcher(openMediaGateway, searchGateway)
-			if gatewayErr != nil {
-				return acquisitionjobservice.Providers{}, fmt.Errorf("configure preferred background search: %w", gatewayErr)
-			}
+			jobSearcher = resolver.NewSearcher(openMediaGateway, searchGateway)
 			materializer = materializerFunc(func(materialContext context.Context, release acquisitiondomain.Release) (acquisitiondomain.TorrentInput, error) {
 				if release.Provider() == openMediaGateway.Name() {
 					return openMediaGateway.Materialize(materialContext, release)

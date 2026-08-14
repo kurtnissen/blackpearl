@@ -641,10 +641,22 @@ func TestRunBrowserSetupSubmitsWatchlistMovieToDurableQueue(t *testing.T) {
 	<-httpAddress
 	jobQueue, err := acquisitionjobrepo.Open(context.Background(), filepath.Join(cfg.DataDir, "acquisition-jobs.db"))
 	require.NoError(t, err)
+	var plannedJob acquisitiondomain.AcquisitionJob
 	require.Eventually(t, func() bool {
 		jobs, listErr := jobQueue.List(context.Background(), 20)
-		return listErr == nil && len(jobs) == 1 && jobs[0].Request().Title() == "Automatic Movie"
+		if listErr != nil || len(jobs) != 1 || jobs[0].Request().Title() != "Automatic Movie" || jobs[0].State() != acquisitiondomain.JobStateSelected {
+			return false
+		}
+		candidates, candidatesErr := jobQueue.Candidates(context.Background(), jobs[0].ID())
+		if candidatesErr != nil || len(candidates) != 1 {
+			return false
+		}
+		plannedJob = jobs[0]
+		return candidates[0].Outcome() == acquisitiondomain.CandidateOutcomeSelected
 	}, 5*time.Second, 10*time.Millisecond)
+	selectedOrdinal, hasPlan := plannedJob.SelectedCandidateOrdinal()
+	require.True(t, hasPlan)
+	require.Zero(t, selectedOrdinal)
 	require.NoError(t, jobQueue.Close())
 	queue, err := watchlistrepo.Open(context.Background(), cfg.DBPath)
 	require.NoError(t, err)
@@ -656,7 +668,7 @@ func TestRunBrowserSetupSubmitsWatchlistMovieToDurableQueue(t *testing.T) {
 	}, 5*time.Second, 10*time.Millisecond)
 	require.NoError(t, queue.Close())
 	require.Equal(t, 1, queueStatus.Acquiring+queueStatus.Succeeded)
-	require.Zero(t, cacheCheckCalls.Load())
+	require.Equal(t, int32(1), cacheCheckCalls.Load())
 
 	cancel()
 	require.NoError(t, <-result)
