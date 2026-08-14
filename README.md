@@ -13,6 +13,7 @@ BlackPearl is an experimental, open-source Go service that exposes a virtual med
 - Cached-only TorBox acquisition preflights cache availability, enforces `add_only_if_cached=true` during creation, inspects the resulting account object, selects the requested video, and publishes it through the existing atomic manifest transaction.
 - A paired localhost acquisition console privately configures Prowlarr, accepts validated movie or TV-episode intent, and returns only the updated public Plex manifest. Provider credentials and release locators never return to the browser.
 - Durable Plex Watchlist ingestion observes movies and shows through a bounded, header-authenticated adapter, stores a lease-based SQLite queue, and can serialize cached-only movie acquisition without inventing episode intent for a show.
+- Best-effort Plex refresh notifications rescan the exact BlackPearl movie and TV libraries after successful manifest publication without coupling Plex availability to the publication transaction.
 - `persistent` and `rolling` configuration modes. Rolling mode fetches strict HTTP ranges into fixed-size chunks, coalesces misses, performs bounded seek-aware read-ahead and next-episode prefix prefetch, and enforces a hard local byte quota with LRU eviction.
 - A generated 8-second H.264/AAC test-pattern MP4 with no third-party media.
 - Docker/Compose files for BlackPearl, a legal range-origin fixture, and isolated opt-in Plex acceptance containers.
@@ -116,6 +117,15 @@ Watchlist titles or identifiers. After authorized indexers are configured and th
 cached-only movie processing can be enabled explicitly with
 `BLACKPEARL_WATCHLIST_ACQUISITION_ENABLED=true`. Shows remain observation-only
 until an episode policy is configured in a later milestone.
+
+Successful manifest publication also schedules a best-effort refresh of the
+exact Plex library roots `/blackpearl/Movies` and `/blackpearl/TV Shows`. The
+TorBox Compose profile enables this for its isolated Plex server. Refresh
+failures retry in the background and never roll back a published manifest.
+Docker Desktop uses the default host endpoint
+`http://host.docker.internal:32402`; native Linux deployments should override
+`BLACKPEARL_PLEX_REFRESH_URL` with an endpoint reachable from the BlackPearl
+container. Windows Docker Desktop and native Linux remain unverified.
 
 The token and manifest are stored with private permissions only inside
 the named BlackPearl data volume. It is never returned to the browser after

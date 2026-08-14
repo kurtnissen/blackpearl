@@ -96,6 +96,15 @@ delegate all bytes to the same range-oriented read handle.
 
 PearlNFS publishes each namespace together with the catalog that supplies its bytes. NFS file handles retain an immutable generation snapshot, while new lookups use the newest generation. This keeps active reads stable during browser-driven media replacement, including when a replacement reuses the same Plex path.
 
+After that atomic publication succeeds, a separate process-lifetime worker
+coalesces refresh signals and asks Plex to rescan every library whose root is
+exactly `/blackpearl/Movies` or `/blackpearl/TV Shows`. The Plex gateway
+discovers section keys at request time, authenticates only with a header, bounds
+every response, and refuses redirects. Refresh retries are best-effort and
+cannot roll back or block the published namespace. The isolated Compose profile
+keeps Plex and BlackPearl on disjoint networks and reaches the host-published
+Plex endpoint without exposing the control API to Plex.
+
 ## Direct Play target
 
 The low-storage VPS path treats Plex Direct Play as a primary constraint. BlackPearl delivers exact container bytes and does not transcode. Codec/container compatibility remains a Plex client concern; a provider resolver should eventually prefer Direct Play-compatible candidates when metadata is reliable. Milestone 1's synthetic fixture is MP4 with H.264 video, AAC audio, `yuv420p`, and fast-start metadata.
