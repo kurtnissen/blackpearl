@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 	"unicode"
+
+	"github.com/blackpearl-media/blackpearl/internal/domain"
 )
 
 var jobIDPattern = regexp.MustCompile(`^[0-9a-f]{32}$`)
@@ -42,10 +44,60 @@ const (
 	JobErrorAmbiguousMutation   JobErrorCode = "ambiguous_mutation"
 )
 
-// JobSelection is the safe, durable subset of one ephemeral provider release.
+// SelectionKind identifies the durable acquisition path for one candidate.
+type SelectionKind string
+
+const (
+	// SelectionKindTorrent identifies a locator-free BitTorrent release.
+	SelectionKindTorrent SelectionKind = "torrent"
+	// SelectionKindRange identifies an exact provider-backed logical media file.
+	SelectionKindRange SelectionKind = "range"
+)
+
+// RangeCandidate is safe, durable metadata for one exact range-readable file.
+// Its backing object ID is provider-opaque and must not contain a source URL.
+type RangeCandidate struct {
+	media   domain.MediaCandidate
+	indexer string
+}
+
+// NewRangeCandidate validates one exact provider-backed media file.
+func NewRangeCandidate(media domain.MediaCandidate, indexer string) (RangeCandidate, error) {
+	validated, err := domain.NewProviderMediaCandidate(media.Backing(), media.Name, media.Size)
+	if err != nil {
+		return RangeCandidate{}, fmt.Errorf("validate range media candidate: %w", err)
+	}
+	if media.Extension != "" && media.Extension != validated.Extension {
+		return RangeCandidate{}, errors.New("range media candidate extension does not match its name")
+	}
+	cleanIndexer, err := validateSearchText("range candidate indexer", indexer, maximumIndexerNameBytes)
+	if err != nil {
+		return RangeCandidate{}, err
+	}
+	return RangeCandidate{media: validated, indexer: cleanIndexer}, nil
+}
+
+func (c RangeCandidate) valid() bool {
+	_, err := NewRangeCandidate(c.media, c.indexer)
+	return err == nil
+}
+
+func (c RangeCandidate) isZero() bool {
+	return c == (RangeCandidate{})
+}
+
+// Media returns provider-neutral exact-file metadata.
+func (c RangeCandidate) Media() domain.MediaCandidate { return c.media }
+
+// Indexer returns the safe catalog or index display name.
+func (c RangeCandidate) Indexer() string { return c.indexer }
+
+// JobSelection is the safe, durable union of torrent and exact-file candidates.
 // It intentionally contains no source URL, magnet, download URL, or credential.
 type JobSelection struct {
-	release Release
+	kind           SelectionKind
+	release        Release
+	rangeCandidate RangeCandidate
 }
 
 // CandidateOutcome is the public-safe durable state of one release candidate.
@@ -80,7 +132,7 @@ func NewJobCandidate(selection JobSelection, ordinal int, outcome CandidateOutco
 	default:
 		return JobCandidate{}, fmt.Errorf("unsupported acquisition job candidate outcome: %q", outcome)
 	}
-	validated, err := NewJobSelection(selection.Release())
+	validated, err := cloneJobSelection(selection)
 	if err != nil {
 		return JobCandidate{}, fmt.Errorf("validate acquisition job candidate selection: %w", err)
 	}
@@ -98,6 +150,11 @@ func (c JobCandidate) Outcome() CandidateOutcome { return c.outcome }
 
 // NewJobSelection strips ephemeral locators from a validated torrent release.
 func NewJobSelection(release Release) (JobSelection, error) {
+	return NewTorrentJobSelection(release)
+}
+
+// NewTorrentJobSelection strips ephemeral locators from a validated torrent release.
+func NewTorrentJobSelection(release Release) (JobSelection, error) {
 	if release.Protocol() != ReleaseProtocolTorrent || release.InfoHash() == "" {
 		return JobSelection{}, errors.New("durable acquisition selection requires a torrent info hash")
 	}
@@ -114,28 +171,101 @@ func NewJobSelection(release Release) (JobSelection, error) {
 	if err != nil {
 		return JobSelection{}, fmt.Errorf("validate durable acquisition selection: %w", err)
 	}
-	return JobSelection{release: safe}, nil
+	return JobSelection{kind: SelectionKindTorrent, release: safe}, nil
+}
+
+// NewRangeJobSelection stores exact-file metadata without a source URL.
+func NewRangeJobSelection(candidate RangeCandidate) (JobSelection, error) {
+	validated, err := NewRangeCandidate(candidate.Media(), candidate.Indexer())
+	if err != nil {
+		return JobSelection{}, fmt.Errorf("validate durable range selection: %w", err)
+	}
+	return JobSelection{kind: SelectionKindRange, rangeCandidate: validated}, nil
 }
 
 func (s JobSelection) valid() bool {
-	_, err := NewJobSelection(s.release)
+	_, err := cloneJobSelection(s)
 	return err == nil
+}
+
+func cloneJobSelection(selection JobSelection) (JobSelection, error) {
+	switch selection.kind {
+	case SelectionKindTorrent:
+		if !selection.rangeCandidate.isZero() {
+			return JobSelection{}, errors.New("torrent selection cannot contain range metadata")
+		}
+		return NewTorrentJobSelection(selection.release)
+	case SelectionKindRange:
+		if selection.release != (Release{}) {
+			return JobSelection{}, errors.New("range selection cannot contain torrent metadata")
+		}
+		return NewRangeJobSelection(selection.rangeCandidate)
+	default:
+		return JobSelection{}, fmt.Errorf("unsupported acquisition selection kind: %q", selection.kind)
+	}
 }
 
 // Release reconstructs the locator-free release metadata used for publication.
 func (s JobSelection) Release() Release { return s.release }
 
+// Kind returns the durable acquisition variant.
+func (s JobSelection) Kind() SelectionKind { return s.kind }
+
+// TorrentRelease returns torrent metadata only for torrent selections.
+func (s JobSelection) TorrentRelease() (Release, bool) {
+	if s.kind != SelectionKindTorrent {
+		return Release{}, false
+	}
+	return s.release, true
+}
+
+// RangeCandidate returns exact-file metadata only for range selections.
+func (s JobSelection) RangeCandidate() (RangeCandidate, bool) {
+	if s.kind != SelectionKindRange {
+		return RangeCandidate{}, false
+	}
+	return s.rangeCandidate, true
+}
+
+// Identity returns the provider-local stable selection identity.
+func (s JobSelection) Identity() string {
+	if s.kind == SelectionKindRange {
+		return s.rangeCandidate.Media().ObjectID
+	}
+	return s.release.InfoHash()
+}
+
 // Provider returns the search provider that produced the release.
-func (s JobSelection) Provider() string { return s.release.Provider() }
+func (s JobSelection) Provider() string {
+	if s.kind == SelectionKindRange {
+		return s.rangeCandidate.Media().Backing().Provider
+	}
+	return s.release.Provider()
+}
 
 // Title returns the safe provider release title.
-func (s JobSelection) Title() string { return s.release.Title() }
+func (s JobSelection) Title() string {
+	if s.kind == SelectionKindRange {
+		return s.rangeCandidate.Media().Name
+	}
+	return s.release.Title()
+}
 
 // Size returns the provider-advertised release size.
-func (s JobSelection) Size() int64 { return s.release.Size() }
+func (s JobSelection) Size() int64 {
+	if s.kind == SelectionKindRange {
+		return s.rangeCandidate.Media().Size
+	}
+	return s.release.Size()
+}
 
 // Indexer returns the safe indexer display name.
-func (s JobSelection) Indexer() string { return s.release.Indexer() }
+func (s JobSelection) Indexer() string {
+	if s.kind == SelectionKindRange {
+		return s.rangeCandidate.Indexer()
+	}
+	return s.release.Indexer()
+}
 
 // InfoHash returns the stable BitTorrent content fingerprint.
 func (s JobSelection) InfoHash() string { return s.release.InfoHash() }
@@ -290,7 +420,7 @@ func validateJobSelection(input *JobSelection) (JobSelection, bool, error) {
 	if !input.valid() {
 		return JobSelection{}, false, errors.New("acquisition job selection is invalid")
 	}
-	validated, err := NewJobSelection(input.release)
+	validated, err := cloneJobSelection(*input)
 	if err != nil {
 		return JobSelection{}, false, fmt.Errorf("validate acquisition job selection: %w", err)
 	}

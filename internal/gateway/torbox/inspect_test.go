@@ -36,8 +36,8 @@ func TestGatewayInspectCreatedTorrentReturnsEligibleMedia(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 100, inspection.Progress())
 	require.Equal(t, []domain.MediaCandidate{
-		{ObjectID: "17:2", Name: "Example.Show.S07E01.mp4", Extension: ".mp4", Size: 10},
-		{ObjectID: "17:3", Name: "Example.Show.S07E02.mkv", Extension: ".mkv", Size: 20},
+		{Provider: providerName, ObjectID: "17:2", Name: "Example.Show.S07E01.mp4", Extension: ".mp4", Size: 10},
+		{Provider: providerName, ObjectID: "17:3", Name: "Example.Show.S07E02.mkv", Extension: ".mkv", Size: 20},
 	}, inspection.Candidates())
 }
 

@@ -210,7 +210,7 @@ func (r *Repository) Claim(ctx context.Context, now time.Time, leaseDuration tim
 
 // Select durably records the stable release fingerprint before provider mutation.
 func (r *Repository) Select(ctx context.Context, claim acquisition.AcquisitionJobClaim, selection acquisition.JobSelection, now time.Time) error {
-	validated, err := acquisition.NewJobSelection(selection.Release())
+	validated, err := validateSelection(selection)
 	if err != nil {
 		return fmt.Errorf("validate acquisition job selection: %w", err)
 	}
@@ -220,10 +220,12 @@ func (r *Repository) Select(ctx context.Context, claim acquisition.AcquisitionJo
 	}
 	return r.transition(ctx, claim, acquisition.JobStateQueued, now, `
 		state = 'selected', selected_provider = ?, selected_title = ?, selected_size = ?,
-		selected_indexer = ?, selected_info_hash = ?, selected_seeders = ?, selected_has_seeders = ?,
+		selected_indexer = ?, selected_kind = ?, selected_identity = ?, selected_info_hash = ?,
+		selected_seeders = ?, selected_has_seeders = ?,
 		selected_candidate_ordinal = -1, created_by_job = 0,
 		error_code = '', progress = 0, next_attempt_unix_ms = 0
-	`, validated.Provider(), validated.Title(), validated.Size(), validated.Indexer(), validated.InfoHash(), seeders, hasSeeders)
+	`, validated.Provider(), validated.Title(), validated.Size(), validated.Indexer(), validated.Kind(),
+		validated.Identity(), validated.InfoHash(), seeders, hasSeeders)
 }
 
 // Plan atomically persists a bounded ordered candidate set and selects its
@@ -250,11 +252,11 @@ func (r *Repository) Plan(
 		seeders, hasSeeders := persistedSeeders(selection)
 		if _, err := transaction.ExecContext(ctx, `
 			INSERT INTO acquisition_job_candidates (
-				job_id, ordinal, provider, title, size, indexer, info_hash,
+				job_id, ordinal, selection_kind, provider, title, size, indexer, selection_identity,
 				seeders, has_seeders, outcome
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		`, claim.Job().ID(), validated[index].Ordinal(), selection.Provider(), selection.Title(),
-			selection.Size(), selection.Indexer(), selection.InfoHash(), seeders, hasSeeders,
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, claim.Job().ID(), validated[index].Ordinal(), selection.Kind(), selection.Provider(), selection.Title(),
+			selection.Size(), selection.Indexer(), selection.Identity(), seeders, hasSeeders,
 			validated[index].Outcome()); err != nil {
 			return errors.Join(fmt.Errorf("insert acquisition job candidate: %w", err), transaction.Rollback())
 		}
@@ -264,12 +266,13 @@ func (r *Repository) Plan(
 	result, err := transaction.ExecContext(ctx, `
 		UPDATE acquisition_jobs SET
 			state = 'selected', selected_provider = ?, selected_title = ?, selected_size = ?,
-			selected_indexer = ?, selected_info_hash = ?, selected_seeders = ?, selected_has_seeders = ?,
+			selected_indexer = ?, selected_kind = ?, selected_identity = ?, selected_info_hash = ?,
+			selected_seeders = ?, selected_has_seeders = ?,
 			selected_candidate_ordinal = 0, created_provider = '', created_object_id = '',
 			created_by_job = 0, error_code = '', progress = 0, next_attempt_unix_ms = 0,
 			lease_until_unix_ms = 0, updated_unix_ms = ?
 		WHERE id = ? AND lease_version = ? AND lease_until_unix_ms > ? AND state = 'queued'
-	`, first.Provider(), first.Title(), first.Size(), first.Indexer(), first.InfoHash(), seeders, hasSeeders,
+	`, first.Provider(), first.Title(), first.Size(), first.Indexer(), first.Kind(), first.Identity(), first.InfoHash(), seeders, hasSeeders,
 		now.UTC().UnixMilli(), claim.Job().ID(), claim.LeaseVersion(), now.UTC().UnixMilli())
 	if err != nil {
 		return errors.Join(fmt.Errorf("select acquisition candidate plan: %w", err), transaction.Rollback())
@@ -365,7 +368,7 @@ func (r *Repository) Advance(
 		return false, errors.Join(ErrStaleClaim, transaction.Rollback())
 	}
 	next, err := queryCandidate(transaction.QueryRowContext(ctx, `
-		SELECT ordinal, provider, title, size, indexer, info_hash, seeders, has_seeders, outcome
+		SELECT ordinal, selection_kind, provider, title, size, indexer, selection_identity, seeders, has_seeders, outcome
 		FROM acquisition_job_candidates
 		WHERE job_id = ? AND outcome = 'pending'
 		ORDER BY ordinal LIMIT 1
@@ -385,13 +388,14 @@ func (r *Repository) Advance(
 		result, err = transaction.ExecContext(ctx, `
 			UPDATE acquisition_jobs SET
 				state = 'selected', selected_provider = ?, selected_title = ?, selected_size = ?,
-				selected_indexer = ?, selected_info_hash = ?, selected_seeders = ?, selected_has_seeders = ?,
+				selected_indexer = ?, selected_kind = ?, selected_identity = ?, selected_info_hash = ?,
+				selected_seeders = ?, selected_has_seeders = ?,
 				selected_candidate_ordinal = ?, created_provider = '', created_object_id = '', created_by_job = 0,
 				error_code = '', progress = 0, next_attempt_unix_ms = 0,
 				lease_until_unix_ms = 0, updated_unix_ms = ?
 			WHERE id = ? AND lease_version = ? AND lease_until_unix_ms > ? AND state = ?
-		`, selection.Provider(), selection.Title(), selection.Size(), selection.Indexer(), selection.InfoHash(),
-			seeders, hasSeeders, next.Ordinal(), now.UTC().UnixMilli(), claim.Job().ID(),
+		`, selection.Provider(), selection.Title(), selection.Size(), selection.Indexer(), selection.Kind(), selection.Identity(),
+			selection.InfoHash(), seeders, hasSeeders, next.Ordinal(), now.UTC().UnixMilli(), claim.Job().ID(),
 			claim.LeaseVersion(), now.UTC().UnixMilli(), state)
 		if err != nil {
 			return false, errors.Join(fmt.Errorf("advance acquisition job selection: %w", err), transaction.Rollback())
@@ -400,7 +404,8 @@ func (r *Repository) Advance(
 		result, err = transaction.ExecContext(ctx, `
 			UPDATE acquisition_jobs SET
 				state = 'failed', selected_provider = '', selected_title = '', selected_size = 0,
-				selected_indexer = '', selected_info_hash = '', selected_seeders = 0, selected_has_seeders = 0,
+				selected_indexer = '', selected_kind = '', selected_identity = '', selected_info_hash = '',
+				selected_seeders = 0, selected_has_seeders = 0,
 				selected_candidate_ordinal = -1, created_provider = '', created_object_id = '', created_by_job = 0,
 				error_code = ?, progress = 0, next_attempt_unix_ms = 0,
 				lease_until_unix_ms = 0, updated_unix_ms = ?
@@ -420,7 +425,7 @@ func (r *Repository) Advance(
 	if err := transaction.Commit(); err != nil {
 		return false, fmt.Errorf("commit acquisition candidate advancement: %w", err)
 	}
-	return next.Selection().InfoHash() != "", nil
+	return next.Selection().Identity() != "", nil
 }
 
 // Defer releases a lease while preserving its durable stage for a bounded retry.
@@ -575,7 +580,7 @@ func (r *Repository) Candidates(ctx context.Context, jobID string) (result []acq
 		return nil, errors.New("invalid acquisition job ID")
 	}
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT ordinal, provider, title, size, indexer, info_hash, seeders, has_seeders, outcome
+		SELECT ordinal, selection_kind, provider, title, size, indexer, selection_identity, seeders, has_seeders, outcome
 		FROM acquisition_job_candidates WHERE job_id = ? ORDER BY ordinal
 	`, jobID)
 	if err != nil {
@@ -631,7 +636,7 @@ func (r *Repository) Close() error {
 const jobColumns = `
 	id, media_type, title, release_year, season, episode, state,
 	selected_provider, selected_title, selected_size, selected_indexer,
-	selected_info_hash, selected_seeders, selected_has_seeders,
+	selected_kind, selected_identity, selected_info_hash, selected_seeders, selected_has_seeders,
 	created_provider, created_object_id, selected_candidate_ordinal, created_by_job,
 	published_object_id, error_code,
 	attempt_count, progress, created_unix_ms, updated_unix_ms`
@@ -644,7 +649,7 @@ type rowScanner interface {
 
 func queryJob(row rowScanner) (acquisition.AcquisitionJob, error) {
 	var id, mediaType, title, state string
-	var selectedProvider, selectedTitle, selectedIndexer, selectedHash string
+	var selectedProvider, selectedTitle, selectedIndexer, selectedKind, selectedIdentity, selectedHash string
 	var createdProvider, createdObjectID, publishedObjectID, errorCode string
 	var year, season, episode, selectedSeeders, selectedHasSeeders, attempt, progress int
 	var selectedCandidateOrdinal, createdByJob int
@@ -652,7 +657,7 @@ func queryJob(row rowScanner) (acquisition.AcquisitionJob, error) {
 	if err := row.Scan(
 		&id, &mediaType, &title, &year, &season, &episode, &state,
 		&selectedProvider, &selectedTitle, &selectedSize, &selectedIndexer,
-		&selectedHash, &selectedSeeders, &selectedHasSeeders,
+		&selectedKind, &selectedIdentity, &selectedHash, &selectedSeeders, &selectedHasSeeders,
 		&createdProvider, &createdObjectID, &selectedCandidateOrdinal, &createdByJob,
 		&publishedObjectID, &errorCode,
 		&attempt, &progress, &createdMillis, &updatedMillis,
@@ -664,22 +669,50 @@ func queryJob(row rowScanner) (acquisition.AcquisitionJob, error) {
 		return acquisition.AcquisitionJob{}, fmt.Errorf("validate persisted acquisition intent: %w", err)
 	}
 	var selection *acquisition.JobSelection
-	if selectedHash != "" {
-		var seeders *int
-		if selectedHasSeeders == 1 {
-			seeders = &selectedSeeders
-		}
-		release, releaseErr := acquisition.NewRelease(acquisition.ReleaseInput{
-			Provider: selectedProvider, SourceID: "torrent:" + selectedHash,
-			Title: selectedTitle, Protocol: acquisition.ReleaseProtocolTorrent,
-			Size: selectedSize, Indexer: selectedIndexer, InfoHash: selectedHash, Seeders: seeders,
-		})
-		if releaseErr != nil {
-			return acquisition.AcquisitionJob{}, fmt.Errorf("validate persisted acquisition release: %w", releaseErr)
-		}
-		value, selectionErr := acquisition.NewJobSelection(release)
-		if selectionErr != nil {
-			return acquisition.AcquisitionJob{}, fmt.Errorf("validate persisted acquisition selection: %w", selectionErr)
+	if selectedIdentity != "" {
+		var value acquisition.JobSelection
+		var selectionErr error
+		switch acquisition.SelectionKind(selectedKind) {
+		case acquisition.SelectionKindTorrent:
+			if selectedHash != selectedIdentity {
+				return acquisition.AcquisitionJob{}, errors.New("persisted torrent selection identity mismatch")
+			}
+			var seeders *int
+			if selectedHasSeeders == 1 {
+				seeders = &selectedSeeders
+			}
+			release, releaseErr := acquisition.NewRelease(acquisition.ReleaseInput{
+				Provider: selectedProvider, SourceID: "torrent:" + selectedIdentity,
+				Title: selectedTitle, Protocol: acquisition.ReleaseProtocolTorrent,
+				Size: selectedSize, Indexer: selectedIndexer, InfoHash: selectedIdentity, Seeders: seeders,
+			})
+			if releaseErr != nil {
+				return acquisition.AcquisitionJob{}, fmt.Errorf("validate persisted acquisition release: %w", releaseErr)
+			}
+			value, selectionErr = acquisition.NewTorrentJobSelection(release)
+			if selectionErr != nil {
+				return acquisition.AcquisitionJob{}, fmt.Errorf("validate persisted acquisition selection: %w", selectionErr)
+			}
+		case acquisition.SelectionKindRange:
+			if selectedHash != "" || selectedSeeders != 0 || selectedHasSeeders != 0 {
+				return acquisition.AcquisitionJob{}, errors.New("persisted range selection contains torrent metadata")
+			}
+			media, mediaErr := domain.NewProviderMediaCandidate(
+				domain.BackingRef{Provider: selectedProvider, ObjectID: selectedIdentity}, selectedTitle, selectedSize,
+			)
+			if mediaErr != nil {
+				return acquisition.AcquisitionJob{}, fmt.Errorf("validate persisted range media: %w", mediaErr)
+			}
+			candidate, candidateErr := acquisition.NewRangeCandidate(media, selectedIndexer)
+			if candidateErr != nil {
+				return acquisition.AcquisitionJob{}, fmt.Errorf("validate persisted range candidate: %w", candidateErr)
+			}
+			value, selectionErr = acquisition.NewRangeJobSelection(candidate)
+			if selectionErr != nil {
+				return acquisition.AcquisitionJob{}, fmt.Errorf("validate persisted range selection: %w", selectionErr)
+			}
+		default:
+			return acquisition.AcquisitionJob{}, fmt.Errorf("unsupported persisted acquisition selection kind: %q", selectedKind)
 		}
 		selection = &value
 	}
@@ -706,25 +739,47 @@ func queryJob(row rowScanner) (acquisition.AcquisitionJob, error) {
 }
 
 func queryCandidate(row rowScanner) (acquisition.JobCandidate, error) {
-	var provider, title, indexer, infoHash, outcome string
+	var kind, provider, title, indexer, identity, outcome string
 	var ordinal, seeders, hasSeeders int
 	var size int64
-	if err := row.Scan(&ordinal, &provider, &title, &size, &indexer, &infoHash, &seeders, &hasSeeders, &outcome); err != nil {
+	if err := row.Scan(&ordinal, &kind, &provider, &title, &size, &indexer, &identity, &seeders, &hasSeeders, &outcome); err != nil {
 		return acquisition.JobCandidate{}, err
 	}
-	var reportedSeeders *int
-	if hasSeeders == 1 {
-		reportedSeeders = &seeders
+	var selection acquisition.JobSelection
+	var err error
+	switch acquisition.SelectionKind(kind) {
+	case acquisition.SelectionKindTorrent:
+		var reportedSeeders *int
+		if hasSeeders == 1 {
+			reportedSeeders = &seeders
+		}
+		release, releaseErr := acquisition.NewRelease(acquisition.ReleaseInput{
+			Provider: provider, SourceID: "torrent:" + identity, Title: title,
+			Protocol: acquisition.ReleaseProtocolTorrent, Size: size, Indexer: indexer,
+			InfoHash: identity, Seeders: reportedSeeders,
+		})
+		if releaseErr != nil {
+			return acquisition.JobCandidate{}, fmt.Errorf("validate persisted acquisition candidate release: %w", releaseErr)
+		}
+		selection, err = acquisition.NewTorrentJobSelection(release)
+	case acquisition.SelectionKindRange:
+		if seeders != 0 || hasSeeders != 0 {
+			return acquisition.JobCandidate{}, errors.New("persisted range candidate contains torrent metadata")
+		}
+		media, mediaErr := domain.NewProviderMediaCandidate(
+			domain.BackingRef{Provider: provider, ObjectID: identity}, title, size,
+		)
+		if mediaErr != nil {
+			return acquisition.JobCandidate{}, fmt.Errorf("validate persisted range candidate media: %w", mediaErr)
+		}
+		candidate, candidateErr := acquisition.NewRangeCandidate(media, indexer)
+		if candidateErr != nil {
+			return acquisition.JobCandidate{}, fmt.Errorf("validate persisted range candidate: %w", candidateErr)
+		}
+		selection, err = acquisition.NewRangeJobSelection(candidate)
+	default:
+		return acquisition.JobCandidate{}, fmt.Errorf("unsupported persisted acquisition candidate kind: %q", kind)
 	}
-	release, err := acquisition.NewRelease(acquisition.ReleaseInput{
-		Provider: provider, SourceID: "torrent:" + infoHash, Title: title,
-		Protocol: acquisition.ReleaseProtocolTorrent, Size: size, Indexer: indexer,
-		InfoHash: infoHash, Seeders: reportedSeeders,
-	})
-	if err != nil {
-		return acquisition.JobCandidate{}, fmt.Errorf("validate persisted acquisition candidate release: %w", err)
-	}
-	selection, err := acquisition.NewJobSelection(release)
 	if err != nil {
 		return acquisition.JobCandidate{}, fmt.Errorf("validate persisted acquisition candidate selection: %w", err)
 	}
@@ -740,7 +795,7 @@ func validateCandidatePlan(candidates []acquisition.JobCandidate) ([]acquisition
 		return nil, fmt.Errorf("acquisition candidate plan must contain between 1 and %d releases", acquisition.MaximumJobCandidates)
 	}
 	validated := make([]acquisition.JobCandidate, 0, len(candidates))
-	hashes := make(map[string]struct{}, len(candidates))
+	identities := make(map[string]struct{}, len(candidates))
 	for index := range candidates {
 		expectedOutcome := acquisition.CandidateOutcomePending
 		if index == 0 {
@@ -750,13 +805,33 @@ func validateCandidatePlan(candidates []acquisition.JobCandidate) ([]acquisition
 		if err != nil || candidates[index].Ordinal() != index || candidates[index].Outcome() != expectedOutcome {
 			return nil, fmt.Errorf("invalid acquisition candidate plan at ordinal %d", index)
 		}
-		if _, exists := hashes[candidate.Selection().InfoHash()]; exists {
-			return nil, fmt.Errorf("acquisition candidate plan contains duplicate hash at ordinal %d", index)
+		identityKey := fmt.Sprintf("%s\x00%s\x00%s", candidate.Selection().Kind(), candidate.Selection().Provider(), candidate.Selection().Identity())
+		if _, exists := identities[identityKey]; exists {
+			return nil, fmt.Errorf("acquisition candidate plan contains duplicate selection at ordinal %d", index)
 		}
-		hashes[candidate.Selection().InfoHash()] = struct{}{}
+		identities[identityKey] = struct{}{}
 		validated = append(validated, candidate)
 	}
 	return validated, nil
+}
+
+func validateSelection(selection acquisition.JobSelection) (acquisition.JobSelection, error) {
+	switch selection.Kind() {
+	case acquisition.SelectionKindTorrent:
+		release, ok := selection.TorrentRelease()
+		if !ok {
+			return acquisition.JobSelection{}, errors.New("torrent acquisition selection is invalid")
+		}
+		return acquisition.NewTorrentJobSelection(release)
+	case acquisition.SelectionKindRange:
+		candidate, ok := selection.RangeCandidate()
+		if !ok {
+			return acquisition.JobSelection{}, errors.New("range acquisition selection is invalid")
+		}
+		return acquisition.NewRangeJobSelection(candidate)
+	default:
+		return acquisition.JobSelection{}, fmt.Errorf("unsupported acquisition selection kind: %q", selection.Kind())
+	}
 }
 
 func persistedSeeders(selection acquisition.JobSelection) (int, int) {

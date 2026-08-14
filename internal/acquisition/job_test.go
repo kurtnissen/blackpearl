@@ -5,8 +5,100 @@ import (
 	"time"
 
 	"github.com/blackpearl-media/blackpearl/internal/acquisition"
+	"github.com/blackpearl-media/blackpearl/internal/domain"
 	"github.com/stretchr/testify/require"
 )
+
+func TestJobSelectionSupportsTorrentAndRangeVariants(t *testing.T) {
+	t.Parallel()
+	torrentRelease := mustCandidateSelection(t).Release()
+	torrent, err := acquisition.NewTorrentJobSelection(torrentRelease)
+	require.NoError(t, err)
+
+	media, err := domain.NewProviderMediaCandidate(
+		domain.BackingRef{Provider: "internet-archive-file", ObjectID: "opaque-object"},
+		"Example.Show.S01E01.mp4",
+		175_099_607,
+	)
+	require.NoError(t, err)
+	rangeCandidate, err := acquisition.NewRangeCandidate(media, "internet-archive")
+	require.NoError(t, err)
+	rangeSelection, err := acquisition.NewRangeJobSelection(rangeCandidate)
+	require.NoError(t, err)
+
+	require.Equal(t, acquisition.SelectionKindTorrent, torrent.Kind())
+	require.Equal(t, torrentRelease.InfoHash(), torrent.Identity())
+	reconstructedTorrent, ok := torrent.TorrentRelease()
+	require.True(t, ok)
+	require.Equal(t, torrentRelease.InfoHash(), reconstructedTorrent.InfoHash())
+	_, ok = torrent.RangeCandidate()
+	require.False(t, ok)
+
+	require.Equal(t, acquisition.SelectionKindRange, rangeSelection.Kind())
+	require.Equal(t, "opaque-object", rangeSelection.Identity())
+	reconstructedRange, ok := rangeSelection.RangeCandidate()
+	require.True(t, ok)
+	require.Equal(t, media, reconstructedRange.Media())
+	require.Equal(t, "internet-archive", reconstructedRange.Indexer())
+	_, ok = rangeSelection.TorrentRelease()
+	require.False(t, ok)
+	require.Empty(t, rangeSelection.InfoHash())
+	require.Equal(t, "internet-archive-file", rangeSelection.Provider())
+	require.Equal(t, media.Name, rangeSelection.Title())
+	require.Equal(t, media.Size, rangeSelection.Size())
+	require.Equal(t, "internet-archive", rangeSelection.Indexer())
+}
+
+func TestRangeCandidateAndSelectionRejectInvalidVariantState(t *testing.T) {
+	t.Parallel()
+	validMedia, err := domain.NewProviderMediaCandidate(
+		domain.BackingRef{Provider: "internet-archive-file", ObjectID: "opaque-object"},
+		"Example.Movie.2026.mp4",
+		1024,
+	)
+	require.NoError(t, err)
+
+	_, err = acquisition.NewRangeCandidate(domain.MediaCandidate{}, "internet-archive")
+	require.Error(t, err)
+	_, err = acquisition.NewRangeCandidate(validMedia, "")
+	require.Error(t, err)
+	_, err = acquisition.NewRangeJobSelection(acquisition.RangeCandidate{})
+	require.Error(t, err)
+	_, err = acquisition.NewTorrentJobSelection(acquisition.Release{})
+	require.Error(t, err)
+	_, err = acquisition.NewJobCandidate(acquisition.JobSelection{}, 0, acquisition.CandidateOutcomePending)
+	require.Error(t, err)
+}
+
+func TestRangeJobSelectionSurvivesCandidateAndSnapshotValidation(t *testing.T) {
+	t.Parallel()
+	media, err := domain.NewProviderMediaCandidate(
+		domain.BackingRef{Provider: "internet-archive-file", ObjectID: "opaque-object"},
+		"Example.Show.S01E01.mp4",
+		2048,
+	)
+	require.NoError(t, err)
+	rangeCandidate, err := acquisition.NewRangeCandidate(media, "internet-archive")
+	require.NoError(t, err)
+	selection, err := acquisition.NewRangeJobSelection(rangeCandidate)
+	require.NoError(t, err)
+	candidate, err := acquisition.NewJobCandidate(selection, 0, acquisition.CandidateOutcomeSelected)
+	require.NoError(t, err)
+	require.Equal(t, acquisition.SelectionKindRange, candidate.Selection().Kind())
+
+	request, err := acquisition.NewEpisodeSearch("Example Show", 2026, 1, 1)
+	require.NoError(t, err)
+	at := time.Date(2026, time.August, 14, 12, 0, 0, 0, time.UTC)
+	ordinal := 0
+	snapshot, err := acquisition.NewAcquisitionJobSnapshot(acquisition.JobSnapshotInput{
+		ID: "0123456789abcdef0123456789abcdef", Request: request,
+		State: acquisition.JobStateSelected, Selection: &selection,
+		SelectedCandidateOrdinal: &ordinal, CreatedAt: at, UpdatedAt: at,
+	})
+	require.NoError(t, err)
+	require.Equal(t, acquisition.SelectionKindRange, snapshot.Selection().Kind())
+	require.Equal(t, "opaque-object", snapshot.Selection().Identity())
+}
 
 func TestNewAcquisitionJobSnapshotEnforcesDurableStageInvariants(t *testing.T) {
 	t.Parallel()

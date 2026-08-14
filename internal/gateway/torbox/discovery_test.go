@@ -38,8 +38,8 @@ func TestGatewayDiscoverReturnsOnlyEligibleVideosInStableOrder(t *testing.T) {
 
 	require.NoError(t, err)
 	require.Equal(t, []domain.MediaCandidate{
-		{ObjectID: "17:4", Name: "alpha.mp4", Extension: ".mp4", Size: 10},
-		{ObjectID: "17:3", Name: "Zulu.MKV", Extension: ".mkv", Size: 20},
+		{Provider: providerName, ObjectID: "17:4", Name: "alpha.mp4", Extension: ".mp4", Size: 10},
+		{Provider: providerName, ObjectID: "17:3", Name: "Zulu.MKV", Extension: ".mkv", Size: 20},
 	}, candidates)
 }
 

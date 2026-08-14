@@ -2,6 +2,7 @@ package acquisitionjob_test
 
 import (
 	"context"
+	"database/sql"
 	"path/filepath"
 	"testing"
 	"time"
@@ -324,6 +325,184 @@ func TestRepositoryLegacySelectionDoesNotInferCandidatePlanOrOwnership(t *testin
 	require.Empty(t, candidates)
 }
 
+func TestRepositoryPersistsMixedTorrentAndRangePlanAcrossRestart(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	databasePath := filepath.Join(t.TempDir(), "jobs.db")
+	repository, err := acquisitionjobrepo.Open(ctx, databasePath)
+	require.NoError(t, err)
+	at := time.Date(2026, time.August, 14, 12, 0, 0, 0, time.UTC)
+	job, _, err := repository.Submit(ctx, "0123456789abcdef0123456789abcdef", mustMovieRequest(t), at)
+	require.NoError(t, err)
+	claim, err := repository.Claim(ctx, at, time.Minute)
+	require.NoError(t, err)
+
+	torrent := mustCandidates(t, 1)[0].Selection()
+	rangeSelection := mustRangeSelection(t)
+	first, err := acquisition.NewJobCandidate(torrent, 0, acquisition.CandidateOutcomeSelected)
+	require.NoError(t, err)
+	second, err := acquisition.NewJobCandidate(rangeSelection, 1, acquisition.CandidateOutcomePending)
+	require.NoError(t, err)
+	require.NoError(t, repository.Plan(ctx, claim, []acquisition.JobCandidate{first, second}, at.Add(time.Second)))
+	require.NoError(t, repository.Close())
+
+	repository, err = acquisitionjobrepo.Open(ctx, databasePath)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, repository.Close()) })
+	stored, err := repository.Candidates(ctx, job.ID())
+	require.NoError(t, err)
+	require.Len(t, stored, 2)
+	require.Equal(t, acquisition.SelectionKindTorrent, stored[0].Selection().Kind())
+	require.Equal(t, acquisition.SelectionKindRange, stored[1].Selection().Kind())
+	require.Equal(t, rangeSelection.Identity(), stored[1].Selection().Identity())
+
+	selectedClaim, err := repository.Claim(ctx, at.Add(2*time.Second), time.Minute)
+	require.NoError(t, err)
+	advanced, err := repository.Advance(
+		ctx,
+		selectedClaim,
+		acquisition.CandidateOutcomeMissing,
+		acquisition.JobErrorNoPlayableMedia,
+		at.Add(3*time.Second),
+	)
+	require.NoError(t, err)
+	require.True(t, advanced)
+	next, err := repository.Get(ctx, job.ID())
+	require.NoError(t, err)
+	require.Equal(t, acquisition.SelectionKindRange, next.Selection().Kind())
+	require.Equal(t, rangeSelection.Identity(), next.Selection().Identity())
+
+	rangeClaim, err := repository.Claim(ctx, at.Add(4*time.Second), time.Minute)
+	require.NoError(t, err)
+	created, err := acquisition.NewCreatedObject("internet-archive-file", rangeSelection.Identity())
+	require.NoError(t, err)
+	require.NoError(t, repository.AttachPrepared(ctx, rangeClaim, created, false, at.Add(5*time.Second)))
+	preparingClaim, err := repository.Claim(ctx, at.Add(6*time.Second), time.Minute)
+	require.NoError(t, err)
+	require.NoError(t, repository.Succeed(ctx, preparingClaim, rangeSelection.Identity(), at.Add(7*time.Second)))
+	completed, err := repository.Get(ctx, job.ID())
+	require.NoError(t, err)
+	require.Equal(t, acquisition.JobStateSucceeded, completed.State())
+	require.Equal(t, acquisition.SelectionKindRange, completed.Selection().Kind())
+	require.Equal(t, rangeSelection.Identity(), completed.PublishedObjectID())
+}
+
+func TestRepositoryMigrationPreservesVersionTwoTorrentJobsAndCandidates(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	databasePath := filepath.Join(t.TempDir(), "jobs.db")
+	createVersionTwoFixture(t, ctx, databasePath)
+
+	repository, err := acquisitionjobrepo.Open(ctx, databasePath)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, repository.Close()) })
+
+	queued, err := repository.Get(ctx, "00000000000000000000000000000000")
+	require.NoError(t, err)
+	require.Equal(t, acquisition.JobStateQueued, queued.State())
+	require.False(t, queued.HasSelection())
+
+	selected, err := repository.Get(ctx, "11111111111111111111111111111111")
+	require.NoError(t, err)
+	require.Equal(t, acquisition.JobStateSelected, selected.State())
+	require.Equal(t, acquisition.SelectionKindTorrent, selected.Selection().Kind())
+	require.Equal(t, "0123456789abcdef0123456789abcdef01234567", selected.Selection().Identity())
+	ordinal, planned := selected.SelectedCandidateOrdinal()
+	require.True(t, planned)
+	require.Zero(t, ordinal)
+	candidates, err := repository.Candidates(ctx, selected.ID())
+	require.NoError(t, err)
+	require.Len(t, candidates, 2)
+	require.Equal(t, acquisition.CandidateOutcomeSelected, candidates[0].Outcome())
+	require.Equal(t, acquisition.CandidateOutcomePending, candidates[1].Outcome())
+	require.Equal(t, acquisition.SelectionKindTorrent, candidates[1].Selection().Kind())
+
+	preparing, err := repository.Get(ctx, "22222222222222222222222222222222")
+	require.NoError(t, err)
+	require.Equal(t, acquisition.JobStatePreparing, preparing.State())
+	require.True(t, preparing.HasCreatedObject())
+	require.Equal(t, "17", preparing.CreatedObject().ObjectID())
+
+	succeeded, err := repository.Get(ctx, "33333333333333333333333333333333")
+	require.NoError(t, err)
+	require.Equal(t, acquisition.JobStateSucceeded, succeeded.State())
+	require.Equal(t, "17:3", succeeded.PublishedObjectID())
+	require.Equal(t, 100, succeeded.Progress())
+}
+
+func createVersionTwoFixture(t *testing.T, ctx context.Context, databasePath string) {
+	t.Helper()
+	database, err := sql.Open("sqlite", databasePath)
+	require.NoError(t, err)
+	_, err = database.ExecContext(ctx, `
+		CREATE TABLE acquisition_job_schema_migrations (name TEXT PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+		INSERT INTO acquisition_job_schema_migrations (name) VALUES ('001_jobs.sql'), ('002_candidate_fallback.sql');
+		CREATE TABLE acquisition_jobs (
+			id TEXT PRIMARY KEY, intent_key TEXT NOT NULL, media_type TEXT NOT NULL,
+			title TEXT NOT NULL, release_year INTEGER NOT NULL, season INTEGER NOT NULL DEFAULT 0,
+			episode INTEGER NOT NULL DEFAULT 0, state TEXT NOT NULL,
+			selected_provider TEXT NOT NULL DEFAULT '', selected_title TEXT NOT NULL DEFAULT '',
+			selected_size INTEGER NOT NULL DEFAULT 0, selected_indexer TEXT NOT NULL DEFAULT '',
+			selected_info_hash TEXT NOT NULL DEFAULT '', selected_seeders INTEGER NOT NULL DEFAULT 0,
+			selected_has_seeders INTEGER NOT NULL DEFAULT 0, created_provider TEXT NOT NULL DEFAULT '',
+			created_object_id TEXT NOT NULL DEFAULT '', published_object_id TEXT NOT NULL DEFAULT '',
+			error_code TEXT NOT NULL DEFAULT '', attempt_count INTEGER NOT NULL DEFAULT 0,
+			progress INTEGER NOT NULL DEFAULT 0, lease_version INTEGER NOT NULL DEFAULT 0,
+			lease_until_unix_ms INTEGER NOT NULL DEFAULT 0, next_attempt_unix_ms INTEGER NOT NULL DEFAULT 0,
+			created_unix_ms INTEGER NOT NULL, updated_unix_ms INTEGER NOT NULL,
+			selected_candidate_ordinal INTEGER NOT NULL DEFAULT -1, created_by_job INTEGER NOT NULL DEFAULT 0
+		);
+		CREATE TABLE acquisition_job_candidates (
+			job_id TEXT NOT NULL REFERENCES acquisition_jobs(id) ON DELETE CASCADE,
+			ordinal INTEGER NOT NULL, provider TEXT NOT NULL, title TEXT NOT NULL,
+			size INTEGER NOT NULL, indexer TEXT NOT NULL, info_hash TEXT NOT NULL,
+			seeders INTEGER NOT NULL DEFAULT 0, has_seeders INTEGER NOT NULL DEFAULT 0,
+			outcome TEXT NOT NULL, PRIMARY KEY (job_id, ordinal), UNIQUE (job_id, info_hash)
+		);
+		CREATE UNIQUE INDEX acquisition_job_candidates_one_selected
+			ON acquisition_job_candidates (job_id) WHERE outcome = 'selected';
+	`)
+	require.NoError(t, err)
+	const insertJob = `
+		INSERT INTO acquisition_jobs (
+			id, intent_key, media_type, title, release_year, state,
+			selected_provider, selected_title, selected_size, selected_indexer, selected_info_hash,
+			created_provider, created_object_id, published_object_id, progress,
+			created_unix_ms, updated_unix_ms, selected_candidate_ordinal
+		) VALUES (?, ?, 'movie', ?, 2026, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	const hash = "0123456789abcdef0123456789abcdef01234567"
+	at := time.Date(2026, time.August, 14, 12, 0, 0, 0, time.UTC).UnixMilli()
+	_, err = database.ExecContext(ctx, insertJob,
+		"00000000000000000000000000000000", "queued", "Queued Movie", acquisition.JobStateQueued,
+		"", "", 0, "", "", "", "", "", 0, at, at, -1,
+	)
+	require.NoError(t, err)
+	_, err = database.ExecContext(ctx, insertJob,
+		"11111111111111111111111111111111", "selected", "Selected Movie", acquisition.JobStateSelected,
+		"prowlarr", "Selected.Movie.2026", 100, "authorized-indexer", hash, "", "", "", 0, at, at+1, 0,
+	)
+	require.NoError(t, err)
+	_, err = database.ExecContext(ctx, insertJob,
+		"22222222222222222222222222222222", "preparing", "Preparing Movie", acquisition.JobStatePreparing,
+		"prowlarr", "Preparing.Movie.2026", 100, "authorized-indexer", hash, "torbox-torrent", "17", "", 42, at, at+2, -1,
+	)
+	require.NoError(t, err)
+	_, err = database.ExecContext(ctx, insertJob,
+		"33333333333333333333333333333333", "succeeded", "Succeeded Movie", acquisition.JobStateSucceeded,
+		"prowlarr", "Succeeded.Movie.2026", 100, "authorized-indexer", hash, "torbox-torrent", "17", "17:3", 100, at, at+3, -1,
+	)
+	require.NoError(t, err)
+	_, err = database.ExecContext(ctx, `
+		INSERT INTO acquisition_job_candidates
+			(job_id, ordinal, provider, title, size, indexer, info_hash, outcome)
+		VALUES
+			('11111111111111111111111111111111', 0, 'prowlarr', 'Selected.Movie.2026', 100, 'authorized-indexer', ?, 'selected'),
+			('11111111111111111111111111111111', 1, 'prowlarr', 'Selected.Movie.2026.Alt', 101, 'authorized-indexer', ?, 'pending')
+	`, hash, "1123456789abcdef0123456789abcdef01234567")
+	require.NoError(t, err)
+	require.NoError(t, database.Close())
+}
+
 func openRepository(t *testing.T, ctx context.Context) *acquisitionjobrepo.Repository {
 	t.Helper()
 	repository, err := acquisitionjobrepo.Open(ctx, filepath.Join(t.TempDir(), "jobs.db"))
@@ -349,6 +528,21 @@ func mustSelection(t *testing.T) acquisition.JobSelection {
 	})
 	require.NoError(t, err)
 	selection, err := acquisition.NewJobSelection(release)
+	require.NoError(t, err)
+	return selection
+}
+
+func mustRangeSelection(t *testing.T) acquisition.JobSelection {
+	t.Helper()
+	media, err := domain.NewProviderMediaCandidate(
+		domain.BackingRef{Provider: "internet-archive-file", ObjectID: "opaque-object"},
+		"Example.Movie.2026.mp4",
+		175_099_607,
+	)
+	require.NoError(t, err)
+	candidate, err := acquisition.NewRangeCandidate(media, "internet-archive")
+	require.NoError(t, err)
+	selection, err := acquisition.NewRangeJobSelection(candidate)
 	require.NoError(t, err)
 	return selection
 }
