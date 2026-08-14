@@ -422,6 +422,142 @@ func TestRollingSourceReadAtEvictsWithinHardQuotaAndRefetches(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestRollingSourceNeverRetainsCompleteLogicalObjectWhenQuotaExceedsObject(t *testing.T) {
+	t.Parallel()
+	opener := newFakeRangeOpener([]byte("abcdefghijkl"))
+	source, root := newRollingSourceForTest(t, opener, 64, 4)
+	handle := openRollingHandle(t, source, 12)
+
+	require.Equal(t, "abcd", readRollingExact(t, handle, 0, 4))
+	require.Equal(t, "efgh", readRollingExact(t, handle, 4, 4))
+	require.Equal(t, "ijkl", readRollingExact(t, handle, 8, 4))
+
+	stats := source.Stats()
+	require.Less(t, stats.CurrentBytes, int64(12))
+	require.Less(t, stats.ChunkCount, int64(3))
+	require.Equal(t, uint64(1), stats.Evictions)
+	require.Equal(t, "abcd", readRollingExact(t, handle, 0, 4))
+	require.Equal(t, 2, opener.readCount(0))
+
+	var retained int64
+	err := filepath.WalkDir(root, func(_ string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		info, statErr := entry.Info()
+		if statErr != nil {
+			return statErr
+		}
+		retained += info.Size()
+		return nil
+	})
+	require.NoError(t, err)
+	require.Less(t, retained, int64(12))
+}
+
+func TestRollingSourceDoesNotPersistSingleChunkLogicalObject(t *testing.T) {
+	t.Parallel()
+	opener := newFakeRangeOpener([]byte("abc"))
+	source, root := newRollingSourceForTest(t, opener, 64, 4)
+	handle := openRollingHandle(t, source, 3)
+
+	require.Equal(t, "abc", readRollingExact(t, handle, 0, 3))
+	require.Zero(t, source.Stats().CurrentBytes)
+	require.Zero(t, source.Stats().ChunkCount)
+	require.Equal(t, 1, opener.readCount(0))
+
+	var retained int64
+	err := filepath.WalkDir(root, func(_ string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		info, statErr := entry.Info()
+		if statErr != nil {
+			return statErr
+		}
+		retained += info.Size()
+		return nil
+	})
+	require.NoError(t, err)
+	require.Zero(t, retained)
+}
+
+func TestRollingSourceRetriesTransientUncachedSingleChunkRead(t *testing.T) {
+	t.Parallel()
+	opener := newFakeRangeOpener([]byte("abc"))
+	opener.failNextReads(0, 1)
+	source, _ := newRollingSourceForTest(t, opener, 64, 4)
+	handle := openRollingHandle(t, source, 3)
+
+	require.Equal(t, "abc", readRollingExact(t, handle, 0, 3))
+
+	require.Equal(t, 2, opener.readCount(0))
+	require.Zero(t, source.Stats().CurrentBytes)
+	require.Zero(t, source.Stats().ReservedBytes)
+}
+
+func TestRollingSourceReturnsObjectEvictionFailureWithoutWaiting(t *testing.T) {
+	t.Parallel()
+	opener := newFakeRangeOpener([]byte("abcdefghijkl"))
+	source, root := newRollingSourceForTest(t, opener, 64, 4)
+	handle := openRollingHandle(t, source, 12)
+	require.Equal(t, "abcd", readRollingExact(t, handle, 0, 4))
+	require.Equal(t, "efgh", readRollingExact(t, handle, 4, 4))
+
+	object := rollingObjectKey("http-range", "movie.mp4", "fake-v1")
+	oldest := filepath.Join(root, "rolling", object, formatChunkIndex(0))
+	require.NoError(t, os.Remove(oldest))
+	require.NoError(t, os.Mkdir(oldest, 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(oldest, "blocker"), []byte("x"), 0o640))
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	t.Cleanup(cancel)
+
+	_, err := handle.ReadAt(ctx, make([]byte, 4), 8)
+
+	require.ErrorContains(t, err, "evict rolling object chunk")
+	require.NotErrorIs(t, err, context.DeadlineExceeded)
+}
+
+func TestRollingSourceRetriesTransientRangeReadWithoutExceedingQuota(t *testing.T) {
+	t.Parallel()
+	opener := newFakeRangeOpener([]byte("abcdefghijkl"))
+	opener.failNextReads(0, 1)
+	source, _ := newRollingSourceForTest(t, opener, 8, 4)
+	handle := openRollingHandle(t, source, 12)
+
+	require.Equal(t, "abcd", readRollingExact(t, handle, 0, 4))
+
+	require.Equal(t, 2, opener.readCount(0))
+	stats := source.Stats()
+	require.Equal(t, int64(4), stats.CurrentBytes)
+	require.Zero(t, stats.ReservedBytes)
+	require.LessOrEqual(t, stats.HighWaterBytes, int64(8))
+}
+
+func TestRollingSourceStopsAfterBoundedTransientRangeRetries(t *testing.T) {
+	t.Parallel()
+	const expectedAttempts = 3
+	opener := newFakeRangeOpener([]byte("abcdefghijkl"))
+	opener.failNextReads(0, expectedAttempts)
+	source, _ := newRollingSourceForTest(t, opener, 8, 4)
+	handle := openRollingHandle(t, source, 12)
+
+	_, err := handle.ReadAt(context.Background(), make([]byte, 4), 0)
+
+	require.ErrorContains(t, err, "after 3 attempts")
+	require.Equal(t, expectedAttempts, opener.readCount(0))
+	stats := source.Stats()
+	require.Zero(t, stats.CurrentBytes)
+	require.Zero(t, stats.ReservedBytes)
+	require.Zero(t, stats.ChunkCount)
+}
+
 func TestRollingPoolSharesQuotaAcrossProviderRuntimes(t *testing.T) {
 	t.Parallel()
 	pool, err := cache.NewRollingPool(context.Background(), cache.RollingOptions{
@@ -574,6 +710,32 @@ func TestNewRollingRecoversChunksRemovesTemporaryFilesAndTrimsQuota(t *testing.T
 	require.Zero(t, opener.readCount(4))
 }
 
+func TestRollingOpenTrimsRecoveredCompleteObjectBeforeServingCacheHit(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	object := rollingObjectKey("http-range", "movie.mp4", "fake-v1")
+	objectDirectory := filepath.Join(root, "rolling", object)
+	require.NoError(t, os.MkdirAll(objectDirectory, 0o750))
+	for index, content := range []string{"abcd", "efgh", "ijkl"} {
+		path := filepath.Join(objectDirectory, formatChunkIndex(int64(index)))
+		require.NoError(t, os.WriteFile(path, []byte(content), 0o640))
+	}
+	opener := newFakeRangeOpener([]byte("abcdefghijkl"))
+	source, err := cache.NewRolling(context.Background(), cache.RollingOptions{
+		Root: root, MaxBytes: 64, ChunkBytes: 4, FetchTimeout: time.Second,
+	}, opener)
+	require.NoError(t, err)
+	require.Equal(t, int64(12), source.Stats().CurrentBytes)
+
+	handle := openRollingHandle(t, source, 12)
+
+	require.Less(t, source.Stats().CurrentBytes, int64(12))
+	require.Equal(t, uint64(1), source.Stats().Evictions)
+	require.Equal(t, "abcd", readRollingExact(t, handle, 0, 4))
+	require.Equal(t, 1, opener.readCount(0))
+	require.Less(t, source.Stats().CurrentBytes, int64(12))
+}
+
 func newRollingSourceForTest(t *testing.T, opener cache.RangeOpener, maxBytes int64, chunkBytes int64) (*cache.RollingSource, string) {
 	return newRollingSourceWithReadAheadForTest(t, opener, maxBytes, chunkBytes, 0)
 }
@@ -632,11 +794,12 @@ func readRollingExact(t *testing.T, handle domain.ReadHandle, offset int64, leng
 }
 
 type fakeRangeOpener struct {
-	content   []byte
-	mu        sync.Mutex
-	reads     map[int64]int
-	validator string
-	closeErr  error
+	content           []byte
+	mu                sync.Mutex
+	reads             map[int64]int
+	transientFailures map[int64]int
+	validator         string
+	closeErr          error
 }
 
 type blockingRangeOpener struct {
@@ -755,7 +918,10 @@ func (b *blockingRangeOpener) Open(ctx context.Context, _ domain.BackingRef) (ac
 }
 
 func newFakeRangeOpener(content []byte) *fakeRangeOpener {
-	return &fakeRangeOpener{content: append([]byte(nil), content...), reads: make(map[int64]int), validator: "fake-v1"}
+	return &fakeRangeOpener{
+		content: append([]byte(nil), content...), reads: make(map[int64]int),
+		transientFailures: make(map[int64]int), validator: "fake-v1",
+	}
 }
 
 func (f *fakeRangeOpener) Open(ctx context.Context, _ domain.BackingRef) (acquisition.RangeSource, error) {
@@ -789,6 +955,12 @@ func (f *fakeRangeOpener) setCloseError(err error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.closeErr = err
+}
+
+func (f *fakeRangeOpener) failNextReads(offset int64, count int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.transientFailures[offset] = count
 }
 
 type fakeRangeSource struct {
@@ -898,6 +1070,11 @@ func (f *fakeRangeSource) ReadAt(ctx context.Context, destination []byte, offset
 	}
 	f.opener.mu.Lock()
 	f.opener.reads[offset]++
+	if f.opener.transientFailures[offset] > 0 {
+		f.opener.transientFailures[offset]--
+		f.opener.mu.Unlock()
+		return 0, errors.New("transient range read failure")
+	}
 	f.opener.mu.Unlock()
 	return f.reader.ReadAt(destination, offset)
 }

@@ -27,6 +27,7 @@ Primary local acceptance was tested from `main` on an Apple Silicon Mac with Doc
 | Plex original-media range | Pass on macOS | Plex returned HTTP 206 for bytes 1,048,576-1,114,111 and the 64 KiB SHA-256 matched the source |
 | Plex client Direct Play and seek | Pass on macOS | Plex Web played the fixture through the portable stack; the server decision log recorded `MDE=1000, Direct play OK`, served the original MP4, and timeline events confirmed seeks from 6 seconds to 3 seconds and back to 6 seconds |
 | Rolling source isolation | Pass on macOS | BlackPearl's runtime image and container contain no MP4/MKV and receive no source mount; the complete generated fixture exists only in the separate range-origin container |
+| Rolling incomplete-object retention | Pass in race tests and live macOS NFS | When the global quota exceeds a logical object's size, reading every chunk still evicts before all object bytes can coexist on disk. Objects no larger than one chunk bypass disk caching, recovered legacy complete chunk sets are trimmed on open, persistent mode remains non-evicting, and an eviction I/O failure returns instead of hanging a reader. A full sequential NFS read of the 104,040,028-byte public-domain *Big Buck Bunny* MP4 succeeded through the rebuilt TorBox stack in three seconds; the active object directory retained 99 one-MiB chunks totaling 102,991,452 bytes, exactly one chunk less than the logical file. Bounded transient-range retry and retry-exhaustion paths pass under `-race`. |
 | Rolling logical file | Pass on macOS | Plex indexed and played the 3,417,699-byte logical MP4 while BlackPearl's configured hard cache quota was 1,048,576 bytes |
 | Rolling exact random reads | Pass on macOS | Plex ranges at offsets 0, 1,310,720, and 3,145,728 matched the range-origin bytes exactly |
 | Rolling quota and eviction | Pass on macOS | The acceptance script sampled published chunks plus in-flight fetch files throughout a full stream, never exceeded 1 MiB, and observed an evicted range being fetched again after restart |
@@ -97,6 +98,7 @@ The current result includes verified FUSE and portable NFS adapters, persistent 
 - [x] Range-oriented domain, core, cache, acquisition, and FUSE contracts do not expose local paths.
 - [x] Persistent POC imports a legally usable generated fixture.
 - [x] Rolling mode fetches exact missing ranges without requiring a complete local file.
+- [x] Rolling mode never retains every byte of one logical object on disk simultaneously, even when the object is smaller than the global cache quota.
 - [x] Rolling cache accounts for in-flight fetch bytes and never exceeds its hard quota.
 - [x] Concurrent misses coalesce and evicted chunks refetch correctly.
 - [x] Race tests pass.

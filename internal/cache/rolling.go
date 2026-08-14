@@ -26,6 +26,7 @@ const (
 	persistentRangeDirectory      = "persistent"
 	maximumReadAheadChunks        = 64
 	maximumNextEpisodeChunkPrefix = 256
+	maximumRangeFetchAttempts     = 3
 )
 
 var (
@@ -132,10 +133,11 @@ type chunkEntry struct {
 }
 
 type fetchCall struct {
-	done   chan struct{}
-	err    error
-	kind   backgroundFetchKind
-	parent context.Context
+	done     chan struct{}
+	err      error
+	kind     backgroundFetchKind
+	parent   context.Context
+	expected int64
 }
 
 type backgroundFetchKind uint8
@@ -267,6 +269,20 @@ func (s *RollingSource) Open(ctx context.Context, media domain.Media) (_ domain.
 			closeErr,
 		)
 	}
+	if s.shared.policy == retentionRolling {
+		object := objectCacheKey(media.Backing, remote.Validator())
+		s.shared.mu.Lock()
+		incomplete, incompleteErr := s.ensureIncompleteObjectLocked(object, media.Size, 0, nil)
+		s.shared.mu.Unlock()
+		if incompleteErr != nil {
+			closeErr := remote.Close()
+			return nil, errors.Join(fmt.Errorf("enforce rolling incomplete-object retention: %w", incompleteErr), closeErr)
+		}
+		if !incomplete {
+			closeErr := remote.Close()
+			return nil, errors.Join(errors.New("rolling cache could not preserve incomplete-object retention"), closeErr)
+		}
+	}
 	return &rollingHandle{owner: s, media: media, remote: remote, validator: remote.Validator()}, nil
 }
 
@@ -316,6 +332,7 @@ type rollingHandle struct {
 	closed    atomic.Bool
 	closeOnce sync.Once
 	closeErr  error
+	remoteMu  sync.Mutex
 
 	readAheadMu         sync.Mutex
 	readAheadContext    context.Context
@@ -344,6 +361,9 @@ func (h *rollingHandle) ReadAt(ctx context.Context, destination []byte, offset i
 	}
 	if offset >= h.media.Size {
 		return 0, io.EOF
+	}
+	if h.owner.shared.policy == retentionRolling && h.media.Size <= h.owner.shared.options.ChunkBytes {
+		return h.readWithoutDiskCache(ctx, destination, offset)
 	}
 	readAheadContext, readAheadGeneration := h.beginRead(offset)
 	wanted := int64(len(destination))
@@ -379,6 +399,31 @@ func (h *rollingHandle) ReadAt(ctx context.Context, destination []byte, offset i
 		return written, io.EOF
 	}
 	return written, nil
+}
+
+func (h *rollingHandle) readWithoutDiskCache(ctx context.Context, destination []byte, offset int64) (int, error) {
+	h.remoteMu.Lock()
+	defer h.remoteMu.Unlock()
+	if h.closed.Load() {
+		return 0, errors.New("rolling read handle is closed")
+	}
+	h.owner.shared.mu.Lock()
+	h.owner.shared.misses++
+	h.owner.shared.mu.Unlock()
+	var count int
+	var err error
+	for attempt := 1; attempt <= maximumRangeFetchAttempts; attempt++ {
+		count, err = h.remote.ReadAt(ctx, destination, offset)
+		if err == nil || errors.Is(err, io.EOF) || ctx.Err() != nil {
+			break
+		}
+	}
+	if count > 0 {
+		h.owner.shared.mu.Lock()
+		h.owner.shared.fetches++
+		h.owner.shared.mu.Unlock()
+	}
+	return count, err
 }
 
 func (h *rollingHandle) beginRead(offset int64) (context.Context, uint64) {
@@ -459,11 +504,11 @@ func (s *RollingSource) scheduleBackgroundChunks(
 			s.shared.mu.Unlock()
 			continue
 		}
-		if !s.tryReserveBackgroundLocked(expected, kind, protected) {
+		if !s.tryReserveBackgroundLocked(key, logicalSize, expected, kind, protected) {
 			s.shared.mu.Unlock()
 			return
 		}
-		call := &fetchCall{done: make(chan struct{}), kind: kind, parent: ctx}
+		call := &fetchCall{done: make(chan struct{}), kind: kind, parent: ctx, expected: expected}
 		s.shared.inflight[key] = call
 		s.recordBackgroundFetchLocked(kind)
 		s.shared.mu.Unlock()
@@ -471,10 +516,18 @@ func (s *RollingSource) scheduleBackgroundChunks(
 	}
 }
 
-func (s *RollingSource) tryReserveBackgroundLocked(expected int64, kind backgroundFetchKind, protected *chunkKey) bool {
+func (s *RollingSource) tryReserveBackgroundLocked(key chunkKey, logicalSize int64, expected int64, kind backgroundFetchKind, protected *chunkKey) bool {
 	if s.shared.policy == retentionPersistent {
 		s.reserveLocked(expected)
 		return true
+	}
+	incomplete, err := s.ensureIncompleteObjectLocked(key.object, logicalSize, expected, protected)
+	if err != nil {
+		s.recordBackgroundErrorLocked(kind)
+		return false
+	}
+	if !incomplete {
+		return false
 	}
 	foregroundHeadroom := s.shared.options.ChunkBytes
 	if kind == backgroundFetchNextEpisode && s.shared.current+s.shared.reserved+expected > s.shared.options.MaxBytes-foregroundHeadroom {
@@ -495,6 +548,58 @@ func (s *RollingSource) tryReserveBackgroundLocked(expected int64, kind backgrou
 	}
 	s.reserveLocked(expected)
 	return true
+}
+
+func (s *RollingSource) ensureIncompleteObjectLocked(
+	object string,
+	logicalSize int64,
+	expected int64,
+	protected *chunkKey,
+) (bool, error) {
+	limit := logicalSize - 1
+	for s.objectUsageLocked(object)+expected > limit {
+		key, entry, found := s.oldestUnpinnedObjectChunkExceptLocked(object, protected)
+		if !found {
+			return false, nil
+		}
+		if err := os.Remove(entry.path); err != nil {
+			return false, fmt.Errorf("evict rolling object chunk: %w", err)
+		}
+		delete(s.shared.chunks, key)
+		s.shared.current -= entry.size
+		s.shared.evictions++
+	}
+	return true, nil
+}
+
+func (s *RollingSource) objectUsageLocked(object string) int64 {
+	var usage int64
+	for key, entry := range s.shared.chunks {
+		if key.object == object {
+			usage += entry.size
+		}
+	}
+	for key, call := range s.shared.inflight {
+		if key.object == object {
+			usage += call.expected
+		}
+	}
+	return usage
+}
+
+func (s *RollingSource) oldestUnpinnedObjectChunkExceptLocked(object string, protected *chunkKey) (chunkKey, *chunkEntry, bool) {
+	var selectedKey chunkKey
+	var selected *chunkEntry
+	for key, entry := range s.shared.chunks {
+		if key.object != object || (protected != nil && key == *protected) || entry.pins != 0 {
+			continue
+		}
+		if selected == nil || entry.lastAccess < selected.lastAccess {
+			selectedKey = key
+			selected = entry
+		}
+	}
+	return selectedKey, selected, selected != nil
 }
 
 func (s *RollingSource) oldestUnpinnedExceptLocked(protected *chunkKey) (chunkKey, *chunkEntry, bool) {
@@ -571,6 +676,8 @@ func (h *rollingHandle) Close() error {
 	h.closeOnce.Do(func() {
 		h.closed.Store(true)
 		h.cancelReadAhead()
+		h.remoteMu.Lock()
+		defer h.remoteMu.Unlock()
 		h.closeErr = h.remote.Close()
 	})
 	return h.closeErr
@@ -615,7 +722,7 @@ func (s *RollingSource) acquireChunk(
 				continue
 			}
 		}
-		reserved, err := s.tryReserveLocked(expected)
+		reserved, err := s.tryReserveLocked(key, logicalSize, expected)
 		if err != nil {
 			s.shared.mu.Unlock()
 			return nil, err
@@ -630,7 +737,7 @@ func (s *RollingSource) acquireChunk(
 				continue
 			}
 		}
-		call := &fetchCall{done: make(chan struct{}), parent: s.shared.lifecycle}
+		call := &fetchCall{done: make(chan struct{}), parent: s.shared.lifecycle, expected: expected}
 		s.shared.inflight[key] = call
 		s.shared.misses++
 		s.shared.mu.Unlock()
@@ -646,10 +753,17 @@ func (s *RollingSource) acquireChunk(
 	}
 }
 
-func (s *RollingSource) tryReserveLocked(expected int64) (bool, error) {
+func (s *RollingSource) tryReserveLocked(key chunkKey, logicalSize int64, expected int64) (bool, error) {
 	if s.shared.policy == retentionPersistent {
 		s.reserveLocked(expected)
 		return true, nil
+	}
+	incomplete, err := s.ensureIncompleteObjectLocked(key.object, logicalSize, expected, nil)
+	if err != nil {
+		return false, err
+	}
+	if !incomplete {
+		return false, nil
 	}
 	for s.shared.current+s.shared.reserved+expected > s.shared.options.MaxBytes {
 		key, entry, found := s.oldestUnpinnedLocked()
@@ -700,22 +814,7 @@ func (s *RollingSource) runFetch(
 ) {
 	fetchContext, cancel := context.WithTimeout(call.parent, s.shared.options.FetchTimeout)
 	defer cancel()
-	remote, err := s.opener.Open(fetchContext, backing)
-	if err == nil && remote.Size() != logicalSize {
-		err = fmt.Errorf("rolling source size changed: catalog=%d provider=%d", logicalSize, remote.Size())
-	}
-	if err == nil && remote.Validator() != validator {
-		err = fmt.Errorf("rolling source validator changed: opened=%q provider=%q", validator, remote.Validator())
-	}
-	var entry *chunkEntry
-	if err == nil {
-		entry, err = s.fetchChunk(fetchContext, remote, key, offset, expected)
-	}
-	if remote != nil {
-		if closeErr := remote.Close(); closeErr != nil {
-			err = errors.Join(err, fmt.Errorf("close remote range source: %w", closeErr))
-		}
-	}
+	entry, err := s.fetchChunkWithRetry(fetchContext, key, backing, validator, logicalSize, offset, expected)
 	s.shared.mu.Lock()
 	defer s.shared.mu.Unlock()
 	s.shared.reserved -= expected
@@ -733,6 +832,58 @@ func (s *RollingSource) runFetch(
 	delete(s.shared.inflight, key)
 	close(call.done)
 	s.signalLocked()
+}
+
+func (s *RollingSource) fetchChunkWithRetry(
+	ctx context.Context,
+	key chunkKey,
+	backing domain.BackingRef,
+	validator string,
+	logicalSize int64,
+	offset int64,
+	expected int64,
+) (*chunkEntry, error) {
+	var lastErr error
+	for attempt := 1; attempt <= maximumRangeFetchAttempts; attempt++ {
+		remote, err := s.opener.Open(ctx, backing)
+		var providerSize int64
+		var providerValidator string
+		if err == nil {
+			providerSize = remote.Size()
+			providerValidator = remote.Validator()
+		}
+		if err == nil && providerSize != logicalSize {
+			closeErr := remote.Close()
+			return nil, errors.Join(
+				fmt.Errorf("rolling source size changed: catalog=%d provider=%d", logicalSize, providerSize),
+				closeErr,
+			)
+		}
+		if err == nil && providerValidator != validator {
+			closeErr := remote.Close()
+			return nil, errors.Join(
+				fmt.Errorf("rolling source validator changed: opened=%q provider=%q", validator, providerValidator),
+				closeErr,
+			)
+		}
+		var entry *chunkEntry
+		if err == nil {
+			entry, err = s.fetchChunk(ctx, remote, key, offset, expected)
+		}
+		if remote != nil {
+			if closeErr := remote.Close(); closeErr != nil {
+				err = errors.Join(err, fmt.Errorf("close remote range source: %w", closeErr))
+			}
+		}
+		if err == nil || entry != nil {
+			return entry, err
+		}
+		lastErr = err
+		if ctx.Err() != nil {
+			break
+		}
+	}
+	return nil, fmt.Errorf("fetch rolling range after %d attempts: %w", maximumRangeFetchAttempts, lastErr)
 }
 
 func (s *RollingSource) fetchChunk(
