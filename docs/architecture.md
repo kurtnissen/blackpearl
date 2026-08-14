@@ -140,6 +140,18 @@ cannot roll back or block the published namespace. The isolated Compose profile
 keeps Plex and BlackPearl on disjoint networks and reaches the host-published
 Plex endpoint without exposing the control API to Plex.
 
+The Watchlist observer writes provider-neutral movie intent to its own SQLite
+queue. When explicitly enabled, a separate Watchlist worker submits that intent
+to the durable acquisition-job manager and persists the returned job ID before
+releasing its lease. Later claims only reconcile public job state. Search,
+provider mutation, preparation polling, publication, and Plex refresh remain
+owned by the acquisition-job worker. This allows a Watchlist request to survive
+restarts and multi-hour preparation without holding a Watchlist lease. Shows are
+observed but never submitted because they lack season and episode intent. The
+first successful observer sync after startup is a non-acquiring baseline;
+immutable per-row eligibility permits only movies first seen on later opted-in
+syncs, so enabling the feature cannot drain a historical Watchlist backlog.
+
 ## Direct Play target
 
 The low-storage VPS path treats Plex Direct Play as a primary constraint. BlackPearl delivers exact container bytes and does not transcode. Codec/container compatibility remains a Plex client concern; a provider resolver should eventually prefer Direct Play-compatible candidates when metadata is reliable. Milestone 1's synthetic fixture is MP4 with H.264 video, AAC audio, `yuv420p`, and fast-start metadata.

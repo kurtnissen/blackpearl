@@ -61,14 +61,19 @@ health, last-sync time, and aggregate queue counts—never titles or Plex IDs.
 
 Observation is enabled by default but cannot mutate Prowlarr, TorBox, Plex's
 Watchlist, or the media manifest. After Prowlarr authentication and authorized
-indexers are configured, opt in to serialized cached-only movie processing by
-setting this before launch:
+indexers are configured, opt in to restart-safe movie preparation by setting
+this before launch:
 
 ```bash
 BLACKPEARL_WATCHLIST_ACQUISITION_ENABLED=true ./scripts/torbox-stack.sh start
 ```
 
-Uncached movies wait six hours before another check. Known transient failures
+This opt-in allows TorBox to download the selected release when it is not
+cached, so use it only with authorized sources. Startup performs a safe
+baseline: movies already in the Watchlist remain observation-only, and only a
+movie added after that baseline is eligible. The Watchlist queue persists the
+durable acquisition job ID and reconciles it across restarts. No-source or
+stalled jobs wait six hours before another attempt. Known transient failures
 wait 15 minutes. Any provider or publication mutation with an ambiguous result
 moves to manual review instead of being retried. Watchlisted shows are counted
 but never acquired because a show alone does not specify season or episode.
@@ -195,7 +200,7 @@ to six items and Plex indexed metadata ID 14. Brave played it with
 Two additional legal public torrents stopped at TorBox's explicit no-seed
 state and were not published; their exact test objects were removed.
 
-The Watchlist gateway, durable queue, observe-only process wiring, and
-serialized cached-only worker are covered by mocked full-process tests. Live
+The Watchlist gateway, durable linked-job queue, observe-only process wiring,
+and serialized durable handoff are covered by mocked full-process tests. Live
 observe-only counts pass; a live Watchlist-triggered provider mutation remains
 a separate acceptance gate.

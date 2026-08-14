@@ -484,7 +484,7 @@ export function SetupConsole(): React.JSX.Element {
                 <>
                   <p className="watchlist-summary">{watchlistSummary(watchlistStatus)}</p>
                   <div className="watchlist-stats">
-                    <p><strong>{waitingMovieCount(watchlistStatus)} movies waiting</strong><span>Queued or awaiting a cached match</span></p>
+                    <p><strong>{observedMovieCount(watchlistStatus)} movies observed</strong><span>Existing items stay observation-only; auto add starts with newly observed movies</span></p>
                     <p><strong>{watchlistStatus.queue.observedShows} shows observed</strong><span>Tracked safely; episode intake comes later</span></p>
                     <p><strong>{watchlistStatus.queue.succeeded} added automatically</strong><span>Published into the BlackPearl manifest</span></p>
                     <p><strong>{watchlistStatus.queue.manualReview} need review</strong><span>Held instead of making an unsafe guess</span></p>
@@ -588,14 +588,14 @@ function publicMessage(error: unknown): string {
   return "BlackPearl could not reach its local setup service.";
 }
 
-function waitingMovieCount(status: WatchlistStatus): number {
+function observedMovieCount(status: WatchlistStatus): number {
   return status.queue.pendingMovies + status.queue.acquiring + status.queue.notCached + status.queue.retryable;
 }
 
 function watchlistSummary(status: WatchlistStatus): string {
   if (!status.enabled) return "Plex Watchlist observation is turned off.";
   if (!status.healthy) return "BlackPearl could not read Plex Watchlist during its latest check.";
-  if (status.acquisitionEnabled) return "BlackPearl is watching Plex and can add authorized cached matches automatically.";
+  if (status.acquisitionEnabled) return "BlackPearl will consider only new authorized movies added after auto add was enabled. TorBox may download an uncached release.";
   return "BlackPearl is watching Plex. Automatic adding stays off until your authorized Prowlarr indexers are ready.";
 }
 

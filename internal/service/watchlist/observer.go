@@ -23,7 +23,7 @@ type SnapshotGateway interface {
 
 // QueueRepository persists observations and returns privacy-safe counts.
 type QueueRepository interface {
-	UpsertSnapshot(ctx context.Context, items []acquisitiondomain.WatchlistItem, observedAt time.Time) error
+	UpsertSnapshotPolicy(ctx context.Context, items []acquisitiondomain.WatchlistItem, observedAt time.Time, autoEligible bool) error
 	Status(ctx context.Context) (acquisitiondomain.WatchlistQueueStatus, error)
 }
 
@@ -52,10 +52,11 @@ type Observer struct {
 	acquisitionEnabled bool
 	now                func() time.Time
 
-	syncMu     sync.Mutex
-	mu         sync.RWMutex
-	healthy    bool
-	lastSyncAt *time.Time
+	syncMu           sync.Mutex
+	mu               sync.RWMutex
+	healthy          bool
+	lastSyncAt       *time.Time
+	baselineComplete bool
 }
 
 // NewObserver constructs an observe-only watchlist coordinator.
@@ -95,13 +96,17 @@ func (o *Observer) Sync(ctx context.Context) error {
 		o.markUnhealthy()
 		return fmt.Errorf("record Plex watchlist: %w", ErrUnavailable)
 	}
-	if err := o.queue.UpsertSnapshot(ctx, items, observedAt); err != nil {
+	o.mu.RLock()
+	autoEligible := o.baselineComplete && o.acquisitionEnabled
+	o.mu.RUnlock()
+	if err := o.queue.UpsertSnapshotPolicy(ctx, items, observedAt, autoEligible); err != nil {
 		o.markUnhealthy()
 		return publicError(ctx, "record Plex watchlist", err)
 	}
 	o.mu.Lock()
 	o.healthy = true
 	o.lastSyncAt = &observedAt
+	o.baselineComplete = true
 	o.mu.Unlock()
 	return nil
 }

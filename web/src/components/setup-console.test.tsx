@@ -325,17 +325,32 @@ it("shows aggregate Plex Watchlist activity without exposing titles or identifie
 
   expect(await screen.findByRole("heading", { name: "Plex Watchlist" })).toBeInTheDocument();
   expect(screen.getByText("OBSERVING")).toBeInTheDocument();
-  expect(screen.getByText("3 movies waiting")).toBeInTheDocument();
+  expect(screen.getByText("3 movies observed")).toBeInTheDocument();
   expect(screen.getByText("2 shows observed")).toBeInTheDocument();
   expect(screen.getByText(/Automatic adding stays off/)).toBeInTheDocument();
   expect(screen.queryByText(/objectId/i)).not.toBeInTheDocument();
 });
 
-function watchlistResponse(): Response {
+it("explains that automatic intake applies only to newly observed authorized movies", async () => {
+  const bootstrap = "b".repeat(64);
+  const active = { objectId: "17:3", name: "Existing.mkv", extension: ".mkv", size: 1024, mediaType: "movie", title: "Existing", year: 2024 };
+  window.history.replaceState(null, "", `/#bootstrap=${bootstrap}`);
+  vi.stubGlobal("fetch", vi.fn()
+    .mockResolvedValueOnce(new Response(JSON.stringify({ setupRequired: false, tokenConfigured: true, csrfToken: "csrf", selected: active, selectedItems: [active] }), { status: 200 }))
+    .mockResolvedValueOnce(watchlistResponse(true)));
+
+  render(<SetupConsole />);
+
+  expect(await screen.findByText("AUTO ADD ON")).toBeInTheDocument();
+  expect(screen.getByText(/new authorized movies added after auto add was enabled/i)).toBeInTheDocument();
+  expect(screen.getByText(/TorBox may download an uncached release/i)).toBeInTheDocument();
+});
+
+function watchlistResponse(acquisitionEnabled = false): Response {
   return new Response(JSON.stringify({
     enabled: true,
     healthy: true,
-    acquisitionEnabled: false,
+    acquisitionEnabled,
     lastSyncAt: "2026-08-14T14:00:00Z",
     queue: {
       pendingMovies: 3,

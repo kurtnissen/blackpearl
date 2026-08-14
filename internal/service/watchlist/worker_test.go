@@ -161,6 +161,27 @@ func TestWorkerReportsNoWorkAndValidatesOptions(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestWorkerRunStopsAfterProcessCancellation(t *testing.T) {
+	t.Parallel()
+	queue := &fakeWorkerQueue{}
+	worker := newWorker(t, queue, &fakeJobManager{}, time.Now())
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		worker.Run(ctx)
+		close(done)
+	}()
+	require.Eventually(t, func() bool { return queue.claimCalls.Load() > 0 }, time.Second, time.Millisecond)
+
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("watchlist worker did not stop after cancellation")
+	}
+}
+
 func newWorker(t *testing.T, queue *fakeWorkerQueue, manager *fakeJobManager, now time.Time) *watchlistservice.Worker {
 	t.Helper()
 	worker, err := watchlistservice.NewWorker(queue, manager, watchlistservice.WorkerOptions{
@@ -229,9 +250,11 @@ type fakeWorkerQueue struct {
 	nextAttempt               time.Time
 	completions               []acquisition.WatchlistCompletion
 	transitionContextCanceled bool
+	claimCalls                atomic.Int32
 }
 
 func (f *fakeWorkerQueue) Claim(ctx context.Context, _ time.Time, _ time.Duration) (acquisition.WatchlistClaim, error) {
+	f.claimCalls.Add(1)
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := ctx.Err(); err != nil {

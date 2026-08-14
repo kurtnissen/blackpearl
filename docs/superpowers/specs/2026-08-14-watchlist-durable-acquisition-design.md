@@ -55,6 +55,15 @@ meaning changes from cached-only acquisition to durable acquisition, including
 provider download when a selected authorized release is not cached. The default
 remains `false` in every Compose profile.
 
+Enabling automatic acquisition never authorizes the existing Watchlist
+backlog. The first successful observer sync after every process start is a
+baseline and marks newly discovered rows observation-only. Only a movie first
+seen on a later sync while automatic acquisition is enabled receives immutable
+automatic eligibility. Enabling the option therefore means "new Watchlist
+movies from this point forward," not "drain everything already present."
+Disabling the option prevents new submissions; a job already durably submitted
+continues to reconcile so provider mutation is never abandoned ambiguously.
+
 The Watchlist is always read-only. Credentials, Watchlist titles, external IDs,
 release locators, TorBox object IDs, and acquisition job IDs are not returned by
 the Watchlist status API. The browser continues to receive aggregate counts
@@ -64,7 +73,7 @@ only. Live acceptance uses legally redistributable open media.
 
 - Domain tests validate optional durable-job identity and reject malformed IDs.
 - Repository tests prove attach, defer, restart recovery, stale-lease rejection,
-  and terminal cleanup of the linked job.
+  terminal cleanup of the linked job, and immutable post-baseline eligibility.
 - Service tests prove submit/deduplicate, active reconciliation, success,
   no-release cooldown, manual review, cancellation-safe attachment, and serial
   processing.

@@ -533,11 +533,17 @@ func TestRunBrowserSetupSubmitsWatchlistMovieToDurableQueue(t *testing.T) {
 	require.NoError(t, os.WriteFile(credentialPath, []byte("private-plex-token"), 0o600))
 	var createCalls atomic.Int32
 	var cacheCheckCalls atomic.Int32
+	var watchlistCalls atomic.Int32
 	var provider *httptest.Server
 	provider = httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
 		case "/library/sections/watchlist/all":
 			require.Equal(t, "private-plex-token", request.Header.Get("X-Plex-Token"))
+			if watchlistCalls.Add(1) == 1 {
+				_, err := writer.Write([]byte(`{"MediaContainer":{"size":0,"totalSize":0,"Metadata":[]}}`))
+				require.NoError(t, err)
+				return
+			}
 			_, err := writer.Write([]byte(`{"MediaContainer":{"size":1,"totalSize":1,"Metadata":[{"guid":"plex://movie/auto","type":"movie","title":"Automatic Movie","year":2026}]}}`))
 			require.NoError(t, err)
 		case "/prowlarr/api/v1/search":
@@ -591,7 +597,7 @@ func TestRunBrowserSetupSubmitsWatchlistMovieToDurableQueue(t *testing.T) {
 	cfg.RangeTimeout = time.Second
 	cfg.WatchlistEnabled = true
 	cfg.WatchlistBaseURL = provider.URL
-	cfg.WatchlistPollInterval = time.Hour
+	cfg.WatchlistPollInterval = 5 * time.Millisecond
 	cfg.WatchlistTokenFile = credentialPath
 	cfg.WatchlistAcquisitionEnabled = true
 	cfg.WatchlistLeaseDuration = time.Minute

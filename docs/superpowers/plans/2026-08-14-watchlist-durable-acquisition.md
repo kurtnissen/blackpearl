@@ -11,6 +11,7 @@
 ## Global Constraints
 
 - Watchlist access remains read-only and automatic acquisition remains disabled by default.
+- Existing Watchlist items are never authorized by enabling automatic acquisition; only movies first observed after the startup baseline are eligible.
 - Only movies become acquisition intent; shows remain aggregate observation-only.
 - Provider credentials, titles, external IDs, job IDs, and object IDs never appear in Watchlist API responses or logs.
 - Live provider verification uses legally redistributable open media.
@@ -78,6 +79,8 @@
 - [x] Write an app integration test where a Watchlist movie enters the durable job queue without invoking cached-only acquisition.
 - [x] Run focused config and app tests and confirm they fail.
 - [x] Wire the Watchlist worker to `acquisitionJobManager`; remove its direct cached coordinator dependency; keep Compose acquisition opt-in `false`.
+- [x] Persist immutable automatic eligibility and prove startup baseline items never enter the acquisition queue.
+- [x] Update the paired UI to explain post-baseline eligibility and uncached TorBox preparation.
 - [x] Run `go test -race ./internal/config ./cmd/blackpearl` and confirm it passes.
 - [x] Commit `feat: wire durable watchlist acquisition`.
 

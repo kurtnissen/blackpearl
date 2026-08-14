@@ -14,7 +14,7 @@ BlackPearl is an experimental, open-source Go service that exposes a virtual med
 - Explicit uncached preparation persists a redacted SQLite job, verifies transient torrent metadata against the ranked release fingerprint, reconciles provider mutations, survives restarts, and publishes only after TorBox exposes playable media.
 - The optional direct Internet Archive adapter gives the legal POC a bounded, verified open-media search path while Prowlarr remains the generic authorized-indexer fallback.
 - A paired localhost acquisition console privately configures Prowlarr, accepts validated movie or TV-episode intent, and returns only the updated public Plex manifest. Provider credentials and release locators never return to the browser.
-- Durable Plex Watchlist ingestion observes movies and shows through a bounded, header-authenticated adapter, stores a lease-based SQLite queue, and can serialize cached-only movie acquisition without inventing episode intent for a show.
+- Durable Plex Watchlist ingestion observes movies and shows through a bounded, header-authenticated adapter, stores a lease-based SQLite queue, and can submit opted-in movies to the restart-safe acquisition queue without inventing episode intent for a show.
 - Best-effort Plex refresh notifications rescan the exact BlackPearl movie and TV libraries after successful manifest publication without coupling Plex availability to the publication transaction.
 - `persistent` and `rolling` configuration modes. Rolling mode fetches strict HTTP ranges into fixed-size chunks, coalesces misses, cancels stale handle-scoped read-ahead after seeks or closes, performs bounded next-episode prefix prefetch, and enforces a hard local byte quota with LRU eviction.
 - A generated 8-second H.264/AAC test-pattern MP4 with no third-party media.
@@ -135,10 +135,16 @@ minutes. BlackPearl mounts only this stack's named Plex configuration volume,
 read-only; it does not inspect a host Plex installation. Observation stores no
 Plex token in BlackPearl state and does not acquire anything. The paired setup
 page shows only aggregate queue counts and observation health; it never returns
-Watchlist titles or identifiers. After authorized indexers are configured and the observe-only counts look correct, automatic
-cached-only movie processing can be enabled explicitly with
-`BLACKPEARL_WATCHLIST_ACQUISITION_ENABLED=true`. Shows remain observation-only
-until an episode policy is configured in a later milestone.
+Watchlist titles or identifiers. After authorized indexers are configured and
+the observe-only counts look correct, automatic durable movie preparation can
+be enabled explicitly with
+`BLACKPEARL_WATCHLIST_ACQUISITION_ENABLED=true`. This opt-in permits the same
+TorBox download behavior as the setup page's **Prepare through TorBox** action;
+use it only with authorized sources. The first sync after startup is always a
+safe baseline: existing Watchlist movies remain observation-only, and only new
+movies added on a later sync are eligible for automatic preparation. Shows
+remain observation-only until an episode policy is configured in a later
+milestone.
 
 Successful manifest publication also schedules a best-effort refresh of the
 exact Plex library roots `/blackpearl/Movies` and `/blackpearl/TV Shows`. The

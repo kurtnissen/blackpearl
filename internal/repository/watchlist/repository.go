@@ -118,6 +118,17 @@ func (r *Repository) applyMigration(ctx context.Context, name string) error {
 // UpsertSnapshot records current provider observations without reopening final
 // or deferred work states.
 func (r *Repository) UpsertSnapshot(ctx context.Context, items []acquisitiondomain.WatchlistItem, observedAt time.Time) error {
+	return r.UpsertSnapshotPolicy(ctx, items, observedAt, true)
+}
+
+// UpsertSnapshotPolicy records observations and marks only newly inserted
+// movies as eligible for automatic acquisition when explicitly authorized.
+func (r *Repository) UpsertSnapshotPolicy(
+	ctx context.Context,
+	items []acquisitiondomain.WatchlistItem,
+	observedAt time.Time,
+	autoEligible bool,
+) error {
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("upsert watchlist snapshot: %w", err)
 	}
@@ -137,19 +148,23 @@ func (r *Repository) UpsertSnapshot(ctx context.Context, items []acquisitiondoma
 		return fmt.Errorf("begin watchlist snapshot: %w", err)
 	}
 	timestamp := observedAt.UTC().UnixMilli()
+	eligible := 0
+	if autoEligible {
+		eligible = 1
+	}
 	for _, item := range validated {
 		if _, err := transaction.ExecContext(ctx, `
 			INSERT INTO watchlist_queue (
 				source, external_id, media_type, title, release_year,
-				first_observed_unix_ms, last_observed_unix_ms, updated_unix_ms
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+				first_observed_unix_ms, last_observed_unix_ms, updated_unix_ms, auto_eligible
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(source, external_id) DO UPDATE SET
 				media_type = excluded.media_type,
 				title = excluded.title,
 				release_year = excluded.release_year,
 				last_observed_unix_ms = excluded.last_observed_unix_ms,
 				updated_unix_ms = excluded.updated_unix_ms
-		`, item.Source(), item.ExternalID(), item.MediaType(), item.Title(), item.Year(), timestamp, timestamp, timestamp); err != nil {
+		`, item.Source(), item.ExternalID(), item.MediaType(), item.Title(), item.Year(), timestamp, timestamp, timestamp, eligible); err != nil {
 			return errors.Join(fmt.Errorf("upsert watchlist item: %w", err), transaction.Rollback())
 		}
 	}
@@ -178,6 +193,7 @@ func (r *Repository) Claim(ctx context.Context, now time.Time, leaseDuration tim
 			SELECT rowid
 			FROM watchlist_queue
 			WHERE media_type = 'movie'
+			  AND auto_eligible = 1
 			  AND (
 				(state IN ('pending', 'not_cached', 'retryable') AND next_attempt_unix_ms <= ?)
 				OR (state = 'acquiring' AND lease_until_unix_ms <= ? AND next_attempt_unix_ms <= ?)

@@ -49,6 +49,20 @@ func TestObserverStatusReportsAutomaticAcquisitionPolicy(t *testing.T) {
 	require.True(t, status.AcquisitionEnabled)
 }
 
+func TestObserverMakesOnlyPostBaselineItemsEligibleForAutomaticAcquisition(t *testing.T) {
+	t.Parallel()
+	queue := &fakeQueue{}
+	observer, err := watchlistservice.NewObserver(&fakeSnapshotGateway{}, queue, watchlistservice.ObserverOptions{
+		PollInterval: time.Hour, AcquisitionEnabled: true,
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, observer.Sync(context.Background()))
+	require.NoError(t, observer.Sync(context.Background()))
+
+	require.Equal(t, []bool{false, true}, queue.autoEligibility)
+}
+
 func TestObserverSyncSanitizesProviderAndRepositoryFailures(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -177,12 +191,13 @@ func (f *fakeSnapshotGateway) Snapshot(context.Context) ([]acquisitiondomain.Wat
 }
 
 type fakeQueue struct {
-	mu         sync.Mutex
-	items      []acquisitiondomain.WatchlistItem
-	observedAt time.Time
-	upsertErr  error
-	status     acquisitiondomain.WatchlistQueueStatus
-	statusErr  error
+	mu              sync.Mutex
+	items           []acquisitiondomain.WatchlistItem
+	observedAt      time.Time
+	upsertErr       error
+	status          acquisitiondomain.WatchlistQueueStatus
+	statusErr       error
+	autoEligibility []bool
 }
 
 func (f *fakeQueue) UpsertSnapshot(_ context.Context, items []acquisitiondomain.WatchlistItem, observedAt time.Time) error {
@@ -190,6 +205,20 @@ func (f *fakeQueue) UpsertSnapshot(_ context.Context, items []acquisitiondomain.
 	defer f.mu.Unlock()
 	f.items = append([]acquisitiondomain.WatchlistItem(nil), items...)
 	f.observedAt = observedAt
+	return f.upsertErr
+}
+
+func (f *fakeQueue) UpsertSnapshotPolicy(
+	_ context.Context,
+	items []acquisitiondomain.WatchlistItem,
+	observedAt time.Time,
+	autoEligible bool,
+) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.items = append([]acquisitiondomain.WatchlistItem(nil), items...)
+	f.observedAt = observedAt
+	f.autoEligibility = append(f.autoEligibility, autoEligible)
 	return f.upsertErr
 }
 

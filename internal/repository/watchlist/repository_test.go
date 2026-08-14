@@ -46,6 +46,30 @@ func TestRepositoryPersistsSnapshotAndKeepsSucceededMovieFinal(t *testing.T) {
 	require.Equal(t, 1, status.ObservedShows)
 }
 
+func TestRepositoryClaimsOnlyMoviesFirstObservedAfterAutomaticBaseline(t *testing.T) {
+	t.Parallel()
+	repository := openRepository(t, filepath.Join(t.TempDir(), "blackpearl.db"))
+	now := time.Date(2026, time.August, 14, 12, 0, 0, 0, time.UTC)
+	baseline := mustItem(t, "plex://movie/baseline", acquisitiondomain.WatchlistMediaTypeMovie, "Baseline")
+	newItem := mustItem(t, "plex://movie/new", acquisitiondomain.WatchlistMediaTypeMovie, "New Item")
+	require.NoError(t, repository.UpsertSnapshotPolicy(
+		context.Background(), []acquisitiondomain.WatchlistItem{baseline}, now, false,
+	))
+	require.NoError(t, repository.UpsertSnapshotPolicy(
+		context.Background(), []acquisitiondomain.WatchlistItem{baseline, newItem}, now.Add(time.Minute), true,
+	))
+
+	claim, err := repository.Claim(context.Background(), now.Add(time.Minute), time.Minute)
+
+	require.NoError(t, err)
+	require.Equal(t, newItem.ExternalID(), claim.Item().ExternalID())
+	success, err := acquisitiondomain.NewWatchlistSucceeded("authorized-object")
+	require.NoError(t, err)
+	require.NoError(t, repository.Complete(context.Background(), claim, success))
+	_, err = repository.Claim(context.Background(), now.Add(2*time.Minute), time.Minute)
+	require.ErrorIs(t, err, domain.ErrNotFound)
+}
+
 func TestRepositoryDefersNotCachedMovieUntilCooldownExpires(t *testing.T) {
 	t.Parallel()
 	repository := openRepository(t, filepath.Join(t.TempDir(), "blackpearl.db"))
