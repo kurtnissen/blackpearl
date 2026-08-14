@@ -45,9 +45,26 @@ func rankAndDeduplicate(request acquisition.SearchRequest, releases []acquisitio
 
 func releaseEligibleForIntent(request acquisition.SearchRequest, releaseTitle string) bool {
 	if request.Episode() > 0 {
-		return releaseMatches(request, releaseTitle)
+		return releaseMatches(request, releaseTitle) && !releaseHasAuxiliaryMarker(request.Title(), releaseTitle)
 	}
-	return releaseStartsWithTitle(request, releaseTitle) && releaseMatchesYear(request, releaseTitle)
+	return releaseStartsWithTitle(request, releaseTitle) && releaseMatchesYear(request, releaseTitle) &&
+		!releaseHasAuxiliaryMarker(request.Title(), releaseTitle)
+}
+
+func releaseHasAuxiliaryMarker(requestTitle string, releaseTitle string) bool {
+	for _, token := range [...]string{"featurette", "preview", "sample", "teaser", "trailer"} {
+		if containsAdditionalComparisonToken(requestTitle, releaseTitle, token) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsAdditionalComparisonToken(requestTitle string, releaseTitle string, token string) bool {
+	needle := " " + token + " "
+	releaseCount := strings.Count(" "+normalizeComparisonText(releaseTitle)+" ", needle)
+	requestCount := strings.Count(" "+normalizeComparisonText(requestTitle)+" ", needle)
+	return releaseCount > requestCount
 }
 
 func usableRelease(release acquisition.Release) bool {

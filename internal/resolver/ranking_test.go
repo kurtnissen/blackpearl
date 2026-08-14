@@ -37,6 +37,35 @@ func TestSearchDropsPreviewBeforeCachedFirstPlanningCanPromoteIt(t *testing.T) {
 	require.Equal(t, []string{"movie"}, releaseIDs(actual))
 }
 
+func TestSearchDropsAuxiliaryVideosAfterCompleteMovieTitleAndYear(t *testing.T) {
+	t.Parallel()
+	request, err := acquisition.NewMovieSearch("House on Haunted Hill", 1959)
+	require.NoError(t, err)
+	releases := []acquisition.Release{
+		searchTorrent(t, "prowlarr", "trailer", "House on Haunted Hill (1959) - Trailer", 15_000_000, "abcdef0123456789abcdef0123456789abcdef01", 100),
+		searchTorrent(t, "prowlarr", "teaser", "House on Haunted Hill (1959) - Teaser", 15_000_000, "abcdef1123456789abcdef0123456789abcdef01", 100),
+		searchTorrent(t, "prowlarr", "sample", "House on Haunted Hill (1959) - Sample", 15_000_000, "abcdef2123456789abcdef0123456789abcdef01", 100),
+		searchTorrent(t, "prowlarr", "preview", "House on Haunted Hill (1959) - Preview", 15_000_000, "abcdef3123456789abcdef0123456789abcdef01", 100),
+		searchTorrent(t, "prowlarr", "featurette", "House on Haunted Hill (1959) - Featurette", 15_000_000, "abcdef4123456789abcdef0123456789abcdef01", 100),
+		searchTorrent(t, "prowlarr", "movie", "House on Haunted Hill (1959) - Full-Length Horror Classic", 197_000_000, "abcdef5123456789abcdef0123456789abcdef01", 1),
+	}
+
+	actual := searchWithReleases(t, request, releases)
+
+	require.Equal(t, []string{"movie"}, releaseIDs(actual))
+}
+
+func TestSearchKeepsTrailerKeywordWhenPartOfRequestedMovieTitle(t *testing.T) {
+	t.Parallel()
+	request, err := acquisition.NewMovieSearch("The Trailer", 2026)
+	require.NoError(t, err)
+	movie := searchTorrent(t, "prowlarr", "movie", "The Trailer (2026) 1080p", 197_000_000, "abcdef0123456789abcdef0123456789abcdef01", 1)
+
+	actual := searchWithReleases(t, request, []acquisition.Release{movie})
+
+	require.Equal(t, []string{"movie"}, releaseIDs(actual))
+}
+
 func TestSearchDoesNotTreatPartialWordAsCompleteTitleMatch(t *testing.T) {
 	t.Parallel()
 	request, err := acquisition.NewMovieSearch("Movie", 2026)
@@ -63,6 +92,20 @@ func TestSearchRanksCompleteEpisodeTokenFirst(t *testing.T) {
 	actual := searchWithReleases(t, request, releases)
 
 	require.Equal(t, []string{"match"}, releaseIDs(actual))
+}
+
+func TestSearchDropsAuxiliaryEpisodeAfterCompleteEpisodeToken(t *testing.T) {
+	t.Parallel()
+	request, err := acquisition.NewEpisodeSearch("Show", 2026, 1, 2)
+	require.NoError(t, err)
+	releases := []acquisition.Release{
+		searchTorrent(t, "prowlarr", "trailer", "Show S01E02 Trailer", 15_000_000, "abcdef0123456789abcdef0123456789abcdef01", 100),
+		searchTorrent(t, "prowlarr", "episode", "Show S01E02 Episode", 197_000_000, "abcdef1123456789abcdef0123456789abcdef01", 1),
+	}
+
+	actual := searchWithReleases(t, request, releases)
+
+	require.Equal(t, []string{"episode"}, releaseIDs(actual))
 }
 
 func TestSearchRanksHashThenSeedersThenSizeAndStableIdentity(t *testing.T) {
