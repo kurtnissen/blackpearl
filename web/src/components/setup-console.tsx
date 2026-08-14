@@ -509,6 +509,9 @@ export function SetupConsole(): React.JSX.Element {
 								</div>
 								<p>{acquisitionJobDetail(activeJob)}</p>
 								<progress max="100" value={acquisitionJobProgress(activeJob)} aria-label={`${activeJob.title} preparation progress`} />
+								{activeJob.state === "preparing" && (
+									<p className="background-job__progress-value" aria-live="polite">{activeJob.progress}% prepared</p>
+								)}
 								<p className="field-note">This continues if you close this page or restart BlackPearl. When it is ready, BlackPearl publishes it to Plex automatically.</p>
 								<button type="button" onClick={() => void refreshAcquisitionJob()} disabled={pending}>Refresh status</button>
 							</section>
@@ -680,7 +683,7 @@ function acquisitionJobStateLabel(job: AcquisitionJob): string {
 function acquisitionJobProgress(job: AcquisitionJob): number {
 	if (job.state === "queued") return 5;
 	if (job.state === "selected") return 15;
-	if (job.state === "preparing") return Math.max(25, job.progress);
+	if (job.state === "preparing") return job.progress;
 	return 100;
 }
 

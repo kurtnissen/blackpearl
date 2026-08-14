@@ -313,6 +313,35 @@ it("explains when TorBox preparation stalls without a source", async () => {
 	expect(screen.getByText(/Search again to try another verified release/i)).toBeInTheDocument();
 });
 
+it("shows the exact durable provider progress while media is preparing", async () => {
+	const bootstrap = "b".repeat(64);
+	const active = { objectId: "17:3", name: "Existing.mkv", extension: ".mkv", size: 1024, mediaType: "movie", title: "Existing", year: 2024 };
+	const preparing = {
+		id: "0123456789abcdef0123456789abcdef",
+		state: "preparing",
+		mediaType: "movie",
+		title: "Open Movie",
+		year: 2026,
+		progress: 12,
+		createdAt: "2026-08-14T12:00:00Z",
+		updatedAt: "2026-08-14T12:05:00Z",
+	};
+	window.history.replaceState(null, "", `/#bootstrap=${bootstrap}`);
+	vi.stubGlobal("fetch", vi.fn()
+		.mockResolvedValueOnce(new Response(JSON.stringify({ setupRequired: false, tokenConfigured: true, csrfToken: "csrf", selected: active, selectedItems: [active] }), { status: 200 }))
+		.mockResolvedValueOnce(watchlistResponse())
+		.mockResolvedValueOnce(new Response(JSON.stringify({ configured: true }), { status: 200 }))
+		.mockResolvedValueOnce(new Response(JSON.stringify({ jobs: [preparing] }), { status: 200 })));
+	const user = userEvent.setup();
+	render(<SetupConsole />);
+	await user.click(await screen.findByRole("button", { name: "Find something new" }));
+
+	const progress = await screen.findByRole("progressbar", { name: "Open Movie preparation progress" });
+
+	expect(progress).toHaveAttribute("value", "12");
+	expect(screen.getByText("12% prepared")).toBeInTheDocument();
+});
+
 it("shows aggregate Plex Watchlist activity without exposing titles or identifiers", async () => {
   const bootstrap = "b".repeat(64);
   const active = { objectId: "17:3", name: "Existing.mkv", extension: ".mkv", size: 1024, mediaType: "movie", title: "Existing", year: 2024 };

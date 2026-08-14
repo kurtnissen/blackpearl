@@ -44,7 +44,7 @@ type Preparer interface {
 	CachedTorrents(ctx context.Context, releases []acquisition.Release) ([]acquisition.Release, error)
 	FindTorrentByHash(ctx context.Context, infoHash string) (acquisition.CreatedObject, error)
 	CreateTorrent(ctx context.Context, input acquisition.TorrentInput, allowDownload bool) (acquisition.CreatedObject, error)
-	InspectCreatedTorrent(ctx context.Context, created acquisition.CreatedObject) ([]domain.MediaCandidate, error)
+	InspectCreatedTorrent(ctx context.Context, created acquisition.CreatedObject) (acquisition.PreparationInspection, error)
 	DeleteCreatedTorrent(ctx context.Context, created acquisition.CreatedObject) error
 }
 
@@ -275,7 +275,7 @@ func (w *Worker) prepare(ctx context.Context, operationContext context.Context, 
 }
 
 func (w *Worker) publish(ctx context.Context, operationContext context.Context, claim acquisition.AcquisitionJobClaim, providers Providers) (acquisition.JobState, error) {
-	candidates, err := providers.Preparer.InspectCreatedTorrent(operationContext, claim.Job().CreatedObject())
+	inspection, err := providers.Preparer.InspectCreatedTorrent(operationContext, claim.Job().CreatedObject())
 	if errors.Is(err, acquisition.ErrStalled) {
 		if _, planned := claim.Job().SelectedCandidateOrdinal(); planned {
 			return w.abandonCandidate(ctx, operationContext, claim, providers.Preparer, acquisition.CandidateOutcomeStalled, acquisition.JobErrorStalled, false)
@@ -283,7 +283,8 @@ func (w *Worker) publish(ctx context.Context, operationContext context.Context, 
 		return w.fail(ctx, claim, acquisition.JobErrorStalled, false)
 	}
 	if errors.Is(err, acquisition.ErrNotReady) {
-		return w.deferJob(ctx, claim, acquisition.JobErrorNone, w.options.PreparingPollInterval)
+		progress := max(claim.Job().Progress(), inspection.Progress())
+		return w.deferJobWithProgress(ctx, claim, acquisition.JobErrorNone, w.options.PreparingPollInterval, progress)
 	}
 	if errors.Is(err, domain.ErrNotFound) {
 		if _, planned := claim.Job().SelectedCandidateOrdinal(); planned {
@@ -297,7 +298,7 @@ func (w *Worker) publish(ctx context.Context, operationContext context.Context, 
 	if err != nil {
 		return w.deferProviderFailure(ctx, claim, err)
 	}
-	selected, err := acquisitionservice.SelectCandidate(claim.Job().Request(), candidates)
+	selected, err := acquisitionservice.SelectCandidate(claim.Job().Request(), inspection.Candidates())
 	if err != nil {
 		if _, planned := claim.Job().SelectedCandidateOrdinal(); planned {
 			return w.abandonCandidate(ctx, operationContext, claim, providers.Preparer, acquisition.CandidateOutcomeUnplayable, acquisition.JobErrorNoPlayableMedia, false)
@@ -383,9 +384,13 @@ func (w *Worker) deferProviderFailure(ctx context.Context, claim acquisition.Acq
 }
 
 func (w *Worker) deferJob(ctx context.Context, claim acquisition.AcquisitionJobClaim, code acquisition.JobErrorCode, delay time.Duration) (acquisition.JobState, error) {
+	return w.deferJobWithProgress(ctx, claim, code, delay, claim.Job().Progress())
+}
+
+func (w *Worker) deferJobWithProgress(ctx context.Context, claim acquisition.AcquisitionJobClaim, code acquisition.JobErrorCode, delay time.Duration, progress int) (acquisition.JobState, error) {
 	now := w.now().UTC()
 	if err := w.commit(ctx, func(commitContext context.Context) error {
-		return w.queue.Defer(commitContext, claim, now.Add(delay), code, claim.Job().Progress(), now)
+		return w.queue.Defer(commitContext, claim, now.Add(delay), code, progress, now)
 	}); err != nil {
 		return "", err
 	}

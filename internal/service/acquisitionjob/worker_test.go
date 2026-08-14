@@ -242,6 +242,30 @@ func TestWorkerDefersNotReadyAndPublishesReadyMediaOnLaterLease(t *testing.T) {
 	require.Equal(t, "17:3", job.PublishedObjectID())
 }
 
+func TestWorkerPersistsMonotonicPreparationProgressAcrossPolls(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	repository, now, jobID := preparingJob(t, ctx)
+	provider := &fakeJobProvider{
+		inspectionProgress: []int{37, 22},
+		inspectionErrs:     []error{acquisition.ErrNotReady, acquisition.ErrNotReady},
+	}
+
+	state, err := newJobWorker(t, repository, provider, &fakeJobPublisher{}, now.Add(4*time.Second)).ProcessOne(ctx)
+	require.NoError(t, err)
+	require.Equal(t, acquisition.JobStatePreparing, state)
+	job, err := repository.Get(ctx, jobID)
+	require.NoError(t, err)
+	require.Equal(t, 37, job.Progress())
+
+	state, err = newJobWorker(t, repository, provider, &fakeJobPublisher{}, now.Add(15*time.Second)).ProcessOne(ctx)
+	require.NoError(t, err)
+	require.Equal(t, acquisition.JobStatePreparing, state)
+	job, err = repository.Get(ctx, jobID)
+	require.NoError(t, err)
+	require.Equal(t, 37, job.Progress())
+}
+
 func TestWorkerClassifiesNoReleaseAndNoPlayableMediaAsTerminal(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -285,18 +309,30 @@ func TestWorkerFallsBackWithoutDeletingExistingAccountObject(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	repository, now, jobID := plannedPreparingJob(t, ctx, 2, false)
-	provider := &fakeJobProvider{inspectionErrs: []error{acquisition.ErrStalled}}
+	provider := &fakeJobProvider{
+		inspectionProgress: []int{37, 37},
+		inspectionErrs:     []error{acquisition.ErrNotReady, acquisition.ErrStalled},
+	}
 	worker := newJobWorker(t, repository, provider, &fakeJobPublisher{}, now.Add(4*time.Second))
 
 	state, err := worker.ProcessOne(ctx)
+	require.NoError(t, err)
+	require.Equal(t, acquisition.JobStatePreparing, state)
+	job, err := repository.Get(ctx, jobID)
+	require.NoError(t, err)
+	require.Equal(t, 37, job.Progress())
+
+	worker = newJobWorker(t, repository, provider, &fakeJobPublisher{}, now.Add(15*time.Second))
+	state, err = worker.ProcessOne(ctx)
 
 	require.NoError(t, err)
 	require.Equal(t, acquisition.JobStateSelected, state)
 	require.Zero(t, provider.deleteCalls)
-	job, err := repository.Get(ctx, jobID)
+	job, err = repository.Get(ctx, jobID)
 	require.NoError(t, err)
 	require.Equal(t, mustJobReleaseAt(t, 1).InfoHash(), job.Selection().InfoHash())
 	require.False(t, job.HasCreatedObject())
+	require.Zero(t, job.Progress())
 }
 
 func TestWorkerCleansOwnedObjectBeforeFallingBack(t *testing.T) {
@@ -543,29 +579,30 @@ func newJobWorker(
 }
 
 type fakeJobProvider struct {
-	releases         []acquisition.Release
-	searchErr        error
-	cached           []acquisition.Release
-	cacheErr         error
-	cacheInput       []acquisition.Release
-	cacheCalls       int
-	material         acquisition.TorrentInput
-	materializeErr   error
-	materializeCalls int
-	found            acquisition.CreatedObject
-	foundSequence    []acquisition.CreatedObject
-	findErrs         []error
-	findCalls        int
-	created          acquisition.CreatedObject
-	createErr        error
-	createCalls      int
-	allowDownload    bool
-	candidates       []domain.MediaCandidate
-	inspectionErrs   []error
-	inspectionCalls  int
-	deleted          acquisition.CreatedObject
-	deleteErr        error
-	deleteCalls      int
+	releases           []acquisition.Release
+	searchErr          error
+	cached             []acquisition.Release
+	cacheErr           error
+	cacheInput         []acquisition.Release
+	cacheCalls         int
+	material           acquisition.TorrentInput
+	materializeErr     error
+	materializeCalls   int
+	found              acquisition.CreatedObject
+	foundSequence      []acquisition.CreatedObject
+	findErrs           []error
+	findCalls          int
+	created            acquisition.CreatedObject
+	createErr          error
+	createCalls        int
+	allowDownload      bool
+	candidates         []domain.MediaCandidate
+	inspectionProgress []int
+	inspectionErrs     []error
+	inspectionCalls    int
+	deleted            acquisition.CreatedObject
+	deleteErr          error
+	deleteCalls        int
 }
 
 func (f *fakeJobProvider) Search(context.Context, acquisition.SearchRequest) ([]acquisition.Release, error) {
@@ -604,13 +641,30 @@ func (f *fakeJobProvider) CreateTorrent(_ context.Context, _ acquisition.Torrent
 	return f.created, f.createErr
 }
 
-func (f *fakeJobProvider) InspectCreatedTorrent(context.Context, acquisition.CreatedObject) ([]domain.MediaCandidate, error) {
+func (f *fakeJobProvider) InspectCreatedTorrent(context.Context, acquisition.CreatedObject) (acquisition.PreparationInspection, error) {
 	index := f.inspectionCalls
 	f.inspectionCalls++
-	if index < len(f.inspectionErrs) && f.inspectionErrs[index] != nil {
-		return nil, f.inspectionErrs[index]
+	var inspectionErr error
+	if index < len(f.inspectionErrs) {
+		inspectionErr = f.inspectionErrs[index]
 	}
-	return append([]domain.MediaCandidate(nil), f.candidates...), nil
+	progress := 100
+	if inspectionErr != nil {
+		progress = 0
+	}
+	if index < len(f.inspectionProgress) {
+		progress = f.inspectionProgress[index]
+	} else if len(f.inspectionProgress) > 0 {
+		progress = f.inspectionProgress[len(f.inspectionProgress)-1]
+	}
+	inspection, err := acquisition.NewPreparationInspection(f.candidates, progress)
+	if err != nil {
+		return acquisition.PreparationInspection{}, err
+	}
+	if inspectionErr != nil {
+		return inspection, inspectionErr
+	}
+	return inspection, nil
 }
 
 func (f *fakeJobProvider) DeleteCreatedTorrent(_ context.Context, created acquisition.CreatedObject) error {

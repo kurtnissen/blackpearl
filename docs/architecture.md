@@ -174,6 +174,15 @@ first successful observer sync after startup is a non-acquiring baseline;
 immutable per-row eligibility permits only movies first seen on later opted-in
 syncs, so enabling the feature cannot drain a historical Watchlist backlog.
 
+Provider readiness inspection returns safe media candidates together with a
+provider-neutral integer progress value. TorBox maps its fractional progress to
+0-99 while an object is incomplete and reports 100 only after the object is
+complete and present. The durable worker commits the maximum of the saved and
+latest values, so a stale provider poll cannot move one candidate backward.
+The existing atomic fallback transition resets progress to zero for the next
+candidate, and successful publication commits 100. Credentials, transient
+locators, provider response bodies, speeds, and ETA values are never persisted.
+
 ## Direct Play target
 
 The low-storage VPS path treats Plex Direct Play as a primary constraint. BlackPearl delivers exact container bytes and does not transcode. Codec/container compatibility remains a Plex client concern; a provider resolver should eventually prefer Direct Play-compatible candidates when metadata is reliable. Milestone 1's synthetic fixture is MP4 with H.264 video, AAC audio, `yuv420p`, and fast-start metadata.

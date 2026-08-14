@@ -38,7 +38,7 @@ type Searcher interface {
 type CachedGateway interface {
 	CachedTorrents(ctx context.Context, releases []acquisitiondomain.Release) ([]acquisitiondomain.Release, error)
 	CreateCachedTorrent(ctx context.Context, release acquisitiondomain.Release) (acquisitiondomain.CreatedObject, error)
-	InspectCreatedTorrent(ctx context.Context, created acquisitiondomain.CreatedObject) ([]domain.MediaCandidate, error)
+	InspectCreatedTorrent(ctx context.Context, created acquisitiondomain.CreatedObject) (acquisitiondomain.PreparationInspection, error)
 }
 
 // Publisher atomically exposes one acquired media result to the catalog.
@@ -183,9 +183,9 @@ func ambiguousMutationError(action string, err error) error {
 
 func (s *Service) waitForMedia(ctx context.Context, created acquisitiondomain.CreatedObject) ([]domain.MediaCandidate, error) {
 	for attempt := 0; attempt < s.options.InspectionAttempts; attempt++ {
-		items, err := s.gateway.InspectCreatedTorrent(ctx, created)
+		inspection, err := s.gateway.InspectCreatedTorrent(ctx, created)
 		if err == nil {
-			return items, nil
+			return inspection.Candidates(), nil
 		}
 		if !errors.Is(err, acquisitiondomain.ErrNotReady) && !errors.Is(err, domain.ErrNotFound) {
 			return nil, publicBoundaryError("inspect cached acquisition object", err)

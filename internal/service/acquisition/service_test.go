@@ -302,7 +302,7 @@ func (f *fakeCachedGateway) CreateCachedTorrent(_ context.Context, release acqui
 	return f.created, f.createErr
 }
 
-func (f *fakeCachedGateway) InspectCreatedTorrent(context.Context, acquisitiondomain.CreatedObject) ([]domain.MediaCandidate, error) {
+func (f *fakeCachedGateway) InspectCreatedTorrent(context.Context, acquisitiondomain.CreatedObject) (acquisitiondomain.PreparationInspection, error) {
 	f.inspectCalls++
 	if f.inspectStarted != nil {
 		f.inspectOnce.Do(func() { close(f.inspectStarted) })
@@ -313,9 +313,17 @@ func (f *fakeCachedGateway) InspectCreatedTorrent(context.Context, acquisitiondo
 			index = len(f.inspections) - 1
 		}
 		result := f.inspections[index]
-		return append([]domain.MediaCandidate(nil), result.items...), result.err
+		inspection, err := acquisitiondomain.NewPreparationInspection(result.items, 100)
+		if err != nil {
+			return acquisitiondomain.PreparationInspection{}, err
+		}
+		return inspection, result.err
 	}
-	return nil, f.inspectErr
+	inspection, err := acquisitiondomain.NewPreparationInspection(nil, 0)
+	if err != nil {
+		return acquisitiondomain.PreparationInspection{}, err
+	}
+	return inspection, f.inspectErr
 }
 
 type fakePublisher struct {
