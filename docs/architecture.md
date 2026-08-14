@@ -22,6 +22,16 @@ Catalog service  -> Plex gateway (optional refresh only)
 
 The dependency direction is adapter to service to repository/gateway. Core does not import FUSE, NFS, SQLite, HTTP framework details, or a named acquisition provider.
 
+On-demand acquisition begins at a separate media-intent boundary. A validated
+movie or episode request fans out to explicitly configured search gateways.
+The first adapter performs read-only Prowlarr searches and maps ephemeral
+torrent/NZB locators into immutable release values. Resolver policy tolerates a
+partial provider outage, sanitizes all-provider failures, rejects malformed
+results, deduplicates stable identities, and ranks complete intent matches
+before provider-specific acquisition. Release locators are neither catalog
+backing references nor persisted setup state. The following milestone will
+consume them through an explicit TorBox mutation policy.
+
 ## Invariants established in Milestone 1
 
 1. A catalog item stores a logical size and `BackingRef{Provider, ObjectID}`. It does not expose a local path.
@@ -86,16 +96,16 @@ SQLite owns catalog metadata only. Cache bytes and the optional FUSE mount live 
 
 ## Extension roadmap
 
-1. Implement provider-neutral resolver behavior and selection tests.
-2. Add production authentication to an explicitly authorized ranged acquisition provider.
+1. Connect the implemented Prowlarr search/ranking foundation to explicit TorBox cached acquisition and atomic catalog publication.
+2. Add automatic movie and episode metadata/watchlist ingestion without coupling Plex metadata to provider locators.
 3. Add adaptive throughput-based read scheduling. Seek-aware read-ahead is implemented.
 4. Extend the implemented bounded next-episode prefix prefetch with playback-aware cancellation and prioritization.
-5. Add automatic movie and episode metadata resolution.
-6. Add optional Prowlarr discovery and additional authorized providers.
+5. Implement provider-backed persistent retention policy alongside rolling mode.
+6. Add additional explicitly authorized search and range providers.
 
 Each stage needs its own acceptance evidence. A generic interface alone is not evidence that a provider, rolling cache, or progressive stream works.
 
 The first provider adapter is `torbox-torrent`. It maps an already-complete
 `torrent-id:file-id` account object to a short-lived HTTPS CDN link, validates
 its size, and exposes strict ranges without persisting the API token or URL.
-Public discovery and creating TorBox downloads remain separate milestones.
+Creating TorBox account downloads remains a separate, explicitly gated milestone.

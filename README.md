@@ -9,6 +9,7 @@ BlackPearl is an experimental, open-source Go service that exposes a virtual med
 - One Go 1.24+ binary with modular packages for core, state, PearlFS, PearlCache, Plex, resolver, and acquisition contracts.
 - SQLite catalog state and a persistent, content-addressed POC cache.
 - Context-aware arbitrary-offset media reads with immutable version validators; callers never receive a cache path.
+- Validated movie/episode search intent, a read-only Prowlarr gateway, and provider-neutral release deduplication and ranking. This foundation is not yet wired to create TorBox account objects.
 - `persistent` and `rolling` configuration modes. Rolling mode fetches strict HTTP ranges into fixed-size chunks, coalesces misses, performs bounded seek-aware read-ahead and next-episode prefix prefetch, and enforces a hard local byte quota with LRU eviction.
 - A generated 8-second H.264/AAC test-pattern MP4 with no third-party media.
 - Docker/Compose files for BlackPearl, a legal range-origin fixture, and isolated opt-in Plex acceptance containers.
@@ -16,7 +17,7 @@ BlackPearl is an experimental, open-source Go service that exposes a virtual med
 - A portable NFS frontend and macOS Docker Desktop Compose profile that need no
   FUSE mount propagation.
 
-BlackPearl now proves provider-neutral progressive range retrieval and rolling eviction through strict HTTP and TorBox torrent-file gateways. The TorBox profile includes a localhost setup page that discovers eligible completed MP4/MKV files and atomically publishes a searchable manifest of up to 100 selected movies or TV episodes without restarting the stack. Live macOS acceptance has verified a mixed movie/episode manifest, Plex movie and TV scans, Direct Play, non-sequential seeks, restart recovery, seek-aware read-ahead, bounded next-episode prefetch, and continued reads from logical files that never existed completely on BlackPearl's disk. TorBox support is read-only; it does not yet implement Prowlarr, Usenet, automatic acquisition, or automatic metadata resolution.
+BlackPearl now proves provider-neutral progressive range retrieval and rolling eviction through strict HTTP and TorBox torrent-file gateways. The TorBox profile includes a localhost setup page that discovers eligible completed MP4/MKV files and atomically publishes a searchable manifest of up to 100 selected movies or TV episodes without restarting the stack. Live macOS acceptance has verified a mixed movie/episode manifest, Plex movie and TV scans, Direct Play, non-sequential seeks, restart recovery, seek-aware read-ahead, bounded next-episode prefetch, and continued reads from logical files that never existed completely on BlackPearl's disk. A read-only Prowlarr search gateway now normalizes and ranks torrent/Usenet releases, but it is not yet connected to TorBox account creation, automatic acquisition, or automatic metadata/watchlist ingestion.
 
 ## Architecture at a glance
 
