@@ -45,6 +45,7 @@ func New(readiness Readiness, logger *slog.Logger, configured ...Options) http.H
 		options := configured[0]
 		if options.SetupAPI != nil {
 			mux.Handle("/api/setup/", options.SetupAPI)
+			mux.Handle("/api/acquisition/", options.SetupAPI)
 		}
 		if options.UI != nil {
 			mux.Handle("/", options.UI)

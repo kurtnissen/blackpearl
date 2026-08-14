@@ -72,10 +72,13 @@ func TestServerRoutesSetupAPIAndEmbeddedUI(t *testing.T) {
 
 	apiResponse := httptest.NewRecorder()
 	handler.ServeHTTP(apiResponse, httptest.NewRequest(http.MethodGet, "/api/setup/status", nil))
+	acquisitionResponse := httptest.NewRecorder()
+	handler.ServeHTTP(acquisitionResponse, httptest.NewRequest(http.MethodGet, "/api/acquisition/status", nil))
 	uiResponse := httptest.NewRecorder()
 	handler.ServeHTTP(uiResponse, httptest.NewRequest(http.MethodGet, "/", nil))
 
 	require.Equal(t, http.StatusAccepted, apiResponse.Code)
+	require.Equal(t, http.StatusAccepted, acquisitionResponse.Code)
 	require.Equal(t, http.StatusCreated, uiResponse.Code)
 }
 

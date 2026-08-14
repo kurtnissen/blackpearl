@@ -21,6 +21,7 @@ import (
 	"github.com/blackpearl-media/blackpearl/internal/config"
 	"github.com/blackpearl-media/blackpearl/internal/domain"
 	"github.com/blackpearl-media/blackpearl/internal/pearlfs"
+	setuprepo "github.com/blackpearl-media/blackpearl/internal/repository/setup"
 	setupservice "github.com/blackpearl-media/blackpearl/internal/service/setup"
 	"github.com/blackpearl-media/blackpearl/internal/state"
 	"github.com/stretchr/testify/require"
@@ -345,6 +346,154 @@ func TestRunBrowserSetupStartsWithoutCredentialsAndServesSetupStatus(t *testing.
 	require.NotContains(t, string(body), "tokenFilename")
 	cancel()
 	require.NoError(t, <-result)
+}
+
+func TestRunBrowserSetupConfiguresSearchAndAcquiresCachedMovie(t *testing.T) {
+	root := t.TempDir()
+	content := []byte("0123456789abcdef")
+	var torboxAPI *httptest.Server
+	torboxAPI = httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/v1/api/torrents/checkcached":
+			require.Equal(t, http.MethodPost, request.Method)
+			require.Equal(t, "Bearer saved-torbox-token", request.Header.Get("Authorization"))
+			_, err := writer.Write([]byte(`{"success":true,"detail":"ok","data":{"0123456789abcdef0123456789abcdef01234567":{"name":"cached","size":16,"hash":"0123456789abcdef0123456789abcdef01234567"}}}`))
+			require.NoError(t, err)
+		case "/v1/api/torrents/createtorrent":
+			require.NoError(t, request.ParseMultipartForm(1<<20))
+			require.Equal(t, "true", request.FormValue("add_only_if_cached"))
+			_, err := writer.Write([]byte(`{"success":true,"detail":"added","data":{"hash":"0123456789abcdef0123456789abcdef01234567","torrent_id":18,"auth_id":"redacted"}}`))
+			require.NoError(t, err)
+		case "/v1/api/torrents/mylist":
+			torrentID := request.URL.Query().Get("id")
+			fileID := "3"
+			name := "Existing.Movie.2025.mkv"
+			fileHash := "existing-file-hash"
+			if torrentID == "18" {
+				fileID = "2"
+				name = "Example.Movie.2026.mkv"
+				fileHash = "acquired-file-hash"
+			}
+			_, err := fmt.Fprintf(writer, `{"success":true,"detail":"ok","data":{"id":%s,"download_finished":true,"download_present":true,"files":[{"id":%s,"name":%q,"size":16,"hash":%q,"zipped":false,"infected":false}]}}`, torrentID, fileID, name, fileHash)
+			require.NoError(t, err)
+		case "/v1/api/torrents/requestdl":
+			_, err := writer.Write([]byte(fmt.Sprintf(`{"success":true,"detail":"ok","data":%q}`, torboxAPI.URL+"/cdn/file")))
+			require.NoError(t, err)
+		case "/cdn/file":
+			require.Equal(t, "bytes=0-0", request.Header.Get("Range"))
+			writer.Header().Set("Content-Range", "bytes 0-0/16")
+			writer.Header().Set("Content-Length", "1")
+			writer.WriteHeader(http.StatusPartialContent)
+			_, err := writer.Write(content[:1])
+			require.NoError(t, err)
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	t.Cleanup(torboxAPI.Close)
+
+	prowlarrAPI := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		require.Equal(t, "private-prowlarr-key", request.Header.Get("X-Api-Key"))
+		switch request.URL.Path {
+		case "/base/api/v1/health":
+			_, err := writer.Write([]byte(`[]`))
+			require.NoError(t, err)
+		case "/base/api/v1/search":
+			require.Equal(t, "Example Movie 2026", request.URL.Query().Get("query"))
+			_, err := writer.Write([]byte(`[{"id":1,"guid":"release","size":16,"indexerId":1,"indexer":"Authorized","title":"Example.Movie.2026.1080p","protocol":"torrent","infoHash":"0123456789abcdef0123456789abcdef01234567","seeders":20}]`))
+			require.NoError(t, err)
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	t.Cleanup(prowlarrAPI.Close)
+
+	cfg := testConfig(root, "")
+	cfg.StorageMode = domain.StorageModeRolling
+	cfg.CacheMaxBytes = 1024
+	cfg.CacheChunkBytes = 256
+	cfg.RangeProvider = "torbox-torrent"
+	cfg.FilesystemMode = "nfs"
+	cfg.SetupEnabled = true
+	cfg.SetupDir = filepath.Join(root, "data", "setup")
+	cfg.SetupBootstrapToken = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	cfg.TorBoxAPIURL = torboxAPI.URL + "/v1/api/"
+	cfg.RangeTimeout = time.Second
+	setupRepository, err := setuprepo.New(cfg.SetupDir)
+	require.NoError(t, err)
+	existingCandidate, err := domain.NewMediaCandidate("17:3", "Existing.Movie.2025.mkv", 16)
+	require.NoError(t, err)
+	existing, err := domain.NewSetupConfiguration(existingCandidate, "Existing Movie", 2025)
+	require.NoError(t, err)
+	existingManifest, err := domain.NewSetupManifest([]domain.SetupConfiguration{existing})
+	require.NoError(t, err)
+	require.NoError(t, setupRepository.SaveManifest(context.Background(), "saved-torbox-token", existingManifest))
+
+	nfs := &fakeNFSServer{address: fakeAddress("127.0.0.1:2049")}
+	httpAddress := make(chan string, 1)
+	deps := defaultDependencies()
+	deps.torBoxClient = torboxAPI.Client()
+	deps.httpClient = prowlarrAPI.Client()
+	deps.serveNFS = func(context.Context, string, nfsCatalog) (nfsServer, error) { return nfs, nil }
+	deps.listen = func(network string, address string) (net.Listener, error) {
+		listener, listenErr := net.Listen(network, address)
+		if listenErr == nil {
+			httpAddress <- listener.Addr().String()
+		}
+		return listener, listenErr
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	result := make(chan error, 1)
+	go func() { result <- run(ctx, cfg, testLogger(), deps) }()
+	address := <-httpAddress
+	client := &http.Client{Timeout: 5 * time.Second}
+	statusResponse, err := client.Get("http://" + address + "/api/setup/status")
+	require.NoError(t, err)
+	var status struct {
+		CSRFToken string `json:"csrfToken"`
+	}
+	require.NoError(t, json.NewDecoder(statusResponse.Body).Decode(&status))
+	require.NoError(t, statusResponse.Body.Close())
+
+	settingsRequest, err := http.NewRequest(http.MethodPut, "http://"+address+"/api/acquisition/settings", bytes.NewBufferString(fmt.Sprintf(`{"baseUrl":%q,"apiKey":"private-prowlarr-key"}`, prowlarrAPI.URL+"/base/")))
+	require.NoError(t, err)
+	settingsRequest.Header.Set("Content-Type", "application/json")
+	settingsRequest.Header.Set("Origin", "http://"+address)
+	settingsRequest.Header.Set("X-BlackPearl-CSRF", status.CSRFToken)
+	settingsRequest.Header.Set("X-BlackPearl-Bootstrap", cfg.SetupBootstrapToken)
+	settingsResponse, err := client.Do(settingsRequest)
+	require.NoError(t, err)
+	settingsBody, err := io.ReadAll(settingsResponse.Body)
+	require.NoError(t, err)
+	require.NoError(t, settingsResponse.Body.Close())
+	require.Equal(t, http.StatusOK, settingsResponse.StatusCode, string(settingsBody))
+	require.NotContains(t, string(settingsBody), "private-prowlarr-key")
+
+	acquireRequest, err := http.NewRequest(http.MethodPost, "http://"+address+"/api/acquisition/acquire", bytes.NewBufferString(`{"mediaType":"movie","title":"Example Movie","year":2026}`))
+	require.NoError(t, err)
+	acquireRequest.Header.Set("Content-Type", "application/json")
+	acquireRequest.Header.Set("Origin", "http://"+address)
+	acquireRequest.Header.Set("X-BlackPearl-CSRF", status.CSRFToken)
+	acquireRequest.Header.Set("X-BlackPearl-Bootstrap", cfg.SetupBootstrapToken)
+	acquireResponse, err := client.Do(acquireRequest)
+	require.NoError(t, err)
+	acquireBody, err := io.ReadAll(acquireResponse.Body)
+	require.NoError(t, err)
+	require.NoError(t, acquireResponse.Body.Close())
+	require.Equal(t, http.StatusOK, acquireResponse.StatusCode, string(acquireBody))
+	var acquired struct {
+		SelectedItems []domain.SetupConfiguration `json:"selectedItems"`
+	}
+	require.NoError(t, json.Unmarshal(acquireBody, &acquired))
+	require.Len(t, acquired.SelectedItems, 2)
+	require.Equal(t, "18:2", acquired.SelectedItems[1].ObjectID)
+
+	cancel()
+	require.NoError(t, <-result)
+	_, persisted, err := setupRepository.LoadManifest(context.Background())
+	require.NoError(t, err)
+	require.Len(t, persisted.Items, 2)
 }
 
 func TestRunBrowserSetupSelectedMediaSurvivesApplyRequestCancellation(t *testing.T) {

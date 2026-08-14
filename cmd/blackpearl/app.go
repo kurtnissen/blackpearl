@@ -9,22 +9,27 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"time"
 
+	acquisitiondomain "github.com/blackpearl-media/blackpearl/internal/acquisition"
 	"github.com/blackpearl-media/blackpearl/internal/cache"
 	"github.com/blackpearl-media/blackpearl/internal/config"
 	"github.com/blackpearl-media/blackpearl/internal/core"
 	"github.com/blackpearl-media/blackpearl/internal/domain"
 	"github.com/blackpearl-media/blackpearl/internal/gateway/httporigin"
+	"github.com/blackpearl-media/blackpearl/internal/gateway/prowlarr"
 	"github.com/blackpearl-media/blackpearl/internal/gateway/torbox"
 	setuphandler "github.com/blackpearl-media/blackpearl/internal/handler/setup"
 	"github.com/blackpearl-media/blackpearl/internal/httpserver"
 	"github.com/blackpearl-media/blackpearl/internal/pearlfs"
 	"github.com/blackpearl-media/blackpearl/internal/pearlnfs"
 	"github.com/blackpearl-media/blackpearl/internal/plex"
+	acquisitionrepo "github.com/blackpearl-media/blackpearl/internal/repository/acquisition"
 	setuprepo "github.com/blackpearl-media/blackpearl/internal/repository/setup"
+	acquisitionservice "github.com/blackpearl-media/blackpearl/internal/service/acquisition"
 	setupservice "github.com/blackpearl-media/blackpearl/internal/service/setup"
 	"github.com/blackpearl-media/blackpearl/internal/state"
 	webui "github.com/blackpearl-media/blackpearl/web"
@@ -322,6 +327,10 @@ func runBrowserSetup(ctx context.Context, cfg config.Config, logger *slog.Logger
 	if err != nil {
 		return fmt.Errorf("open browser setup repository: %w", err)
 	}
+	acquisitionRepository, err := acquisitionrepo.New(filepath.Join(cfg.SetupDir, "acquisition"))
+	if err != nil {
+		return fmt.Errorf("open browser acquisition repository: %w", err)
+	}
 	rollingPool, err := cache.NewRollingPool(ctx, cache.RollingOptions{
 		Root: cfg.CacheDir, MaxBytes: cfg.CacheMaxBytes,
 		ChunkBytes: cfg.CacheChunkBytes, ReadAheadChunks: cfg.CacheReadAheadChunks,
@@ -331,13 +340,16 @@ func runBrowserSetup(ctx context.Context, cfg config.Config, logger *slog.Logger
 	if err != nil {
 		return fmt.Errorf("open shared browser rolling cache: %w", err)
 	}
-	gatewayFactory := func(token string) (setupservice.Discoverer, error) {
+	newTorBoxGateway := func(token string) (*torbox.Gateway, error) {
 		client := *deps.torBoxClient
 		client.Timeout = cfg.RangeTimeout
 		return torbox.New(torbox.Options{
 			APIBaseURL: cfg.TorBoxAPIURL, APIToken: token,
 			MetadataTTL: time.Minute, LinkTTL: 2 * time.Hour,
 		}, &client)
+	}
+	gatewayFactory := func(token string) (setupservice.Discoverer, error) {
+		return newTorBoxGateway(token)
 	}
 	runtimeFactory := func(runtimeContext context.Context, token string, manifest domain.SetupManifest) (core.CatalogService, error) {
 		client := *deps.torBoxClient
@@ -383,9 +395,28 @@ func runBrowserSetup(ctx context.Context, cfg config.Config, logger *slog.Logger
 		}
 		return catalog, nil
 	}
-	service := setupservice.New(setupRepository, gatewayFactory, runtimeFactory, &setupPublisher{switcher: switcher, nfs: nfs}, cfg.SetupBootstrapToken)
+	publisher := &setupPublisher{switcher: switcher, nfs: nfs}
+	service := setupservice.New(setupRepository, gatewayFactory, runtimeFactory, publisher, cfg.SetupBootstrapToken)
+	searchFactory := func(settings acquisitiondomain.SearchProviderSettings) (acquisitionservice.ReadySearchProvider, error) {
+		if settings.Provider() != "prowlarr" {
+			return nil, errors.New("unsupported acquisition search provider")
+		}
+		client := *deps.httpClient
+		client.Timeout = cfg.RangeTimeout
+		return prowlarr.New(prowlarr.Options{BaseURL: settings.Endpoint(), APIKey: settings.Credential()}, &client)
+	}
+	cachedGatewayFactory := func(token string) (acquisitionservice.CachedGateway, error) {
+		return newTorBoxGateway(token)
+	}
+	acquisitionCoordinator, err := acquisitionservice.NewCoordinator(
+		acquisitionRepository, setupRepository, searchFactory, cachedGatewayFactory, service,
+		acquisitionservice.Options{InspectionAttempts: 8, InspectionInterval: 250 * time.Millisecond},
+	)
+	if err != nil {
+		return fmt.Errorf("configure browser acquisition coordinator: %w", err)
+	}
 	startSetupRestore(ctx, service, logger, 2*time.Second)
-	apiHandler, err := setuphandler.New(service, logger)
+	apiHandler, err := setuphandler.NewWithAcquisition(service, acquisitionCoordinator, logger)
 	if err != nil {
 		return err
 	}
