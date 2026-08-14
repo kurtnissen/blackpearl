@@ -26,6 +26,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libxml2-utils
           ./scripts/prepare-ubuntu-poc.sh
+          docker version --format 'Docker Engine {{.Server.Version}}'
+          docker compose version
       - name: Start isolated BlackPearl and Plex
         run: >-
           docker compose
@@ -46,3 +48,11 @@ jobs:
       - name: Stop isolated stack and unmount PearlFS
         if: always()
         run: ./scripts/cleanup-poc.sh
+      - name: Verify host mount cleanup
+        if: always()
+        run: |
+          if mountpoint -q runtime/mount; then
+            printf 'PearlFS host mount remains active after cleanup.\n' >&2
+            exit 1
+          fi
+          printf 'PearlFS host mount is absent after cleanup.\n'
