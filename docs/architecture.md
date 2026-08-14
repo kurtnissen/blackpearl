@@ -228,7 +228,9 @@ SQLite owns catalog metadata only. Cache bytes and the optional FUSE mount live 
 
 ## Extension roadmap
 
-1. Complete cross-platform live acceptance for playback-driven exact episode advancement; the implementation is wired in the portable profile.
+1. Complete Windows Docker Desktop and native-Linux human-client acceptance for
+   playback-driven exact episode advancement. macOS is proven end to end, and
+   the native Ubuntu server transport is proven separately.
 2. Add a stable Plex Watchlist provider contract or RSS fallback.
 3. Add adaptive throughput-based read scheduling. Seek-aware read-ahead is implemented.
 4. Add disk-capacity observability and operator alerts for non-evicting persistent retention.
@@ -241,4 +243,5 @@ The first provider adapter is `torbox-torrent`. It maps an already-complete
 its size, and exposes strict ranges without persisting the API token or URL.
 The cached-only TorBox creation contract is implemented and proven against
 mocked TLS endpoints, including atomic catalog publication and paired browser/API
-wiring. A live authorized account mutation remains separate acceptance evidence.
+wiring. Live authorized cached and explicit uncached TorBox mutations have also
+passed macOS acceptance; additional platforms remain separate evidence states.
