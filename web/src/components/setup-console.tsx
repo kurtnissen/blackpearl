@@ -148,7 +148,10 @@ export function SetupConsole(): React.JSX.Element {
         {phase === "credentials" && (
           <form className="credential-form" onSubmit={(event) => { event.preventDefault(); void findVideos(false); }}>
             <label htmlFor="torbox-token">TorBox API token</label>
-            <p className="field-note">Stored only inside BlackPearl&apos;s private Docker volume. It is never shown again.</p>
+            <p className="field-note">
+              Use the API key from TorBox Settings, not your password or Auth ID. <a href="https://torbox.app/settings" target="_blank" rel="noreferrer">Copy your TorBox API key</a>.
+              It is stored only inside BlackPearl&apos;s private Docker volume and is never shown again.
+            </p>
             <input
               id="torbox-token"
               name="torbox-token"

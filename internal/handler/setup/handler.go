@@ -182,7 +182,7 @@ func decodeJSON(writer http.ResponseWriter, request *http.Request, destination a
 func writeServiceError(writer http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, setupservice.ErrUnauthorized):
-		writeError(writer, http.StatusUnauthorized, "unauthorized", "TorBox did not accept those credentials.")
+		writeError(writer, http.StatusUnauthorized, "unauthorized", "That TorBox API key is invalid or expired. Open TorBox Settings, select Copy API Key, and try again.")
 	case errors.Is(err, setupservice.ErrInvalidSelection):
 		writeError(writer, http.StatusUnprocessableEntity, "invalid_selection", "That video is no longer available for setup.")
 	default:

@@ -61,15 +61,24 @@ it("shows a helpful empty state when no eligible videos exist", async () => {
 it("announces provider errors without displaying the typed token", async () => {
   vi.stubGlobal("fetch", vi.fn()
     .mockResolvedValueOnce(new Response(JSON.stringify({ setupRequired: true, tokenConfigured: false, csrfToken: "csrf" }), { status: 200 }))
-    .mockResolvedValueOnce(new Response(JSON.stringify({ code: "unauthorized", message: "TorBox did not accept those credentials." }), { status: 401 })));
+    .mockResolvedValueOnce(new Response(JSON.stringify({ code: "unauthorized", message: "That TorBox API key is invalid or expired. Open TorBox Settings, select Copy API Key, and try again." }), { status: 401 })));
   const user = userEvent.setup();
   render(<SetupConsole />);
 
   await user.type(await screen.findByLabelText("TorBox API token"), "private-token");
   await user.click(screen.getByRole("button", { name: "Find my videos" }));
 
-  await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("TorBox did not accept"));
+  await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("API key is invalid or expired"));
   expect(screen.queryByText("private-token")).not.toBeInTheDocument();
+});
+
+it("directs users to the TorBox API key instead of account credentials", async () => {
+  vi.stubGlobal("fetch", vi.fn()
+    .mockResolvedValueOnce(new Response(JSON.stringify({ setupRequired: true, tokenConfigured: false, csrfToken: "csrf" }), { status: 200 })));
+  render(<SetupConsole />);
+
+  expect(await screen.findByText(/not your password or Auth ID/i)).toBeInTheDocument();
+  expect(screen.getByRole("link", { name: "Copy your TorBox API key" })).toHaveAttribute("href", "https://torbox.app/settings");
 });
 
 it("limits the Plex title to the API filename bound", async () => {
