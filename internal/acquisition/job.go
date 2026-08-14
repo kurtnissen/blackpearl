@@ -77,11 +77,6 @@ func NewRangeCandidate(media domain.MediaCandidate, indexer string) (RangeCandid
 	return RangeCandidate{media: validated, indexer: cleanIndexer}, nil
 }
 
-func (c RangeCandidate) valid() bool {
-	_, err := NewRangeCandidate(c.media, c.indexer)
-	return err == nil
-}
-
 func (c RangeCandidate) isZero() bool {
 	return c == (RangeCandidate{})
 }

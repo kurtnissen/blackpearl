@@ -217,7 +217,7 @@ func encodeFileObjectID(identifier string, filename string) (string, error) {
 	}
 	encoded := base64.RawURLEncoding.EncodeToString([]byte(identifier)) + "~" + base64.RawURLEncoding.EncodeToString([]byte(filename))
 	if len(encoded) > maximumRangeObjectIDBytes {
-		return "", errors.New("Archive file identity is too long")
+		return "", errors.New("archive file identity is too long")
 	}
 	return encoded, nil
 }
@@ -249,7 +249,7 @@ func findExactFile(files []archiveFile, filename string) (exactFile, error) {
 			return file, nil
 		}
 	}
-	return exactFile{}, errors.New("Archive file is no longer available")
+	return exactFile{}, errors.New("archive file is no longer available")
 }
 
 func (g *Gateway) fileDownloadURL(metadata archiveMetadataEnvelope, identifier string, filename string) (string, error) {

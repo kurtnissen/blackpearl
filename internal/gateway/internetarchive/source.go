@@ -103,10 +103,10 @@ func (s *Source) ReadAt(ctx context.Context, destination []byte, offset int64) (
 		return 0, err
 	}
 	if s.closed.Load() {
-		return 0, errors.New("Internet Archive range source is closed")
+		return 0, errors.New("archive range source is closed")
 	}
 	if offset < 0 {
-		return 0, errors.New("Internet Archive range offset must not be negative")
+		return 0, errors.New("archive range offset must not be negative")
 	}
 	if len(destination) == 0 {
 		return 0, nil
@@ -190,7 +190,7 @@ func validateArchiveContentRange(value string, expectedStart int64, expectedEnd 
 	}
 	if values[0] != expectedStart || values[1] != expectedEnd || values[2] != expectedSize {
 		return fmt.Errorf(
-			"Internet Archive Content-Range mismatch: got %d-%d/%d want %d-%d/%d",
+			"archive Content-Range mismatch: got %d-%d/%d want %d-%d/%d",
 			values[0], values[1], values[2], expectedStart, expectedEnd, expectedSize,
 		)
 	}
