@@ -39,6 +39,20 @@ type ReadySearcher struct {
 	searcher *Service
 }
 
+// PreferredSearcher returns a preferred provider's ranked results immediately
+// and consults its fallback only when the preferred provider has no result.
+type PreferredSearcher struct {
+	preferred *Service
+	fallback  *Service
+}
+
+// ReadyPreferredSearcher preserves fallback readiness for configuration while
+// short-circuiting successful preferred searches.
+type ReadyPreferredSearcher struct {
+	primary  ReadySearchProvider
+	searcher *PreferredSearcher
+}
+
 // Service combines normalized candidates from configured providers.
 type Service struct {
 	providers       []Provider
@@ -70,6 +84,27 @@ func NewReadySearcher(primary ReadySearchProvider, additional ...SearchProvider)
 	return &ReadySearcher{primary: primary, searcher: NewSearcher(providers...)}, nil
 }
 
+// NewPreferredSearcher constructs a two-stage provider-neutral searcher.
+func NewPreferredSearcher(preferred SearchProvider, fallback SearchProvider) (*PreferredSearcher, error) {
+	if preferred == nil || fallback == nil {
+		return nil, errors.New("preferred and fallback search providers are required")
+	}
+	return &PreferredSearcher{preferred: NewSearcher(preferred), fallback: NewSearcher(fallback)}, nil
+}
+
+// NewReadyPreferredSearcher constructs a preferred searcher whose readiness
+// remains owned by the configured credential-bearing fallback.
+func NewReadyPreferredSearcher(primary ReadySearchProvider, preferred SearchProvider) (*ReadyPreferredSearcher, error) {
+	if primary == nil {
+		return nil, errors.New("primary ready search provider is required")
+	}
+	searcher, err := NewPreferredSearcher(preferred, primary)
+	if err != nil {
+		return nil, err
+	}
+	return &ReadyPreferredSearcher{primary: primary, searcher: searcher}, nil
+}
+
 // Name returns the configured primary provider name.
 func (s *ReadySearcher) Name() string { return s.primary.Name() }
 
@@ -83,6 +118,38 @@ func (s *ReadySearcher) Ready(ctx context.Context) error { return s.primary.Read
 
 // Search combines the primary and optional provider-neutral sources.
 func (s *ReadySearcher) Search(ctx context.Context, request acquisition.SearchRequest) ([]acquisition.Release, error) {
+	return s.searcher.Search(ctx, request)
+}
+
+// Search returns preferred hits immediately and otherwise uses the fallback.
+func (s *PreferredSearcher) Search(ctx context.Context, request acquisition.SearchRequest) ([]acquisition.Release, error) {
+	preferred, preferredErr := s.preferred.Search(ctx, request)
+	if preferredErr == nil && len(preferred) > 0 {
+		return preferred, nil
+	}
+	fallback, fallbackErr := s.fallback.Search(ctx, request)
+	if fallbackErr == nil {
+		return fallback, nil
+	}
+	if preferredErr != nil {
+		return nil, errors.Join(preferredErr, fallbackErr)
+	}
+	return nil, fallbackErr
+}
+
+// Name returns the configured fallback provider name.
+func (s *ReadyPreferredSearcher) Name() string { return s.primary.Name() }
+
+// Capabilities returns the configured fallback provider capabilities.
+func (s *ReadyPreferredSearcher) Capabilities() acquisition.ProviderCapabilities {
+	return s.primary.Capabilities()
+}
+
+// Ready probes the configured credential-bearing fallback provider.
+func (s *ReadyPreferredSearcher) Ready(ctx context.Context) error { return s.primary.Ready(ctx) }
+
+// Search delegates to preferred-first search policy.
+func (s *ReadyPreferredSearcher) Search(ctx context.Context, request acquisition.SearchRequest) ([]acquisition.Release, error) {
 	return s.searcher.Search(ctx, request)
 }
 

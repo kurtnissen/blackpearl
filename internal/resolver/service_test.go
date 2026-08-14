@@ -112,6 +112,50 @@ func TestReadySearcherDelegatesReadinessAndCombinesSearchProviders(t *testing.T)
 	require.Equal(t, primary.Name(), searcher.Name())
 }
 
+func TestPreferredSearcherReturnsOpenMediaHitWithoutWaitingForFallback(t *testing.T) {
+	t.Parallel()
+	request, err := acquisition.NewMovieSearch("Tears of Steel", 2012)
+	require.NoError(t, err)
+	release := mustSearchRelease(t, acquisition.ReleaseInput{
+		Provider: "open-media", SourceID: "one", Title: "Tears of Steel (2012)",
+		Protocol: acquisition.ReleaseProtocolTorrent, Size: 100, Indexer: "open",
+		InfoHash: "abcdef0123456789abcdef0123456789abcdef01",
+	})
+	preferred := &fakeSearchProvider{name: "open-media", releases: []acquisition.Release{release}}
+	fallback := &fakeSearchProvider{name: "prowlarr", err: errors.New("must not be called")}
+	searcher, err := resolver.NewPreferredSearcher(preferred, fallback)
+	require.NoError(t, err)
+
+	actual, err := searcher.Search(context.Background(), request)
+
+	require.NoError(t, err)
+	require.Equal(t, []acquisition.Release{release}, actual)
+	require.Equal(t, 1, preferred.calls)
+	require.Zero(t, fallback.calls)
+}
+
+func TestPreferredSearcherFallsBackWhenOpenMediaHasNoResult(t *testing.T) {
+	t.Parallel()
+	request, err := acquisition.NewMovieSearch("Private Movie", 2026)
+	require.NoError(t, err)
+	release := mustSearchRelease(t, acquisition.ReleaseInput{
+		Provider: "prowlarr", SourceID: "one", Title: "Private Movie (2026)",
+		Protocol: acquisition.ReleaseProtocolTorrent, Size: 100, Indexer: "private",
+		InfoHash: "abcdef0123456789abcdef0123456789abcdef01",
+	})
+	preferred := &fakeSearchProvider{name: "open-media"}
+	fallback := &fakeSearchProvider{name: "prowlarr", releases: []acquisition.Release{release}}
+	searcher, err := resolver.NewPreferredSearcher(preferred, fallback)
+	require.NoError(t, err)
+
+	actual, err := searcher.Search(context.Background(), request)
+
+	require.NoError(t, err)
+	require.Equal(t, []acquisition.Release{release}, actual)
+	require.Equal(t, 1, preferred.calls)
+	require.Equal(t, 1, fallback.calls)
+}
+
 func TestSearchReturnsEmptySuccessWhenProviderHasNoResults(t *testing.T) {
 	t.Parallel()
 	request, err := acquisition.NewMovieSearch("Movie", 2026)
@@ -177,6 +221,7 @@ type fakeSearchProvider struct {
 	err      error
 	received acquisition.SearchRequest
 	search   func(context.Context, acquisition.SearchRequest) ([]acquisition.Release, error)
+	calls    int
 }
 
 type fakeReadySearchProvider struct {
@@ -199,6 +244,7 @@ func (f *fakeSearchProvider) Capabilities() acquisition.ProviderCapabilities {
 }
 
 func (f *fakeSearchProvider) Search(ctx context.Context, request acquisition.SearchRequest) ([]acquisition.Release, error) {
+	f.calls++
 	f.received = request
 	if f.search != nil {
 		return f.search(ctx, request)

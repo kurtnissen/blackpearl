@@ -486,7 +486,7 @@ func runBrowserSetup(ctx context.Context, cfg config.Config, logger *slog.Logger
 		if gatewayErr != nil || openMediaGateway == nil {
 			return primary, gatewayErr
 		}
-		return resolver.NewReadySearcher(primary, openMediaGateway)
+		return resolver.NewReadyPreferredSearcher(primary, openMediaGateway)
 	}
 	cachedGatewayFactory := func(token string) (acquisitionservice.CachedGateway, error) {
 		return newTorBoxGateway(token)
@@ -526,10 +526,13 @@ func runBrowserSetup(ctx context.Context, cfg config.Config, logger *slog.Logger
 		if gatewayErr != nil {
 			return acquisitionjobservice.Providers{}, fmt.Errorf("configure background preparation gateway: %w", gatewayErr)
 		}
-		searchProviders := []resolver.SearchProvider{searchGateway}
+		var jobSearcher acquisitionjobservice.Searcher = resolver.NewSearcher(searchGateway)
 		var materializer acquisitionjobservice.Materializer = searchGateway
 		if openMediaGateway != nil {
-			searchProviders = append(searchProviders, openMediaGateway)
+			jobSearcher, gatewayErr = resolver.NewPreferredSearcher(openMediaGateway, searchGateway)
+			if gatewayErr != nil {
+				return acquisitionjobservice.Providers{}, fmt.Errorf("configure preferred background search: %w", gatewayErr)
+			}
 			materializer = materializerFunc(func(materialContext context.Context, release acquisitiondomain.Release) (acquisitiondomain.TorrentInput, error) {
 				if release.Provider() == openMediaGateway.Name() {
 					return openMediaGateway.Materialize(materialContext, release)
@@ -538,7 +541,7 @@ func runBrowserSetup(ctx context.Context, cfg config.Config, logger *slog.Logger
 			})
 		}
 		return acquisitionjobservice.Providers{
-			Searcher: resolver.NewSearcher(searchProviders...), Materializer: materializer, Preparer: preparationGateway,
+			Searcher: jobSearcher, Materializer: materializer, Preparer: preparationGateway,
 		}, nil
 	}
 	jobOperationTimeout := cfg.AcquisitionOperationTimeout
