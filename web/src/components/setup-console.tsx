@@ -20,6 +20,7 @@ export function SetupConsole(): React.JSX.Element {
   const [csrf, setCSRF] = useState("");
   const [tokenConfigured, setTokenConfigured] = useState(false);
   const [token, setToken] = useState("");
+  const [showToken, setShowToken] = useState(false);
   const [session, setSession] = useState("");
   const [bootstrap, setBootstrap] = useState("");
   const [candidates, setCandidates] = useState<MediaCandidate[]>([]);
@@ -75,6 +76,7 @@ export function SetupConsole(): React.JSX.Element {
       const result = await discoverMedia(useSavedToken ? "" : token, csrf, authorization);
       storeSession(result.session);
       setSession(result.session);
+      setShowToken(false);
       setCandidates(result.candidates);
       setSelectedID("");
       if (result.candidates.length === 0) {
@@ -152,16 +154,22 @@ export function SetupConsole(): React.JSX.Element {
               Use the API key from TorBox Settings, not your password or Auth ID. <a href="https://torbox.app/settings" target="_blank" rel="noreferrer">Copy your TorBox API key</a>.
               It is stored only inside BlackPearl&apos;s private Docker volume and is never shown again.
             </p>
-            <input
-              id="torbox-token"
-              name="torbox-token"
-              type="password"
-              autoComplete="new-password"
-              value={token}
-              onChange={(event) => setToken(event.target.value)}
-              required={!tokenConfigured}
-              disabled={pending}
-            />
+            <div className="token-input">
+              <input
+                id="torbox-token"
+                name="torbox-token"
+                type={showToken ? "text" : "password"}
+                autoComplete="new-password"
+                value={token}
+                onChange={(event) => setToken(event.target.value)}
+                required={!tokenConfigured}
+                disabled={pending}
+              />
+              <button type="button" aria-controls="torbox-token" aria-pressed={showToken} onClick={() => setShowToken((visible) => !visible)} disabled={pending}>
+                {showToken ? "Hide key" : "Show key"}
+              </button>
+            </div>
+            <p className="token-meta" aria-live="polite">{token.length} {token.length === 1 ? "character" : "characters"}</p>
             <div className="actions">
               <button className="primary" type="submit" disabled={pending || (!tokenConfigured && token.length === 0)}>Find my videos</button>
               {canUseSavedToken && <button type="button" onClick={() => void findVideos(true)} disabled={pending}>Use saved token</button>}
@@ -211,7 +219,7 @@ export function SetupConsole(): React.JSX.Element {
               {canUseSavedToken
                 ? <button type="button" onClick={() => void findVideos(true)} disabled={pending}>Change video</button>
                 : <button type="button" onClick={() => { setToken(""); setPhase("credentials"); setMessage("Re-enter your saved TorBox token to authorize this browser."); }}>Change video</button>}
-              <button type="button" onClick={() => { setToken(""); setPhase("credentials"); setMessage("Enter a replacement TorBox token."); }}>Replace token</button>
+              <button type="button" onClick={() => { setToken(""); setShowToken(false); setPhase("credentials"); setMessage("Enter a replacement TorBox token."); }}>Replace token</button>
             </div>
           </div>
         )}

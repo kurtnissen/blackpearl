@@ -81,6 +81,25 @@ it("directs users to the TorBox API key instead of account credentials", async (
   expect(screen.getByRole("link", { name: "Copy your TorBox API key" })).toHaveAttribute("href", "https://torbox.app/settings");
 });
 
+it("lets users reveal and re-mask the TorBox key before submitting", async () => {
+  vi.stubGlobal("fetch", vi.fn()
+    .mockResolvedValueOnce(new Response(JSON.stringify({ setupRequired: true, tokenConfigured: false, csrfToken: "csrf" }), { status: 200 })));
+  const user = userEvent.setup();
+  render(<SetupConsole />);
+
+  const token = await screen.findByLabelText("TorBox API token");
+  await user.type(token, "example-key");
+  expect(token).toHaveAttribute("type", "password");
+  expect(screen.getByText("11 characters")).toBeInTheDocument();
+
+  await user.click(screen.getByRole("button", { name: "Show key" }));
+  expect(token).toHaveAttribute("type", "text");
+  expect(screen.getByRole("button", { name: "Hide key" })).toBeInTheDocument();
+
+  await user.click(screen.getByRole("button", { name: "Hide key" }));
+  expect(token).toHaveAttribute("type", "password");
+});
+
 it("limits the Plex title to the API filename bound", async () => {
   const session = "a".repeat(64);
   vi.stubGlobal("fetch", vi.fn()

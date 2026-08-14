@@ -65,6 +65,10 @@ label, legend { font-weight: 800; letter-spacing: .025em; }
 input[type="password"], input[type="text"], input[type="number"], .plex-fields input {
   width: 100%; min-height: 46px; border: 1px solid var(--ink); border-radius: 0; background: #f6f0e4; padding: 10px 12px; color: var(--ink);
 }
+.token-input { display: grid; grid-template-columns: minmax(0, 1fr) auto; }
+.token-input input { border-right: 0; }
+.token-input button { min-height: 46px; border-radius: 0; }
+.token-meta { margin: 6px 0 0; color: #625848; font-family: ui-monospace, monospace; font-size: 11px; }
 .actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 22px; }
 
 fieldset { border: 0; padding: 0; margin: 0; }
