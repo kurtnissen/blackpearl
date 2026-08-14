@@ -71,9 +71,10 @@ Tested from `main` on an Apple Silicon Mac with Docker Desktop's Linux ARM64 VM.
 | Provider-backed persistent retention | Pass in race tests and live macOS Compose | Persistent browser setup retained verified provider chunks without eviction in a namespace separate from rolling cache data. Through the Plex NFS mount, 1 MiB reads at blocks 0, 177, and 352 of a 371,277,147-byte logical movie produced identical SHA-256 values before and after a BlackPearl restart; repeating those reads left the recovered cache at 115 chunks and 114,916 KiB. Brave played the known H.264/AAC movie and a forward seek advanced from 19:26 to 19:59 before playback was paused. The stack was then restored to its normal 40 GiB rolling profile. |
 | Playback-aware read-ahead | Pass in repeated race tests and live macOS Brave | Five consecutive cache race runs prove a discontinuous seek and handle close cancel blocked stale read-ahead, sequential reads retain their useful window, and a second foreground reader retries instead of receiving the cancellation. After rebuilding the normal rolling stack, Brave advanced the known Direct Play-compatible movie from about 20:27 to 40:41 through a far seek and continued to 40:48 before playback was paused. Rolling storage remained 749,836 KiB against a 40 GiB hard quota. |
 | Patched release-candidate regression | Pass locally on macOS | Candidate `244fcbc` rebuilt with Go 1.26.6, restored the saved manifest, and returned healthy/ready. Brave resumed the known Direct Play-compatible movie, remained playing through four 30-second forward seeks, and was paused after verification. The rolling cache held 767 chunks and 782,604 KiB against its 40 GiB quota. The existing Plex session retained its previously recorded `MDE=1000,Direct play OK` decision; hosted CI, Windows, and native-Linux runtime acceptance remain separate. |
+| Longer rolling bidirectional seek | Pass locally on macOS Brave | On the provider-backed rolling movie, Plex advanced from 2,603,842 ms to 2,664,899 ms after two 30-second forward controls, then moved back to 2,628,002 ms after four 10-second backward controls. Playback remained active after both discontinuous directions and was paused after verification. |
 | Cross-container Plex mount | Pending Ubuntu | Docker Desktop bind propagation cannot prove this Linux-host behavior |
 
-The current result includes locally verified FUSE and portable NFS adapters, persistent and rolling macOS Plex playback, strict random-range retrieval, a live hard-quota test, eviction, and refetch evidence. The rolling client test completed the eight-second fixture; explicit rolling-client forward/backward seek evidence remains to be captured with a longer fixture. Windows and native-Linux portability remain unverified.
+The current result includes locally verified FUSE and portable NFS adapters, persistent and rolling macOS Plex playback, strict random-range retrieval, a live hard-quota test, eviction, refetch, and longer forward/backward client seek evidence. Windows and native-Linux portability remain unverified.
 
 ## Acceptance checklist
 
@@ -108,7 +109,7 @@ The current result includes locally verified FUSE and portable NFS adapters, per
 - [x] Successful manifest publication automatically refreshes the isolated BlackPearl movie and TV libraries without coupling Plex availability to publication.
 - [x] Browser-selected provider media can use persistent non-evicting range retention and survives a BlackPearl restart without requiring a complete local file before playback.
 - [x] Discontinuous seeks and handle closes cancel stale read-ahead without surfacing cancellation to a foreground reader that joined the shared fetch.
-- [ ] A longer rolling fixture demonstrates explicit forward and backward client seeks before playback completes.
+- [x] A longer rolling fixture demonstrates explicit forward and backward client seeks before playback completes.
 - [ ] CI passes after publishing the repository.
 - [ ] Both Linux AMD64 and ARM64 image builds pass in CI.
 - [ ] Ubuntu host propagation makes the file readable in the Plex container.
