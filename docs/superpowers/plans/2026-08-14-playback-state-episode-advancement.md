@@ -143,7 +143,7 @@ git commit -m "feat: read bounded Plex playback sessions"
 - Consumes: the same narrow token-source shape and `domain.EpisodeCoordinate`.
 - Produces: `Gateway.Next(ctx context.Context, externalShowID string, current domain.EpisodeCoordinate) (domain.EpisodeCoordinate, error)`; no successor returns `domain.ErrNotFound`.
 
-- [ ] **Step 1: Write failing metadata hierarchy tests**
+- [x] **Step 1: Write failing metadata hierarchy tests**
 
 Model `/library/metadata/<show-id>/children` season responses and season child episode responses. Prove same-season advancement, coordinate gaps, season transitions, season-0 exclusion, out-of-order provider payloads, duplicate coordinates, terminal show, malformed GUID/keys/counts, 401/403, redirects, oversized payloads, cancellation, and sanitized failures.
 
@@ -154,17 +154,17 @@ require.Equal(t, 2, next.Season())
 require.Equal(t, 1, next.Episode())
 ```
 
-- [ ] **Step 2: Run the resolver tests and verify RED**
+- [x] **Step 2: Run the resolver tests and verify RED**
 
 Run: `go test ./internal/gateway/plexmetadata -count=1`
 
 Expected: build failure because the package does not exist.
 
-- [ ] **Step 3: Implement bounded hierarchy traversal**
+- [x] **Step 3: Implement bounded hierarchy traversal**
 
 Validate show IDs with `^plex://show/([0-9a-f]{24})$`, section keys with `^[0-9a-f]{24}$`, and coordinates through the domain constructor. Limit each body to 2 MiB, seasons to 100, episodes per season to 1000, and only traverse season indexes 1 through 99. Sort and deduplicate coordinates, return the least value greater than current, and stop once found.
 
-- [ ] **Step 4: Run race tests**
+- [x] **Step 4: Run race tests**
 
 Run:
 
@@ -174,7 +174,7 @@ go test -race ./internal/domain ./internal/gateway/plexmetadata -count=1
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit the metadata resolver**
+- [x] **Step 5: Commit the metadata resolver**
 
 ```bash
 git add internal/gateway/plexmetadata
