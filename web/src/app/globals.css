@@ -114,6 +114,7 @@ dd { margin: 0; overflow-wrap: anywhere; }
 .watchlist-sync { margin: 10px 0 0; font-family: ui-monospace, monospace; }
 .watchlist-error { color: var(--red); }
 .watchlist-control { display: flex; align-items: center; justify-content: space-between; gap: 22px; margin-top: 16px; padding: 16px; border: 1px solid var(--ink); background: rgba(255, 255, 255, .35); }
+.watchlist-control--secondary { margin-top: -1px; background: rgba(255, 255, 255, .18); }
 .watchlist-control > div { display: grid; gap: 5px; max-width: 620px; }
 .watchlist-control strong { font-size: 15px; }
 .watchlist-control span { color: #665b49; font-size: 11px; line-height: 1.4; }

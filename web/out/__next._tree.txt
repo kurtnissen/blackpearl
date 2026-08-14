@@ -1,2 +1,2 @@
-:HL["/_next/static/chunks/40jog1h0-r-ad.css","style"]
+:HL["/_next/static/chunks/1w2njlvbmw4sg.css","style"]
 0:{"tree":{"name":"","param":null,"prefetchHints":4176,"slots":{"children":{"name":"__PAGE__","param":null,"prefetchHints":4256,"slots":null}}},"staleTime":300,"buildId":"blackpearl-setup"}

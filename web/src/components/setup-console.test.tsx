@@ -397,15 +397,74 @@ it("turns automatic Watchlist intake on without commands", async () => {
 	expect(screen.getByRole("button", { name: "Turn automatic adding off" })).toBeInTheDocument();
 	expect(fetchSpy).toHaveBeenLastCalledWith("/api/watchlist/settings", expect.objectContaining({
 		method: "PUT",
-		body: JSON.stringify({ acquisitionEnabled: true }),
+		body: JSON.stringify({ acquisitionEnabled: true, showPolicy: "off" }),
 	}));
 });
 
-function watchlistResponse(acquisitionEnabled = false): Response {
+it("can start only S01E01 for shows newly added after pilot intake is enabled", async () => {
+	const bootstrap = "b".repeat(64);
+	const session = "a".repeat(64);
+	const active = { objectId: "17:3", name: "Existing.mkv", extension: ".mkv", size: 1024, mediaType: "movie", title: "Existing", year: 2024 };
+	window.history.replaceState(null, "", `/#bootstrap=${bootstrap}`);
+	const fetchSpy = vi.fn()
+		.mockResolvedValueOnce(new Response(JSON.stringify({ setupRequired: false, tokenConfigured: true, csrfToken: "csrf", selected: active, selectedItems: [active] }), { status: 200 }))
+		.mockResolvedValueOnce(watchlistResponse(true))
+		.mockResolvedValueOnce(new Response(await watchlistResponse(true, "pilot").text(), {
+			status: 200,
+			headers: { "X-BlackPearl-Session": session },
+		}));
+	vi.stubGlobal("fetch", fetchSpy);
+	const user = userEvent.setup();
+	render(<SetupConsole />);
+
+	await user.click(await screen.findByRole("button", { name: "Start new shows with S01E01" }));
+
+	expect(await screen.findByRole("button", { name: "Stop starting new shows" })).toBeInTheDocument();
+	expect(screen.getByText(/never adds a full season/i)).toBeInTheDocument();
+	expect(fetchSpy).toHaveBeenLastCalledWith("/api/watchlist/settings", expect.objectContaining({
+		method: "PUT",
+		body: JSON.stringify({ acquisitionEnabled: true, showPolicy: "pilot" }),
+	}));
+});
+
+it("keeps show pilot intake unavailable while automatic Watchlist adding is off", async () => {
+	const bootstrap = "b".repeat(64);
+	const active = { objectId: "17:3", name: "Existing.mkv", extension: ".mkv", size: 1024, mediaType: "movie", title: "Existing", year: 2024 };
+	window.history.replaceState(null, "", `/#bootstrap=${bootstrap}`);
+	vi.stubGlobal("fetch", vi.fn()
+		.mockResolvedValueOnce(new Response(JSON.stringify({ setupRequired: false, tokenConfigured: true, csrfToken: "csrf", selected: active, selectedItems: [active] }), { status: 200 }))
+		.mockResolvedValueOnce(watchlistResponse(false)));
+	render(<SetupConsole />);
+
+	expect(await screen.findByRole("button", { name: "Start new shows with S01E01" })).toBeDisabled();
+});
+
+it("keeps show pilot intake off when saving the setting fails", async () => {
+	const bootstrap = "b".repeat(64);
+	const active = { objectId: "17:3", name: "Existing.mkv", extension: ".mkv", size: 1024, mediaType: "movie", title: "Existing", year: 2024 };
+	window.history.replaceState(null, "", `/#bootstrap=${bootstrap}`);
+	vi.stubGlobal("fetch", vi.fn()
+		.mockResolvedValueOnce(new Response(JSON.stringify({ setupRequired: false, tokenConfigured: true, csrfToken: "csrf", selected: active, selectedItems: [active] }), { status: 200 }))
+		.mockResolvedValueOnce(watchlistResponse(true))
+		.mockResolvedValueOnce(new Response(JSON.stringify({
+			code: "watchlist_unavailable",
+			message: "The Watchlist setting could not be saved right now.",
+		}), { status: 503 })));
+	const user = userEvent.setup();
+	render(<SetupConsole />);
+
+	await user.click(await screen.findByRole("button", { name: "Start new shows with S01E01" }));
+
+	expect(await screen.findByText(/Watchlist status is temporarily unavailable/i)).toBeInTheDocument();
+	expect(screen.getByRole("button", { name: "Start new shows with S01E01" })).toHaveAttribute("aria-pressed", "false");
+});
+
+function watchlistResponse(acquisitionEnabled = false, showPolicy: "off" | "pilot" = "off"): Response {
   return new Response(JSON.stringify({
     enabled: true,
     healthy: true,
     acquisitionEnabled,
+		showPolicy,
     lastSyncAt: "2026-08-14T14:00:00Z",
     queue: {
       pendingMovies: 3,

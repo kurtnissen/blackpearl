@@ -9,9 +9,9 @@ import {
   getAcquisitionStatus,
 	getAcquisitionJob,
 	listAcquisitionJobs,
-  getStatus,
-  getWatchlistStatus,
-	setWatchlistAcquisitionEnabled,
+	getStatus,
+	getWatchlistStatus,
+	setWatchlistPolicy,
 	submitAcquisitionJob,
   SetupAPIError,
   type AcquisitionIntent,
@@ -20,7 +20,8 @@ import {
 	type ApplyItemInput,
   type SetupAuthorization,
   type SetupConfiguration,
-  type WatchlistStatus,
+	type WatchlistStatus,
+	type WatchlistShowPolicy,
 } from "../lib/api";
 
 type Phase = "loading" | "credentials" | "select" | "ready";
@@ -197,16 +198,21 @@ export function SetupConsole(): React.JSX.Element {
     }
   }
 
-	async function changeWatchlistAcquisitionPolicy(enabled: boolean): Promise<void> {
+	async function changeWatchlistPolicy(
+		acquisitionEnabled: boolean,
+		showPolicy: WatchlistShowPolicy,
+	): Promise<void> {
 		setWatchlistLoading(true);
 		setWatchlistError("");
 		try {
-			const result = await setWatchlistAcquisitionEnabled(enabled, csrf, authorization);
+			const result = await setWatchlistPolicy({ acquisitionEnabled, showPolicy }, csrf, authorization);
 			storeSession(result.session);
 			setSession(result.session);
 			setWatchlistStatus(result);
-			setMessage(enabled
-				? "Automatic Watchlist adding is on for newly added movies."
+			setMessage(acquisitionEnabled
+				? (showPolicy === "pilot"
+					? "Automatic Watchlist adding is on. New shows start with S01E01 only."
+					: "Automatic Watchlist adding is on for newly added movies.")
 				: "Automatic Watchlist adding is off. Existing media and current preparation are unchanged.");
 		} catch (error: unknown) {
 			setWatchlistError(publicMessage(error));
@@ -504,23 +510,41 @@ export function SetupConsole(): React.JSX.Element {
                   <p className="watchlist-summary">{watchlistSummary(watchlistStatus)}</p>
                   <div className="watchlist-stats">
                     <p><strong>{observedMovieCount(watchlistStatus)} movies observed</strong><span>Existing items stay observation-only; auto add starts with newly observed movies</span></p>
-                    <p><strong>{watchlistStatus.queue.observedShows} shows observed</strong><span>Tracked safely; episode intake comes later</span></p>
+                    <p><strong>{watchlistStatus.queue.observedShows} shows observed</strong><span>{watchlistStatus.showPolicy === "pilot" ? "New shows start with S01E01 only" : "Observed without episode acquisition"}</span></p>
                     <p><strong>{watchlistStatus.queue.succeeded} added automatically</strong><span>Published into the BlackPearl manifest</span></p>
                     <p><strong>{watchlistStatus.queue.manualReview} need review</strong><span>Held instead of making an unsafe guess</span></p>
                   </div>
 							<div className="watchlist-control">
 								<div>
-									<strong>Automatic movie adding</strong>
-									<span>Only movies added to your Watchlist after this is turned on become eligible. Turning it off does not cancel media already preparing.</span>
+									<strong>Automatic Watchlist adding</strong>
+									<span>Only media added to your Watchlist after this is turned on becomes eligible. Turning it off does not cancel media already preparing.</span>
 								</div>
 								<button
 									type="button"
 									className={watchlistStatus.acquisitionEnabled ? "" : "primary"}
 									aria-pressed={watchlistStatus.acquisitionEnabled}
-									onClick={() => void changeWatchlistAcquisitionPolicy(!watchlistStatus.acquisitionEnabled)}
+									onClick={() => void changeWatchlistPolicy(!watchlistStatus.acquisitionEnabled, watchlistStatus.showPolicy)}
 									disabled={watchlistLoading || (!session && !bootstrap)}
 								>
 									{watchlistStatus.acquisitionEnabled ? "Turn automatic adding off" : "Turn automatic adding on"}
+								</button>
+							</div>
+							<div className="watchlist-control watchlist-control--secondary">
+								<div>
+									<strong>Show pilot intake</strong>
+									<span>When on, a show newly added to Watchlist requests only S01E01. BlackPearl never adds a full season or series.</span>
+								</div>
+								<button
+									type="button"
+									className={watchlistStatus.showPolicy === "pilot" ? "" : "primary"}
+									aria-pressed={watchlistStatus.showPolicy === "pilot"}
+									onClick={() => void changeWatchlistPolicy(
+										watchlistStatus.acquisitionEnabled,
+										watchlistStatus.showPolicy === "pilot" ? "off" : "pilot",
+									)}
+									disabled={watchlistLoading || !watchlistStatus.acquisitionEnabled || (!session && !bootstrap)}
+								>
+									{watchlistStatus.showPolicy === "pilot" ? "Stop starting new shows" : "Start new shows with S01E01"}
 								</button>
 							</div>
                   {watchlistStatus.lastSyncAt && <p className="watchlist-sync">Last checked {formatWatchlistTime(watchlistStatus.lastSyncAt)}</p>}
@@ -634,7 +658,8 @@ function observedMovieCount(status: WatchlistStatus): number {
 function watchlistSummary(status: WatchlistStatus): string {
   if (!status.enabled) return "Plex Watchlist observation is turned off.";
   if (!status.healthy) return "BlackPearl could not read Plex Watchlist during its latest check.";
-  if (status.acquisitionEnabled) return "BlackPearl will consider only new authorized movies added after auto add was enabled. TorBox may download an uncached release.";
+	if (status.acquisitionEnabled && status.showPolicy === "pilot") return "BlackPearl will consider newly added authorized movies and only S01E01 for newly added shows. TorBox may download an uncached release.";
+	if (status.acquisitionEnabled) return "BlackPearl will consider only new authorized movies added after auto add was enabled. TorBox may download an uncached release.";
   return "BlackPearl is watching Plex. Automatic adding stays off until your authorized Prowlarr indexers are ready.";
 }
 

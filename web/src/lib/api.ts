@@ -75,8 +75,16 @@ export type WatchlistStatus = {
   enabled: boolean;
   healthy: boolean;
   acquisitionEnabled: boolean;
+	showPolicy: WatchlistShowPolicy;
   lastSyncAt?: string;
   queue: WatchlistQueueStatus;
+};
+
+export type WatchlistShowPolicy = "off" | "pilot";
+
+export type WatchlistSettingsInput = {
+	acquisitionEnabled: boolean;
+	showPolicy: WatchlistShowPolicy;
 };
 
 export type WatchlistStatusResult = WatchlistStatus & {
@@ -174,8 +182,8 @@ export async function getWatchlistStatus(
   return readJSON(response, isWatchlistStatus, "invalid_watchlist_status");
 }
 
-export async function setWatchlistAcquisitionEnabled(
-  acquisitionEnabled: boolean,
+export async function setWatchlistPolicy(
+	input: WatchlistSettingsInput,
   csrfToken: string,
   authorization: SetupAuthorization,
 ): Promise<WatchlistStatusResult> {
@@ -183,7 +191,7 @@ export async function setWatchlistAcquisitionEnabled(
     method: "PUT",
     cache: "no-store",
     headers: mutationHeaders(csrfToken, authorization),
-    body: JSON.stringify({ acquisitionEnabled }),
+		body: JSON.stringify(input),
   });
   const status = await readJSON(response, isWatchlistStatus, "invalid_watchlist_status");
   return { ...status, session: readSession(response) };
@@ -352,6 +360,7 @@ function isWatchlistStatus(value: unknown): value is WatchlistStatus {
     && typeof value.enabled === "boolean"
     && typeof value.healthy === "boolean"
     && typeof value.acquisitionEnabled === "boolean"
+		&& (value.showPolicy === "off" || value.showPolicy === "pilot")
     && (value.lastSyncAt === undefined
       || (typeof value.lastSyncAt === "string" && Number.isFinite(Date.parse(value.lastSyncAt))))
     && isWatchlistQueueStatus(value.queue);

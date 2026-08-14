@@ -9,7 +9,7 @@ import {
 	listAcquisitionJobs,
 	getStatus,
 	getWatchlistStatus,
-	setWatchlistAcquisitionEnabled,
+	setWatchlistPolicy,
 	submitAcquisitionJob,
 } from "./api";
 
@@ -88,6 +88,7 @@ describe("setup API", () => {
       enabled: true,
       healthy: true,
       acquisitionEnabled: false,
+		showPolicy: "off",
       lastSyncAt: "2026-08-14T14:00:00Z",
       queue: {
         pendingMovies: 3,
@@ -120,6 +121,7 @@ describe("setup API", () => {
 			enabled: true,
 			healthy: true,
 			acquisitionEnabled: true,
+			showPolicy: "pilot",
 			queue: { pendingMovies: 0, acquiring: 0, succeeded: 1, notCached: 0, retryable: 0, manualReview: 0, observedShows: 2 },
 		};
 		const fetchSpy = vi.fn(async () => new Response(JSON.stringify(aggregate), {
@@ -128,7 +130,7 @@ describe("setup API", () => {
 		}));
 		vi.stubGlobal("fetch", fetchSpy);
 
-		await expect(setWatchlistAcquisitionEnabled(true, "csrf-value", { session, bootstrap }))
+		await expect(setWatchlistPolicy({ acquisitionEnabled: true, showPolicy: "pilot" }, "csrf-value", { session, bootstrap }))
 			.resolves.toEqual({ ...aggregate, session });
 		expect(fetchSpy).toHaveBeenCalledWith("/api/watchlist/settings", {
 			method: "PUT",
@@ -139,7 +141,7 @@ describe("setup API", () => {
 				"X-BlackPearl-Session": session,
 				"X-BlackPearl-Bootstrap": bootstrap,
 			},
-			body: JSON.stringify({ acquisitionEnabled: true }),
+			body: JSON.stringify({ acquisitionEnabled: true, showPolicy: "pilot" }),
 		});
 	});
 
