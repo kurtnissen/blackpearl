@@ -426,7 +426,7 @@ git commit -m "feat: run playback-driven episode advancement"
 - Consumes: the complete runtime from Tasks 1 through 7 and the isolated live macOS stack.
 - Produces: reproducible automated and live evidence; no temporary Watchlist mutation remains.
 
-- [ ] **Step 1: Run all automated gates**
+- [x] **Step 1: Run all automated gates**
 
 Run:
 
@@ -440,31 +440,36 @@ make compose-check portable-compose-check rolling-compose-check torbox-compose-c
 
 Expected: race suite PASS, aggregate coverage at least 80%, zero lint/vulnerability/audit findings, 30 or more UI tests PASS, production build PASS, all Compose safety suites PASS.
 
-- [ ] **Step 2: Request independent code review and fix every Critical or Important finding**
+- [x] **Step 2: Request independent code review and fix every Critical or Important finding**
 
 Review the full feature range from `2703794` through the implementation head. Re-run focused race tests after each test-first correction and obtain a ready verdict.
 
-- [ ] **Step 3: Preserve the live Watchlist baseline**
+- [x] **Step 3: Preserve the live Watchlist baseline**
 
 Using the already logged-in Brave session, record the Watchlist's pre-test item GUID set without printing credentials. Add only licensed *MariposaHD* temporarily and confirm one show appears while the prior items remain.
 
-- [ ] **Step 4: Prove S01E01 deduplication and one S01E02 transition**
+- [x] **Step 4: Prove S01E01 deduplication and one S01E02 transition**
 
 Rebuild only BlackPearl with the feature enabled. Wait for Watchlist observation to mark the already published S01E01 frontier succeeded without creating a duplicate provider job. Resume S01E01 past the threshold in Brave and assert one durable S01E02 request, no S01E03 request, and one selected candidate plan.
 
-- [ ] **Step 5: Prove provider-backed logical S01E02**
+- [x] **Step 5: Prove provider-backed logical S01E02**
 
 Wait for the existing acquisition worker to publish S01E02. Verify canonical NFS logical size, exact start/middle/tail ranges against the licensed origin, partial cache usage below complete-file size, Plex TV scan, and metadata indexing. If providers return no exact S01E02, retain and document the exact durable frontier/job, improve only provider resolution within the same intent, and repeat; never skip to another episode.
 
-- [ ] **Step 6: Prove Direct Play, seeks, and restart recovery in Brave**
+- [x] **Step 6: Prove Direct Play, seeks, and restart recovery in Brave**
 
 Play S01E02 in Brave, assert `readyState == 4`, no video error, time advancement, forward and backward seeking, and a Plex `MDE=1000,Direct play OK` decision. Restart only BlackPearl, confirm Plex's container age is unchanged, then resume and seek again through the same logical file.
 
-- [ ] **Step 7: Restore external state and record evidence**
+Live note: this Plex Web build did not expose its media element through the
+page DOM. Acceptance therefore used the visible advancing player clock plus
+Plex's selected-part session record (`directplay`, no transcode session), with
+forward, backward, midpoint, and post-restart resume evidence.
+
+- [x] **Step 7: Restore external state and record evidence**
 
 Remove the temporary MariposaHD Watchlist item, verify the exact baseline GUID set is restored, and do not remove published BlackPearl test episodes. Update `docs/acceptance-evidence.md` with job state, logical/cache sizes, Direct Play decision, seek/restart evidence, review verdict, and explicit separation between macOS proof and pending Windows/native-Linux acceptance.
 
-- [ ] **Step 8: Commit acceptance evidence**
+- [x] **Step 8: Commit acceptance evidence**
 
 ```bash
 git add docs/acceptance-evidence.md docs/superpowers/plans/2026-08-14-playback-state-episode-advancement.md
