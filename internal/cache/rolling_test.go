@@ -346,6 +346,23 @@ func TestRollingSourcePrefetchStagesBoundedMediaPrefix(t *testing.T) {
 	require.Zero(t, opener.readCount(8))
 }
 
+func TestRollingSourcePrefetchRetriesTransientMetadataOpen(t *testing.T) {
+	t.Parallel()
+	opener := newFakeRangeOpener([]byte("abcdefghijkl"))
+	opener.failNextOpens(1)
+	source, _ := newRollingSourceWithPoliciesForTest(t, opener, 12, 4, 0, 2)
+	media := rollingMovie(t, 12, "next-retry.mp4")
+
+	source.Prefetch(context.Background(), media)
+
+	require.Eventually(t, func() bool {
+		stats := source.Stats()
+		return opener.readCount(0) == 1 && opener.readCount(4) == 1 && stats.ReservedBytes == 0
+	}, time.Second, 5*time.Millisecond)
+	require.GreaterOrEqual(t, opener.openCount(), 2)
+	require.Zero(t, source.Stats().NextEpisodeErrors)
+}
+
 func TestRollingSourcePrefetchRespectsQuotaHeadroomAndCancellation(t *testing.T) {
 	t.Parallel()
 	opener := newFakeRangeOpener([]byte("abcdefghijklmnop"))
@@ -798,6 +815,8 @@ type fakeRangeOpener struct {
 	mu                sync.Mutex
 	reads             map[int64]int
 	transientFailures map[int64]int
+	openFailures      int
+	openCalls         int
 	validator         string
 	closeErr          error
 }
@@ -929,6 +948,12 @@ func (f *fakeRangeOpener) Open(ctx context.Context, _ domain.BackingRef) (acquis
 		return nil, err
 	}
 	f.mu.Lock()
+	f.openCalls++
+	if f.openFailures > 0 {
+		f.openFailures--
+		f.mu.Unlock()
+		return nil, errors.New("transient metadata open failure")
+	}
 	validator := f.validator
 	closeErr := f.closeErr
 	f.mu.Unlock()
@@ -943,6 +968,18 @@ func (f *fakeRangeOpener) readCount(offset int64) int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.reads[offset]
+}
+
+func (f *fakeRangeOpener) failNextOpens(count int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.openFailures = count
+}
+
+func (f *fakeRangeOpener) openCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.openCalls
 }
 
 func (f *fakeRangeOpener) setValidator(validator string) {

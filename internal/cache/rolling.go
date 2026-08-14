@@ -647,7 +647,7 @@ func (s *RollingSource) Prefetch(ctx context.Context, media domain.Media) {
 func (s *RollingSource) prefetchMediaPrefix(media domain.Media) {
 	fetchContext, cancel := context.WithTimeout(s.shared.lifecycle, s.shared.options.FetchTimeout)
 	defer cancel()
-	remote, err := s.opener.Open(fetchContext, media.Backing)
+	remote, err := s.openPrefetchSource(fetchContext, media.Backing)
 	if err == nil && remote.Size() != media.Size {
 		err = fmt.Errorf("rolling prefetch size mismatch: catalog=%d provider=%d", media.Size, remote.Size())
 	}
@@ -669,6 +669,28 @@ func (s *RollingSource) prefetchMediaPrefix(media domain.Media) {
 	s.scheduleBackgroundChunks(
 		s.shared.lifecycle, media.Backing, validator, media.Size, 0, s.shared.options.NextEpisodePrefetchChunks,
 		backgroundFetchNextEpisode, nil,
+	)
+}
+
+func (s *RollingSource) openPrefetchSource(
+	ctx context.Context,
+	backing domain.BackingRef,
+) (acquisition.RangeSource, error) {
+	var lastErr error
+	for attempt := 1; attempt <= maximumRangeFetchAttempts; attempt++ {
+		remote, err := s.opener.Open(ctx, backing)
+		if err == nil {
+			return remote, nil
+		}
+		lastErr = err
+		if ctx.Err() != nil {
+			break
+		}
+	}
+	return nil, fmt.Errorf(
+		"open rolling prefetch source after %d attempts: %w",
+		maximumRangeFetchAttempts,
+		lastErr,
 	)
 }
 
