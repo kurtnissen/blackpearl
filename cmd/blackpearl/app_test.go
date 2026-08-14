@@ -1277,14 +1277,25 @@ func TestDefaultDependenciesKeepTorBoxTrafficOutOfInstrumentedClient(t *testing.
 
 func TestResolveTorBoxTokenReadsDockerSecretWithoutReturningNewline(t *testing.T) {
 	t.Parallel()
-	path := filepath.Join(t.TempDir(), "torbox-token")
-	require.NoError(t, os.WriteFile(path, []byte("file-secret\n"), 0o600))
-	cfg := config.Config{TorBoxAPITokenFile: path}
+	for _, test := range []struct {
+		name    string
+		content string
+	}{
+		{name: "Unix newline", content: "file-secret\n"},
+		{name: "Windows newline", content: "file-secret\r\n"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			path := filepath.Join(t.TempDir(), "torbox-token")
+			require.NoError(t, os.WriteFile(path, []byte(test.content), 0o600))
+			cfg := config.Config{TorBoxAPITokenFile: path}
 
-	token, err := resolveTorBoxToken(context.Background(), cfg)
+			token, err := resolveTorBoxToken(context.Background(), cfg)
 
-	require.NoError(t, err)
-	require.Equal(t, "file-secret", token)
+			require.NoError(t, err)
+			require.Equal(t, "file-secret", token)
+		})
+	}
 }
 
 func TestResolveTorBoxTokenRejectsUnsafeSecretFilesWithoutExposingContents(t *testing.T) {

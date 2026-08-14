@@ -772,7 +772,7 @@ func retrySetupRestore(ctx context.Context, restorer setupRestorer, logger *slog
 	}
 }
 
-func resolveTorBoxToken(ctx context.Context, cfg config.Config) (string, error) {
+func resolveTorBoxToken(ctx context.Context, cfg config.Config) (_ string, resultErr error) {
 	if err := ctx.Err(); err != nil {
 		return "", fmt.Errorf("read TorBox API token: %w", err)
 	}
@@ -783,7 +783,11 @@ func resolveTorBoxToken(ctx context.Context, cfg config.Config) (string, error) 
 	if err != nil {
 		return "", errors.New("open BLACKPEARL_TORBOX_API_TOKEN_FILE")
 	}
-	defer func() { _ = file.Close() }()
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil {
+			resultErr = errors.Join(resultErr, errors.New("close BLACKPEARL_TORBOX_API_TOKEN_FILE"))
+		}
+	}()
 	content, err := io.ReadAll(io.LimitReader(file, 4097))
 	if err != nil {
 		return "", errors.New("read BLACKPEARL_TORBOX_API_TOKEN_FILE")
@@ -791,7 +795,12 @@ func resolveTorBoxToken(ctx context.Context, cfg config.Config) (string, error) 
 	if len(content) > 4096 {
 		return "", errors.New("BLACKPEARL_TORBOX_API_TOKEN_FILE exceeds 4096 bytes")
 	}
-	token := strings.TrimSuffix(string(content), "\n")
+	token := string(content)
+	if strings.HasSuffix(token, "\r\n") {
+		token = strings.TrimSuffix(token, "\r\n")
+	} else {
+		token = strings.TrimSuffix(token, "\n")
+	}
 	if token == "" || strings.TrimSpace(token) != token {
 		return "", errors.New("BLACKPEARL_TORBOX_API_TOKEN_FILE must contain one token without surrounding whitespace")
 	}
