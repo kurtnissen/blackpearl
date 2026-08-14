@@ -195,6 +195,18 @@ The existing atomic fallback transition resets progress to zero for the next
 candidate, and successful publication commits 100. Credentials, transient
 locators, provider response bodies, speeds, and ETA values are never persisted.
 
+Acquisition candidates are a tagged `torrent | range` union. Torrent candidates
+retain their locator-free release fingerprint and ownership rules. Range
+candidates retain only a validated provider name, opaque object identity,
+logical filename, size, and resolver label. Planning orders cached torrents,
+licensed direct ranges, then uncached torrents while reserving one of the five
+durable slots for a direct source when one exists. Preparation of a range
+candidate opens metadata only to validate size and immutable version; content
+is fetched later through the same `ReadAt` and shared cache path used by every
+filesystem frontend. The runtime's immutable range router dispatches each
+backing by provider without exposing a URL to the catalog. A provider object
+BlackPearl did not create is never eligible for cleanup.
+
 ## Direct Play target
 
 The low-storage VPS path treats Plex Direct Play as a primary constraint. BlackPearl delivers exact container bytes and does not transcode. Codec/container compatibility remains a Plex client concern; a provider resolver should eventually prefer Direct Play-compatible candidates when metadata is reliable. Milestone 1's synthetic fixture is MP4 with H.264 video, AAC audio, `yuv420p`, and fast-start metadata.

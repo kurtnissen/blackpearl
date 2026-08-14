@@ -12,7 +12,7 @@ BlackPearl is an experimental, open-source Go service that exposes a virtual med
 - Validated movie/episode search intent, a read-only Prowlarr gateway, and provider-neutral release deduplication and ranking. Auxiliary trailers, teasers, samples, previews, and featurettes are rejected before cache planning; up to 100 eligible hashes are cache-probed before the durable five-candidate fallback plan is capped.
 - Cached-only TorBox acquisition preflights cache availability, enforces `add_only_if_cached=true` during creation, inspects the resulting account object, selects the requested video, and publishes it through the existing atomic manifest transaction.
 - Explicit uncached preparation persists a redacted SQLite job, verifies transient torrent metadata against the ranked release fingerprint, reconciles provider mutations, survives restarts, reports monotonic provider-neutral preparation progress, and publishes only after TorBox exposes playable media.
-- The optional direct Internet Archive adapter gives the legal POC a bounded, verified open-media search path. It validates Archive's structured movie year, adds that year to the normalized release title when needed, and combines eligible results with the generic authorized Prowlarr path.
+- The optional Internet Archive adapter gives the legal POC two bounded, verified open-media paths: exact licensed MP4/MKV files can become durable arbitrary-range candidates immediately, while verified torrent metadata remains a fallback for TorBox preparation. Direct objects are represented by opaque provider IDs, never arbitrary URLs, and are never deleted by BlackPearl.
 - A paired localhost acquisition console privately configures Prowlarr, accepts validated movie or TV-episode intent, and returns only the updated public Plex manifest. Provider credentials and release locators never return to the browser.
 - Durable Plex Watchlist ingestion observes movies and shows through a bounded, header-authenticated adapter and stores a lease-based SQLite queue. Opted-in movies enter the restart-safe acquisition queue; an independent `pilot` policy can turn a newly observed show into exactly one immutable `S01E01` request without authorizing a season or series.
 - Best-effort Plex refresh notifications rescan the exact BlackPearl movie and TV libraries after successful manifest publication without coupling Plex availability to the publication transaction.
@@ -23,7 +23,7 @@ BlackPearl is an experimental, open-source Go service that exposes a virtual med
 - A portable NFS frontend and macOS Docker Desktop Compose profile that need no
   FUSE mount propagation.
 
-BlackPearl now proves provider-neutral progressive range retrieval and rolling eviction through strict HTTP and TorBox torrent-file gateways. The TorBox profile includes a localhost setup page that discovers eligible completed MP4/MKV files and atomically publishes a searchable manifest of up to 100 selected movies or TV episodes without restarting the stack. Live macOS acceptance has verified a mixed movie/episode manifest, Plex movie and TV scans, Direct Play, non-sequential seeks, restart recovery, seek-aware read-ahead, bounded next-episode prefetch, and continued reads from logical files that never existed completely on BlackPearl's disk. Cached and explicit background TorBox acquisition are exposed through the paired API/UI. A legal uncached *Tears of Steel (2012)* release completed through verified Archive torrent metadata; Plex Direct Played its logical MP4 with bidirectional seeking while BlackPearl retained only requested rolling chunks. A post-baseline public-domain *House on Haunted Hill (1959)* Watchlist item also completed the durable provider, publication, Plex scan, Direct Play, bidirectional seek, and restart-recovery path while only partial rolling chunks existed locally. The portable profile observes the isolated Plex server's Watchlist by default through a read-only config-volume mount. Automatic Watchlist acquisition and the independent S01E01 show-pilot policy remain disabled by default until authorized sources are configured.
+BlackPearl now proves provider-neutral progressive range retrieval and rolling eviction through strict HTTP direct-file and TorBox torrent-file gateways. The TorBox profile includes a localhost setup page that discovers eligible completed MP4/MKV files and atomically publishes a searchable manifest of up to 100 selected movies or TV episodes without restarting the stack. Live macOS acceptance has verified a mixed movie/episode manifest, Plex movie and TV scans, Direct Play, non-sequential seeks, restart recovery, seek-aware read-ahead, bounded next-episode prefetch, and continued reads from logical files that never existed completely on BlackPearl's disk. Cached and explicit background TorBox acquisition are exposed through the paired API/UI. A licensed *MariposaHD* S01E01 exact-file request completed without TorBox preparation, published a 175,099,607-byte logical MP4, Direct Played in Plex with forward/backward seeking, and survived a BlackPearl-only restart while retaining only 34 requested 1 MiB chunks. Legal torrent fallbacks for *Tears of Steel (2012)* and *House on Haunted Hill (1959)* have also completed through TorBox with partial rolling storage. The portable profile observes the isolated Plex server's Watchlist by default through a read-only config-volume mount. Automatic Watchlist acquisition and the independent S01E01 show-pilot policy remain disabled by default until authorized sources are configured.
 
 ## Architecture at a glance
 
@@ -125,10 +125,12 @@ creates a restart-safe background job and never stores provider credentials or
 release locators in SQLite.
 
 For a legal smoke test, the Compose profile also enables a direct public
-Internet Archive search adapter. Movie searches match the complete title plus
-Archive's structured year field, then combine eligible open-media results with
-the generic authorized Prowlarr results. Bounded torrent metadata is verified
-against the selected info hash before TorBox creation. Set
+Internet Archive search adapter. Exact licensed MP4/MKV files can be persisted
+as metadata-only range candidates and published without a complete local copy
+or a TorBox mutation. If no eligible direct file is available, bounded torrent
+metadata can still be verified against its selected info hash before TorBox
+creation. Candidate ordering is cached torrent, direct range, then uncached
+torrent, with one direct slot reserved in the five-entry durable plan. Set
 `BLACKPEARL_OPEN_MEDIA_SEARCH_ENABLED=false` to disable this adapter.
 
 The same isolated profile observes Plex Watchlist movies and shows every 15

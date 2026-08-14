@@ -6,8 +6,9 @@ lets an isolated Plex container scan and Direct Play the logical files. It also
 includes Prowlarr so BlackPearl can search indexers you are authorized to use
 and adds a bounded public Internet Archive search adapter for legally
 redistributable POC media. A cached match can publish immediately. An uncached
-match requires the explicit **Prepare through TorBox** action and then advances
-as a durable background job before publication.
+match advances as a durable background job: BlackPearl prefers an exact
+licensed range file when available and uses **Prepare through TorBox** only for
+the uncached-torrent fallback.
 
 ## Start it
 
@@ -47,6 +48,13 @@ from the selected Archive item, followed only across trusted Archive HTTPS
 hosts, bounded to 4 MiB, and verified against the selected BitTorrent info hash
 before TorBox receives it. This avoids depending on peer metadata discovery
 while preserving the same provider-neutral job boundary.
+
+For exact licensed Archive MP4/MKV files, BlackPearl persists an opaque
+provider/object reference instead of a URL. Preparation validates only metadata,
+then Plex reads arbitrary offsets through the common rolling or persistent
+cache. The five-candidate durable plan orders cached torrents first, exact range
+files second, and uncached torrents last while reserving a direct slot. Direct
+objects are read-only external sources and are never deleted by BlackPearl.
 
 If the top-ranked release is not cached, the page offers **Prepare through
 TorBox**. BlackPearl persists only the request, up to five locator-free release
@@ -190,6 +198,16 @@ a non-sequential seek, the first episode played with its original video stream,
 and BlackPearl restored both library roots after restart. Opening only episode
 one populated exactly the configured 16 MiB prefix of episode two and did not
 store its tail or complete object.
+
+The direct-file acceptance used the licensed *MariposaHD* S01E01 MP4. A durable
+episode job published the canonical TV path with a 175,099,607-byte logical
+size. Start, interior, and tail 64 KiB reads matched the legal origin. Plex
+indexed it as metadata ID 24 and logged `MDE=1000,Direct play OK`; Brave played
+continuously, sought forward and backward, then resumed after only BlackPearl
+was restarted. The restored midpoint 1 MiB range matched SHA-256
+`34b458cdf8cbfcba06230e9f42790aecbfaaae143e728279693e46181602dae9`.
+Only 34 chunks totaling 34,808 KiB existed for this 167 MiB logical object.
+Plex itself was not restarted or modified.
 
 The first live acquisition-console acceptance used Prowlarr's public Internet
 Archive indexer and Blender's Creative Commons-licensed *Big Buck Bunny (2008)*.
