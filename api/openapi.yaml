@@ -93,6 +93,79 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "422": { $ref: "#/components/responses/Error" }
         "503": { $ref: "#/components/responses/Error" }
+  /api/acquisition/status:
+    get:
+      operationId: getAcquisitionStatus
+      description: Returns only whether private search-provider settings exist.
+      responses:
+        "200":
+          description: Public non-secret acquisition configuration state.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AcquisitionStatus" }
+        "503": { $ref: "#/components/responses/Error" }
+  /api/acquisition/settings:
+    put:
+      operationId: configureAcquisitionSearch
+      description: Validates, probes, and privately stores one Prowlarr connection. Requires an already configured and paired TorBox setup.
+      parameters:
+        - $ref: "#/components/parameters/CSRF"
+        - $ref: "#/components/parameters/Session"
+        - $ref: "#/components/parameters/Bootstrap"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ProwlarrSettingsInput" }
+      responses:
+        "200":
+          description: Private settings were probed and saved.
+          headers:
+            X-BlackPearl-Session:
+              $ref: "#/components/headers/Session"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AcquisitionStatus" }
+        "401": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /api/acquisition/acquire:
+    post:
+      operationId: acquireMedia
+      description: Searches configured indexers and publishes only a TorBox-cached movie or episode through the existing atomic Plex manifest transaction.
+      parameters:
+        - $ref: "#/components/parameters/CSRF"
+        - $ref: "#/components/parameters/Session"
+        - $ref: "#/components/parameters/Bootstrap"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AcquisitionIntent" }
+      responses:
+        "200":
+          description: Acquired media was published to the Plex manifest.
+          headers:
+            X-BlackPearl-Session:
+              $ref: "#/components/headers/Session"
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [selected, selectedItems]
+                properties:
+                  selected: { $ref: "#/components/schemas/SetupConfiguration" }
+                  selectedItems:
+                    type: array
+                    minItems: 1
+                    maxItems: 100
+                    items: { $ref: "#/components/schemas/SetupConfiguration" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
 components:
   parameters:
     CSRF:
@@ -164,6 +237,33 @@ components:
           type: array
           maxItems: 100
           items: { $ref: "#/components/schemas/SetupConfiguration" }
+    AcquisitionStatus:
+      type: object
+      additionalProperties: false
+      required: [configured]
+      properties:
+        configured: { type: boolean }
+    ProwlarrSettingsInput:
+      type: object
+      additionalProperties: false
+      required: [baseUrl, apiKey]
+      properties:
+        baseUrl:
+          type: string
+          minLength: 1
+          maxLength: 2048
+          description: Absolute HTTP(S) Prowlarr URL without credentials, query, or fragment.
+        apiKey: { type: string, minLength: 1, maxLength: 4096, writeOnly: true }
+    AcquisitionIntent:
+      type: object
+      additionalProperties: false
+      required: [mediaType, title, year]
+      properties:
+        mediaType: { type: string, enum: [movie, episode] }
+        title: { type: string, minLength: 1, maxLength: 200, description: Movie title or TV show title; maximum 200 UTF-8 bytes. }
+        year: { type: integer, minimum: 1888, maximum: 2100 }
+        season: { type: integer, minimum: 0, maximum: 99 }
+        episode: { type: integer, minimum: 1, maximum: 999 }
     Error:
       type: object
       additionalProperties: false

@@ -35,13 +35,18 @@ type Service interface {
 }
 
 type handler struct {
-	service Service
-	csrf    string
-	logger  *slog.Logger
+	service     Service
+	acquisition AcquisitionService
+	csrf        string
+	logger      *slog.Logger
 }
 
 // New constructs a setup API with a process-local CSRF secret.
 func New(service Service, configuredLogger ...*slog.Logger) (http.Handler, error) {
+	return newHandler(service, nil, configuredLogger...)
+}
+
+func newHandler(service Service, acquisition AcquisitionService, configuredLogger ...*slog.Logger) (http.Handler, error) {
 	value := make([]byte, 32)
 	if _, err := rand.Read(value); err != nil {
 		return nil, errors.New("generate setup CSRF token")
@@ -50,7 +55,7 @@ func New(service Service, configuredLogger ...*slog.Logger) (http.Handler, error
 	if len(configuredLogger) > 0 && configuredLogger[0] != nil {
 		logger = configuredLogger[0]
 	}
-	return &handler{service: service, csrf: hex.EncodeToString(value), logger: logger}, nil
+	return &handler{service: service, acquisition: acquisition, csrf: hex.EncodeToString(value), logger: logger}, nil
 }
 
 func (h *handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
@@ -133,6 +138,12 @@ func (h *handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 			Selected      domain.SetupConfiguration   `json:"selected"`
 			SelectedItems []domain.SetupConfiguration `json:"selectedItems"`
 		}{Selected: manifest.Items[0], SelectedItems: manifest.Items})
+	case "/api/acquisition/status":
+		h.serveAcquisitionStatus(writer, request)
+	case "/api/acquisition/settings":
+		h.serveAcquisitionSettings(writer, request)
+	case "/api/acquisition/acquire":
+		h.serveAcquisition(writer, request)
 	default:
 		http.NotFound(writer, request)
 	}
