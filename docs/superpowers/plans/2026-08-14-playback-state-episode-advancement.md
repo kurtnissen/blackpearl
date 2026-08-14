@@ -32,7 +32,7 @@
 - Produces: `domain.PlaybackState`, `domain.EpisodeCoordinate`, `domain.EpisodePlayback`, `domain.NewEpisodeCoordinate`, `domain.NewEpisodePlayback`, and `EpisodePlayback.Qualifies`.
 - Consumes: standard `time.Duration` and existing safe relative-path rules.
 
-- [ ] **Step 1: Write failing domain tests**
+- [x] **Step 1: Write failing domain tests**
 
 Add table-driven tests proving valid playing/paused episode evidence, rejection of movies/unsafe paths/invalid coordinates/negative or overlong timing, and the two-part threshold:
 
@@ -47,17 +47,17 @@ require.True(t, playback.Qualifies(120*time.Second, 10))
 require.False(t, playback.Qualifies(180*time.Second, 10))
 ```
 
-- [ ] **Step 2: Run the focused test and verify RED**
+- [x] **Step 2: Run the focused test and verify RED**
 
 Run: `go test ./internal/domain -run 'TestEpisodePlayback|TestEpisodeCoordinate' -count=1`
 
 Expected: build failure because the playback types do not exist.
 
-- [ ] **Step 3: Implement immutable domain values**
+- [x] **Step 3: Implement immutable domain values**
 
 Implement constructors with private fields and accessors. `Qualifies` must avoid multiplication overflow by comparing bounded durations after constructor validation. Valid percent is 1 through 99; valid timings are positive and no greater than seven days; view offset is clamped only by rejection when it exceeds duration.
 
-- [ ] **Step 4: Run focused and package race tests**
+- [x] **Step 4: Run focused and package race tests**
 
 Run:
 
@@ -67,7 +67,7 @@ go test -race ./internal/domain -count=1
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit the domain contract**
+- [x] **Step 5: Commit the domain contract**
 
 ```bash
 git add internal/domain/playback.go internal/domain/playback_test.go
