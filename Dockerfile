@@ -14,7 +14,7 @@ COPY web/next.config.ts web/tsconfig.json web/vitest.config.ts web/vitest.setup.
 COPY web/src ./src
 RUN node node_modules/next/dist/bin/next build
 
-FROM golang:1.24-bookworm AS builder
+FROM golang:1.26.6-bookworm AS builder
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod go mod download

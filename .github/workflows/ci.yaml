@@ -73,5 +73,5 @@ jobs:
             -e BLACKPEARL_FUSE_TEST=1 \
             -v "$PWD:/src" \
             -w /src \
-            golang:1.24-bookworm \
+            golang:1.26.6-bookworm \
             bash -euc 'apt-get update; apt-get install -y --no-install-recommends fuse3; go test -race ./internal/pearlfs -run TestMountedFilesystemServesExactBytesAndOffsetReads'
