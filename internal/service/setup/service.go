@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	acquisitiondomain "github.com/blackpearl-media/blackpearl/internal/acquisition"
 	"github.com/blackpearl-media/blackpearl/internal/core"
 	"github.com/blackpearl-media/blackpearl/internal/domain"
 )
@@ -227,6 +228,49 @@ func (s *Service) Apply(ctx context.Context, request ApplyRequest) (domain.Setup
 	if err != nil {
 		return domain.SetupManifest{}, fmt.Errorf("validate selected manifest: %w", ErrInvalidSelection)
 	}
+	return s.commitManifest(ctx, token, manifest)
+}
+
+// PublishAcquired appends or replaces one validated acquired item using the
+// same durable, atomic runtime transaction as manual setup.
+func (s *Service) PublishAcquired(ctx context.Context, media acquisitiondomain.AcquiredMedia) error {
+	s.transitionMu.Lock()
+	defer s.transitionMu.Unlock()
+	token, current, err := s.repository.LoadManifest(ctx)
+	if err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			return ErrUnauthorized
+		}
+		return fmt.Errorf("load setup before acquired publication: %w", ErrUnavailable)
+	}
+	configuration, err := configurationFromAcquired(media)
+	if err != nil {
+		return fmt.Errorf("validate acquired media: %w", ErrInvalidSelection)
+	}
+	items := append([]domain.SetupConfiguration(nil), current.Items...)
+	replaced := false
+	for index := range items {
+		if items[index].ObjectID == configuration.ObjectID || sameLogicalMedia(items[index], configuration) {
+			items[index] = configuration
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		if len(items) == domain.MaximumSetupManifestItems {
+			return fmt.Errorf("setup manifest is at capacity: %w", ErrInvalidSelection)
+		}
+		items = append(items, configuration)
+	}
+	manifest, err := domain.NewSetupManifest(items)
+	if err != nil {
+		return fmt.Errorf("validate acquired manifest: %w", ErrInvalidSelection)
+	}
+	_, err = s.commitManifest(ctx, token, manifest)
+	return err
+}
+
+func (s *Service) commitManifest(ctx context.Context, token string, manifest domain.SetupManifest) (domain.SetupManifest, error) {
 	runtime, err := s.runtimeFactory(ctx, token, manifest)
 	if err != nil {
 		return domain.SetupManifest{}, errors.Join(fmt.Errorf("prepare selected media: %w", ErrUnavailable), err)
@@ -377,6 +421,35 @@ func configurationFromRequest(candidate domain.MediaCandidate, request ApplyItem
 		)
 	default:
 		return domain.SetupConfiguration{}, fmt.Errorf("unsupported media type: %q", request.MediaType)
+	}
+}
+
+func configurationFromAcquired(media acquisitiondomain.AcquiredMedia) (domain.SetupConfiguration, error) {
+	request := media.Request()
+	switch request.MediaType() {
+	case domain.MediaTypeMovie:
+		return domain.NewSetupConfiguration(media.Candidate(), request.Title(), request.Year())
+	case domain.MediaTypeEpisode:
+		return domain.NewSetupEpisodeConfiguration(
+			media.Candidate(), request.Title(), request.Year(), request.Season(), request.Episode(),
+			fmt.Sprintf("Episode %d", request.Episode()),
+		)
+	default:
+		return domain.SetupConfiguration{}, fmt.Errorf("unsupported acquired media type: %q", request.MediaType())
+	}
+}
+
+func sameLogicalMedia(left domain.SetupConfiguration, right domain.SetupConfiguration) bool {
+	if left.MediaType != right.MediaType || left.Year != right.Year {
+		return false
+	}
+	switch left.MediaType {
+	case domain.MediaTypeMovie:
+		return left.Title == right.Title
+	case domain.MediaTypeEpisode:
+		return left.ShowTitle == right.ShowTitle && left.Season == right.Season && left.Episode == right.Episode
+	default:
+		return false
 	}
 }
 
