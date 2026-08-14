@@ -1,0 +1,71 @@
+name: blackpearl-torbox
+
+services:
+  blackpearl:
+    image: blackpearl:torbox
+    build:
+      context: .
+      target: runtime
+    restart: unless-stopped
+    environment:
+      BLACKPEARL_DATA_DIR: /var/lib/blackpearl
+      BLACKPEARL_DB_PATH: /var/lib/blackpearl/blackpearl.db
+      BLACKPEARL_CACHE_DIR: /var/lib/blackpearl/cache
+      BLACKPEARL_MOUNT_PATH: /mnt/blackpearl
+      BLACKPEARL_HTTP_ADDR: :8080
+      BLACKPEARL_LOG_LEVEL: ${BLACKPEARL_LOG_LEVEL:-info}
+      BLACKPEARL_STORAGE_MODE: rolling
+      BLACKPEARL_CACHE_MAX_BYTES: ${BLACKPEARL_CACHE_MAX_BYTES:-42949672960}
+      BLACKPEARL_CACHE_CHUNK_BYTES: ${BLACKPEARL_CACHE_CHUNK_BYTES:-1048576}
+      BLACKPEARL_RANGE_PROVIDER: torbox-torrent
+      BLACKPEARL_RANGE_OBJECT_ID: ${BLACKPEARL_RANGE_OBJECT_ID:?set an authorized torrent-id:file-id}
+      BLACKPEARL_RANGE_TIMEOUT: ${BLACKPEARL_RANGE_TIMEOUT:-30s}
+      BLACKPEARL_TORBOX_API_URL: https://api.torbox.app/v1/api/
+      BLACKPEARL_TORBOX_API_TOKEN: ${BLACKPEARL_TORBOX_API_TOKEN:?set your TorBox API token}
+      BLACKPEARL_FILESYSTEM_MODE: nfs
+      BLACKPEARL_NFS_ADDR: 0.0.0.0:2049
+    ports:
+      - 127.0.0.1:${BLACKPEARL_TORBOX_HTTP_PORT:-8082}:8080/tcp
+      - 127.0.0.1:${BLACKPEARL_TORBOX_NFS_PORT:-20492}:2049/tcp
+    volumes:
+      - blackpearl-data:/var/lib/blackpearl
+    healthcheck:
+      test: [CMD, curl, --fail, --silent, http://localhost:8080/readyz]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+      start_period: 3s
+
+  plex:
+    image: plexinc/pms-docker:1.43.0.10492-121068a07
+    restart: unless-stopped
+    depends_on:
+      blackpearl:
+        condition: service_healthy
+    environment:
+      TZ: ${TZ:-America/New_York}
+      PLEX_CLAIM: ${PLEX_TORBOX_CLAIM:-}
+      ADVERTISE_IP: ${PLEX_TORBOX_ADVERTISE_IP:-http://localhost:32402/}
+    ports:
+      - 127.0.0.1:${PLEX_TORBOX_PORT:-32402}:32400/tcp
+    volumes:
+      - plex-config:/config
+      - plex-transcode:/transcode
+      - blackpearl-library:/blackpearl:ro
+    healthcheck:
+      test: [CMD, curl, --fail, --silent, http://localhost:32400/identity]
+      interval: 2s
+      timeout: 2s
+      retries: 60
+      start_period: 5s
+
+volumes:
+  blackpearl-data:
+  plex-config:
+  plex-transcode:
+  blackpearl-library:
+    driver: local
+    driver_opts:
+      type: nfs
+      device: :/
+      o: addr=127.0.0.1,vers=3,tcp,nolock,port=${BLACKPEARL_TORBOX_NFS_PORT:-20492},mountport=${BLACKPEARL_TORBOX_NFS_PORT:-20492},ro

@@ -100,6 +100,16 @@ The token remains environment-only. BlackPearl does not write it or the signed
 TorBox CDN URL to SQLite, cache filenames, or logs. Without these variables,
 TorBox is contract-tested but not live-provider validated.
 
+To run the isolated macOS Docker/Plex profile after the live probe:
+
+```bash
+./scripts/setup-torbox-poc.sh
+open http://localhost:32402/web
+```
+
+See [the macOS TorBox runbook](docs/macos-torbox-poc.md) for object selection,
+cache sizing, Plex setup, and cleanup.
+
 ## Ubuntu Plex POC
 
 Use a fresh Ubuntu Server and the isolated acceptance stack. Do not point these files at production media or Plex configuration.
@@ -136,6 +146,7 @@ Both modes use the same FUSE and range-oriented media-source contract. Plex Dire
 - [Ubuntu Plex POC runbook](docs/ubuntu-plex-poc.md)
 - [macOS Docker Desktop Plex POC](docs/macos-plex-poc.md)
 - [macOS rolling-cache Plex POC](docs/macos-rolling-poc.md)
+- [macOS TorBox Plex POC](docs/macos-torbox-poc.md)
 - [Portable filesystem evaluation](docs/portability-filesystem-evaluation.md)
 - [Acceptance criteria and evidence](docs/acceptance-evidence.md)
 - [Detailed Milestone 1 design](docs/superpowers/specs/2026-08-13-milestone-1-fuse-plex-design.md)
