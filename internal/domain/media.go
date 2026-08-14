@@ -15,6 +15,11 @@ var (
 	ErrNotFound = errors.New("not found")
 	// ErrNotConfigured indicates that an optional capability has no implementation configured.
 	ErrNotConfigured = errors.New("not configured")
+	// ErrUnauthorized indicates that an external provider rejected credentials.
+	ErrUnauthorized = errors.New("unauthorized")
+	// ErrCleanupDeferred indicates that primary state committed durably but
+	// removal of inactive private state must be retried later.
+	ErrCleanupDeferred = errors.New("cleanup deferred")
 )
 
 // MediaID uniquely identifies a catalog item.
@@ -27,6 +32,7 @@ type MediaType string
 type StorageMode string
 
 const (
+	maximumPlexTitleBytes = 200
 	// MediaTypeMovie represents a movie catalog item.
 	MediaTypeMovie MediaType = "movie"
 	// StorageModePersistent retains complete acquired objects when capacity permits.
@@ -80,7 +86,7 @@ func NewMovie(id MediaID, title string, year int, extension string, size int64, 
 	if id == "" {
 		return Media{}, errors.New("media id is required")
 	}
-	if err := validatePathSegment("title", title); err != nil {
+	if err := validateTitle(title); err != nil {
 		return Media{}, err
 	}
 	if year < 1 || year > 9999 {
@@ -110,6 +116,16 @@ func NewMovie(id MediaID, title string, year int, extension string, size int64, 
 		Size:        size,
 		Backing:     backing,
 	}, nil
+}
+
+func validateTitle(title string) error {
+	if err := validatePathSegment("title", title); err != nil {
+		return err
+	}
+	if len(title) > maximumPlexTitleBytes {
+		return fmt.Errorf("title must not exceed %d bytes", maximumPlexTitleBytes)
+	}
+	return nil
 }
 
 func validateProvider(provider string) error {

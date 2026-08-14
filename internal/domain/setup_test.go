@@ -1,6 +1,7 @@
 package domain_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/blackpearl-media/blackpearl/internal/domain"
@@ -79,4 +80,19 @@ func TestNewSetupConfigurationRejectsUnsafeTitleAndYear(t *testing.T) {
 			require.Error(t, err)
 		})
 	}
+}
+
+func TestNewSetupConfigurationEnforcesPlexTitleByteLimit(t *testing.T) {
+	t.Parallel()
+	candidate, err := domain.NewMediaCandidate("17:3", "movie.mp4", 100)
+	require.NoError(t, err)
+
+	configuration, err := domain.NewSetupConfiguration(candidate, strings.Repeat("a", 200), 2026)
+	require.NoError(t, err)
+	require.Len(t, configuration.Title, 200)
+
+	_, err = domain.NewSetupConfiguration(candidate, strings.Repeat("a", 201), 2026)
+	require.ErrorContains(t, err, "200 bytes")
+	_, err = domain.NewSetupConfiguration(candidate, strings.Repeat("é", 101), 2026)
+	require.ErrorContains(t, err, "200 bytes")
 }

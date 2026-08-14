@@ -11,8 +11,7 @@ Use only media you are authorized to access. No token or file ID is needed in
 the terminal:
 
 ```bash
-docker compose -f compose.torbox.yaml up -d --build --wait
-open http://localhost:8082
+./scripts/torbox-stack.sh start
 ```
 
 The setup page is published only on the Mac's loopback interface. Paste your
@@ -20,10 +19,19 @@ TorBox API token and select **Find my videos**. BlackPearl shows completed,
 present, unarchived, uninfected MP4/MKV files. Choose one, adjust the Plex title
 or year if needed, and select **Use with Plex**.
 
-BlackPearl stores the token only at `/var/lib/blackpearl/setup/torbox.token`
-inside its named data volume with mode `0600`. The setup directory uses mode
-`0700`. The token is never returned by the API, placed in browser storage,
-container environment, SQLite, logs, telemetry, or cache filenames.
+The launcher creates a private local pairing value under the ignored
+`runtime/` directory and carries it in the setup page URL fragment. The
+fragment is removed before any request, is never sent to Plex, and authorizes
+first setup through a dedicated request header. BlackPearl stores the TorBox
+token only in the active private generation beneath
+`/var/lib/blackpearl/setup/generations/`, with mode `0600`. An atomically
+replaced `current` pointer commits the token and selection as one pair. The
+setup directories use mode `0700`; inactive and orphan generations are
+removed on startup and after a successful replacement. The TorBox token is
+never returned by the API, placed in browser storage, container environment,
+SQLite, logs, telemetry, or cache filenames. The setup page stores only a
+derived session authorization and local pairing value in that page's
+port-scoped `sessionStorage`; neither value is sent to Plex.
 
 ## Add it to Plex
 
@@ -47,9 +55,9 @@ evicts old chunks as needed.
 ## Inspect and stop
 
 ```bash
-docker compose -f compose.torbox.yaml ps
-docker compose -f compose.torbox.yaml logs blackpearl
-docker compose -f compose.torbox.yaml down
+./scripts/torbox-stack.sh status
+./scripts/torbox-stack.sh logs
+./scripts/torbox-stack.sh stop
 ```
 
 Add `-v` only when you intentionally want to delete this POC's isolated token,

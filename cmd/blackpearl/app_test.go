@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -299,6 +300,7 @@ func TestRunBrowserSetupStartsWithoutCredentialsAndServesSetupStatus(t *testing.
 	cfg.FilesystemMode = "nfs"
 	cfg.SetupEnabled = true
 	cfg.SetupDir = filepath.Join(root, "data", "setup")
+	cfg.SetupBootstrapToken = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 	cfg.TorBoxAPIURL = "https://api.example.invalid/v1/api/"
 	nfsStarted := make(chan struct{})
 	nfs := &fakeNFSServer{address: fakeAddress("127.0.0.1:2049")}
@@ -336,6 +338,118 @@ func TestRunBrowserSetupStartsWithoutCredentialsAndServesSetupStatus(t *testing.
 	require.Equal(t, http.StatusOK, response.StatusCode)
 	require.Contains(t, string(body), `"setupRequired":true`)
 	require.NotContains(t, string(body), "tokenFilename")
+	cancel()
+	require.NoError(t, <-result)
+}
+
+func TestRunBrowserSetupSelectedMediaSurvivesApplyRequestCancellation(t *testing.T) {
+	root := t.TempDir()
+	content := []byte("0123456789abcdef")
+	var provider *httptest.Server
+	provider = httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/v1/api/torrents/mylist":
+			require.Equal(t, "Bearer browser-token", request.Header.Get("Authorization"))
+			writer.Header().Set("Content-Type", "application/json")
+			if request.URL.Query().Get("id") == "17" {
+				_, err := writer.Write([]byte(`{"success":true,"detail":"ok","data":{"id":17,"download_finished":true,"download_present":true,"files":[{"id":3,"name":"Example.mp4","size":16,"hash":"fixture-hash","zipped":false,"infected":false}]}}`))
+				require.NoError(t, err)
+				return
+			}
+			_, err := writer.Write([]byte(`{"success":true,"detail":"ok","data":[{"id":17,"download_finished":true,"download_present":true,"files":[{"id":3,"name":"Example.mp4","size":16,"hash":"fixture-hash","zipped":false,"infected":false}]}]}`))
+			require.NoError(t, err)
+		case "/v1/api/torrents/requestdl":
+			_, err := writer.Write([]byte(fmt.Sprintf(`{"success":true,"detail":"ok","data":%q}`, provider.URL+"/cdn/file")))
+			require.NoError(t, err)
+		case "/cdn/file":
+			writer.Header().Set("Accept-Ranges", "bytes")
+			writer.Header().Set("Content-Length", fmt.Sprintf("%d", len(content)))
+			if request.Method == http.MethodHead {
+				writer.WriteHeader(http.StatusOK)
+				return
+			}
+			require.Equal(t, "bytes=8-11", request.Header.Get("Range"))
+			writer.Header().Set("Content-Range", "bytes 8-11/16")
+			writer.Header().Set("Content-Length", "4")
+			writer.WriteHeader(http.StatusPartialContent)
+			_, err := writer.Write(content[8:12])
+			require.NoError(t, err)
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	t.Cleanup(provider.Close)
+
+	cfg := testConfig(root, "")
+	cfg.StorageMode = domain.StorageModeRolling
+	cfg.CacheMaxBytes = 8
+	cfg.CacheChunkBytes = 4
+	cfg.RangeProvider = "torbox-torrent"
+	cfg.FilesystemMode = "nfs"
+	cfg.SetupEnabled = true
+	cfg.SetupDir = filepath.Join(root, "data", "setup")
+	cfg.SetupBootstrapToken = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	cfg.TorBoxAPIURL = provider.URL + "/v1/api/"
+	cfg.RangeTimeout = time.Second
+
+	var activeCatalog nfsCatalog
+	nfs := &fakeNFSServer{address: fakeAddress("127.0.0.1:2049")}
+	httpAddress := make(chan string, 1)
+	deps := defaultDependencies()
+	deps.torBoxClient = provider.Client()
+	deps.serveNFS = func(_ context.Context, _ string, catalog nfsCatalog) (nfsServer, error) {
+		activeCatalog = catalog
+		return nfs, nil
+	}
+	deps.listen = func(network string, address string) (net.Listener, error) {
+		listener, err := net.Listen(network, address)
+		if err == nil {
+			httpAddress <- listener.Addr().String()
+		}
+		return listener, err
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	result := make(chan error, 1)
+	go func() { result <- run(ctx, cfg, testLogger(), deps) }()
+	address := <-httpAddress
+	client := &http.Client{Timeout: 5 * time.Second}
+	statusResponse, err := client.Get("http://" + address + "/api/setup/status")
+	require.NoError(t, err)
+	var status struct {
+		CSRFToken string `json:"csrfToken"`
+	}
+	require.NoError(t, json.NewDecoder(statusResponse.Body).Decode(&status))
+	require.NoError(t, statusResponse.Body.Close())
+	require.NotEmpty(t, status.CSRFToken)
+
+	payload := bytes.NewBufferString(`{"token":"browser-token","objectId":"17:3","title":"Example","year":2026}`)
+	request, err := http.NewRequest(http.MethodPut, "http://"+address+"/api/setup/configuration", payload)
+	require.NoError(t, err)
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Origin", "http://"+address)
+	request.Header.Set("X-BlackPearl-CSRF", status.CSRFToken)
+	request.Header.Set("X-BlackPearl-Bootstrap", cfg.SetupBootstrapToken)
+	applyResponse, err := client.Do(request)
+	require.NoError(t, err)
+	applyBody, err := io.ReadAll(applyResponse.Body)
+	require.NoError(t, err)
+	require.NoError(t, applyResponse.Body.Close())
+	require.Equal(t, http.StatusOK, applyResponse.StatusCode, string(applyBody))
+
+	items, err := activeCatalog.List(context.Background())
+	require.NoError(t, err)
+	require.Len(t, items, 1)
+	handle, err := activeCatalog.Open(context.Background(), items[0].VirtualPath)
+	require.NoError(t, err)
+	buffer := make([]byte, 4)
+	read, err := handle.ReadAt(context.Background(), buffer, 8)
+	require.NoError(t, err)
+	require.Equal(t, 4, read)
+	require.Equal(t, content[8:12], buffer)
+	require.NoError(t, handle.Close())
+
 	cancel()
 	require.NoError(t, <-result)
 }
@@ -556,6 +670,10 @@ func (f *fakeNFSServer) Addr() net.Addr {
 
 func (f *fakeNFSServer) Reload(context.Context) error {
 	return nil
+}
+
+func (f *fakeNFSServer) Replace(context.Context, nfsCatalog) (nfsCatalog, error) {
+	return nil, nil
 }
 
 func (f *fakeNFSServer) Close() error {

@@ -24,16 +24,18 @@ type Catalog interface {
 }
 
 type filesystem struct {
-	ctx       context.Context
-	catalog   Catalog
-	entriesMu sync.RWMutex
-	entries   map[string]entry
+	ctx        context.Context
+	entriesMu  sync.RWMutex
+	catalog    Catalog
+	entries    map[string]entry
+	generation uint64
 }
 
 // Reloadable is a read-only filesystem whose namespace can be atomically refreshed.
 type Reloadable interface {
 	billy.Filesystem
 	Reload(ctx context.Context) error
+	Replace(ctx context.Context, catalog Catalog) (Catalog, error)
 }
 
 type entry struct {
@@ -67,21 +69,37 @@ func NewReloadable(ctx context.Context, catalog Catalog) (Reloadable, error) {
 
 // Reload builds a complete namespace off-lock and publishes it atomically.
 func (f *filesystem) Reload(ctx context.Context) error {
+	f.entriesMu.RLock()
+	catalog := f.catalog
+	f.entriesMu.RUnlock()
+	_, err := f.Replace(ctx, catalog)
+	return err
+}
+
+// Replace publishes one immutable namespace-and-catalog snapshot and returns
+// the catalog previously used for file opens.
+func (f *filesystem) Replace(ctx context.Context, catalog Catalog) (Catalog, error) {
 	if err := ctx.Err(); err != nil {
-		return fmt.Errorf("reload PearlNFS filesystem: %w", err)
+		return nil, fmt.Errorf("replace PearlNFS filesystem: %w", err)
 	}
-	items, err := f.catalog.List(ctx)
+	if catalog == nil {
+		return nil, errors.New("replacement PearlNFS catalog is required")
+	}
+	items, err := catalog.List(ctx)
 	if err != nil {
-		return fmt.Errorf("list catalog for PearlNFS: %w", err)
+		return nil, fmt.Errorf("list catalog for PearlNFS: %w", err)
 	}
 	entries, err := buildEntries(items)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	f.entriesMu.Lock()
+	previous := f.catalog
+	f.catalog = catalog
 	f.entries = entries
+	f.generation++
 	f.entriesMu.Unlock()
-	return nil
+	return previous, nil
 }
 
 func buildEntries(items []domain.Media) (map[string]entry, error) {
@@ -153,6 +171,7 @@ func (f *filesystem) Open(filename string) (billy.File, error) {
 	virtualPath := cleanPath(filename)
 	f.entriesMu.RLock()
 	value, exists := f.entries[virtualPath]
+	catalog := f.catalog
 	f.entriesMu.RUnlock()
 	if !exists {
 		return nil, os.ErrNotExist
@@ -160,11 +179,37 @@ func (f *filesystem) Open(filename string) (billy.File, error) {
 	if value.media == nil {
 		return nil, &os.PathError{Op: "open", Path: filename, Err: errors.New("is a directory")}
 	}
-	handle, err := f.catalog.Open(f.ctx, virtualPath)
+	handle, err := catalog.Open(f.ctx, virtualPath)
 	if err != nil {
 		return nil, fmt.Errorf("open PearlNFS media %q: %w", virtualPath, err)
 	}
 	return &mediaFile{ctx: f.ctx, name: virtualPath, handle: handle}, nil
+}
+
+func (f *filesystem) handleSnapshot(filename string) (billy.Filesystem, string) {
+	virtualPath := cleanPath(filename)
+	f.entriesMu.RLock()
+	value, exists := f.entries[virtualPath]
+	if !exists || value.media == nil {
+		f.entriesMu.RUnlock()
+		return f, "directory\x00" + virtualPath
+	}
+	frozen := &filesystem{ctx: f.ctx, catalog: f.catalog, entries: f.entries, generation: f.generation}
+	media := *value.media
+	f.entriesMu.RUnlock()
+	identity := fmt.Sprintf("file\x00%s\x00%s\x00%d\x00%s\x00%s", media.ID, media.VirtualPath, media.Size, media.Backing.Provider, media.Backing.ObjectID)
+	return frozen, identity
+}
+
+func (f *filesystem) handlePaths() []string {
+	f.entriesMu.RLock()
+	paths := make([]string, 0, len(f.entries))
+	for virtualPath := range f.entries {
+		paths = append(paths, virtualPath)
+	}
+	f.entriesMu.RUnlock()
+	sort.Strings(paths)
+	return paths
 }
 
 func (f *filesystem) OpenFile(filename string, flag int, _ os.FileMode) (billy.File, error) {

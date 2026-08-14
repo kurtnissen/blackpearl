@@ -62,7 +62,7 @@ func NewSetupConfiguration(candidate MediaCandidate, title string, year int) (Se
 		return SetupConfiguration{}, errors.New("media candidate extension does not match its name")
 	}
 	cleanTitle := strings.TrimSpace(title)
-	if err := validatePathSegment("title", cleanTitle); err != nil {
+	if err := validateTitle(cleanTitle); err != nil {
 		return SetupConfiguration{}, err
 	}
 	if year < 1888 || year > 2100 {

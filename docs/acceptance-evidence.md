@@ -9,7 +9,7 @@ Tested from the `research/portable-filesystem` branch on an Apple Silicon Mac wi
 | Gate | Result | Evidence |
 |---|---|---|
 | Go race tests | Pass | `go test -race ./...` |
-| Go coverage | Pass | 83.2% statements from `go test -race -coverprofile=coverage.out ./...` |
+| Go coverage | Pass | 81.5% of project statements from `go test -race -coverprofile=coverage.out ./...`; generated Go code inside `web/node_modules` is excluded from the project floor |
 | Static analysis | Pass | `go vet ./...` |
 | Compose isolation | Pass | Rendered configuration checked by `scripts/test-compose-paths.sh`; every bind is under `runtime/`, Plex media is read-only `rslave`, and only BlackPearl receives FUSE privileges |
 | POC image build | Pass | `blackpearl:poc` built for local Linux ARM64 |
@@ -28,9 +28,13 @@ Tested from the `research/portable-filesystem` branch on an Apple Silicon Mac wi
 | Rolling quota and eviction | Pass on macOS | The acceptance script sampled published chunks plus in-flight fetch files throughout a full stream, never exceeded 1 MiB, and observed an evicted range being fetched again after restart |
 | Rolling Plex client playback | Pass on macOS | Plex Web visibly played the generated test pattern from the rolling stack; the server logged `MDE=1000,Direct play OK` with `decision=direct play`, served all 3,417,699 original bytes, and recorded a playing timeline |
 | TorBox API/CDN contract | Pass (mocked) | TLS contract tests cover account metadata, bearer/query authentication, strict non-sequential ranges, immutable validators, signed-link reuse/refresh, redirects, CDN size validation, cancellation, concurrency, and secret redaction |
-| Browser-first TorBox stack | Pass without credentials on macOS | Docker image built with embedded Next UI; Compose started BlackPearl and Plex healthy with no token/object environment; Plex mounted the empty read-only NFS export; `/healthz` returned 200 and `/readyz` returned `setup_required` |
-| Browser setup UI | Pass on macOS | The embedded page hydrated from the production container, displayed first-setup state, and passed desktop 1280x800 plus narrow 390x844 visual checks; API/component tests cover discovery, selection, ready, empty, and error states |
+| Browser-first TorBox stack | Pass without provider credentials on macOS | The launcher generated a private first-run pairing value; Docker image built with embedded Next UI; Compose started BlackPearl and Plex healthy with no TorBox token/object environment; Plex mounted the empty read-only NFS export; `/healthz` returned 200 and `/readyz` returned `setup_required` |
+| Browser setup UI | Pass on macOS | The embedded production page consumed and removed the pairing fragment, hydrated without console warnings, displayed first-setup state, and passed desktop 1280x800 plus narrow 390x844 visual checks; API/component tests cover discovery, selection, ready, empty, and error states |
 | Browser token persistence and activation | Pass in automated tests | Private file modes, bounded token reads, no response echo, CSRF/Origin/Host checks, runtime prepare/activate/reload, and rollback are covered under the race detector |
+| Browser replacement transaction | Pass in automated tests | Token/config generations commit through one atomic pointer; failed publication restores the prior pointer; NFS publishes namespace and catalog together |
+| NFS replacement handle stability | Pass in protocol and live restart tests | A real NFSv3 client keeps reading original bytes from an issued handle after replacement while a new mount reads the new catalog; deterministic handles resolve the current file after server recreation; the live Plex mount remained readable across a BlackPearl-only restart |
+| Shared rolling quota during replacement | Pass in automated tests | Multiple immutable provider runtimes use one process-lifetime cache owner and one hard-quota ledger |
+| Setup API container isolation | Pass in Compose, API, and live container tests | BlackPearl and Plex use disjoint Docker networks; Docker Desktop host-gateway reachability is treated as untrusted. A forged unpaired mutation from the live Plex container was denied with HTTP 401 and issued no session. First setup requires a host-generated pairing value; later mutations require a setup-origin session header, pairing value, or exact saved-token re-entry. No authorization cookie is sent to Plex. |
 | TorBox live provider | Pending credentials | Run `scripts/verify-torbox-live.sh` with an API token and authorized `torrent-id:file-id`; no live-provider claim is made without that evidence |
 | Cross-container Plex mount | Pending Ubuntu | Docker Desktop bind propagation cannot prove this Linux-host behavior |
 

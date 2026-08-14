@@ -376,6 +376,9 @@ func (g *Gateway) doJSONLimited(request *http.Request, destination any, maximumB
 		return errors.New("perform TorBox API request")
 	}
 	defer func() { resultErr = errors.Join(resultErr, response.Body.Close()) }()
+	if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
+		return fmt.Errorf("TorBox API credentials rejected: %w", domain.ErrUnauthorized)
+	}
 	if response.StatusCode != http.StatusOK {
 		return fmt.Errorf("TorBox API requires status 200: got %d", response.StatusCode)
 	}

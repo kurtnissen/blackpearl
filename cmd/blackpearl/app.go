@@ -41,8 +41,22 @@ type nfsCatalog = pearlnfs.Catalog
 type nfsServer interface {
 	Addr() net.Addr
 	Reload(context.Context) error
+	Replace(context.Context, nfsCatalog) (nfsCatalog, error)
 	Close() error
 	Wait() error
+}
+
+type setupPublisher struct {
+	switcher *core.CatalogSwitch
+	nfs      nfsServer
+}
+
+func (p *setupPublisher) Publish(ctx context.Context, next core.CatalogService) error {
+	if _, err := p.nfs.Replace(ctx, next); err != nil {
+		return err
+	}
+	p.switcher.Activate(next)
+	return nil
 }
 
 type dependencies struct {
@@ -125,7 +139,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger, deps depen
 		runErr = errors.Join(runErr, repository.Close())
 	}()
 	if cfg.SetupEnabled {
-		return runBrowserSetup(ctx, cfg, logger, deps, repository)
+		return runBrowserSetup(ctx, cfg, logger, deps)
 	}
 	var catalog *core.Catalog
 	switch cfg.StorageMode {
@@ -287,7 +301,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger, deps depen
 	return runErr
 }
 
-func runBrowserSetup(ctx context.Context, cfg config.Config, logger *slog.Logger, deps dependencies, repository *state.Repository) (runErr error) {
+func runBrowserSetup(ctx context.Context, cfg config.Config, logger *slog.Logger, deps dependencies) (runErr error) {
 	switcher := core.NewCatalogSwitch()
 	nfs, err := deps.serveNFS(ctx, cfg.NFSAddr, switcher)
 	if err != nil {
@@ -305,6 +319,13 @@ func runBrowserSetup(ctx context.Context, cfg config.Config, logger *slog.Logger
 	setupRepository, err := setuprepo.New(cfg.SetupDir)
 	if err != nil {
 		return fmt.Errorf("open browser setup repository: %w", err)
+	}
+	rollingPool, err := cache.NewRollingPool(ctx, cache.RollingOptions{
+		Root: cfg.CacheDir, MaxBytes: cfg.CacheMaxBytes,
+		ChunkBytes: cfg.CacheChunkBytes, FetchTimeout: cfg.RangeTimeout,
+	})
+	if err != nil {
+		return fmt.Errorf("open shared browser rolling cache: %w", err)
 	}
 	gatewayFactory := func(token string) (setupservice.Discoverer, error) {
 		client := *deps.torBoxClient
@@ -339,20 +360,17 @@ func runBrowserSetup(ctx context.Context, cfg config.Config, logger *slog.Logger
 		if logicalSize != configuration.Size {
 			return nil, fmt.Errorf("selected TorBox size changed: got %d want %d", logicalSize, configuration.Size)
 		}
-		rolling, rollingErr := cache.NewRolling(runtimeContext, cache.RollingOptions{
-			Root: cfg.CacheDir, MaxBytes: cfg.CacheMaxBytes,
-			ChunkBytes: cfg.CacheChunkBytes, FetchTimeout: cfg.RangeTimeout,
-		}, gateway)
+		rolling, rollingErr := rollingPool.Source(gateway)
 		if rollingErr != nil {
 			return nil, fmt.Errorf("open selected rolling cache: %w", rollingErr)
 		}
-		catalog := core.NewCatalog(repository, nil, rolling)
+		catalog := core.NewCatalog(state.NewMemory(), nil, rolling)
 		if _, registerErr := catalog.RegisterRemoteMovie(runtimeContext, configuration, backing); registerErr != nil {
 			return nil, registerErr
 		}
 		return catalog, nil
 	}
-	service := setupservice.New(setupRepository, gatewayFactory, runtimeFactory, switcher, nfs)
+	service := setupservice.New(setupRepository, gatewayFactory, runtimeFactory, &setupPublisher{switcher: switcher, nfs: nfs}, cfg.SetupBootstrapToken)
 	if restoreErr := service.Restore(ctx); restoreErr != nil && !errors.Is(restoreErr, domain.ErrNotFound) {
 		logger.WarnContext(ctx, "saved browser setup could not be restored", "error", restoreErr)
 	}

@@ -22,6 +22,7 @@ services:
       BLACKPEARL_TORBOX_API_URL: https://api.torbox.app/v1/api/
       BLACKPEARL_SETUP_ENABLED: "true"
       BLACKPEARL_SETUP_DIR: /var/lib/blackpearl/setup
+      BLACKPEARL_SETUP_BOOTSTRAP_TOKEN: ${BLACKPEARL_SETUP_BOOTSTRAP_TOKEN:?Run ./scripts/torbox-stack.sh start}
       BLACKPEARL_FILESYSTEM_MODE: nfs
       BLACKPEARL_NFS_ADDR: 0.0.0.0:2049
     ports:
@@ -29,6 +30,8 @@ services:
       - 127.0.0.1:${BLACKPEARL_TORBOX_NFS_PORT:-20492}:2049/tcp
     volumes:
       - blackpearl-data:/var/lib/blackpearl
+    networks:
+      - blackpearl-control
     healthcheck:
       test: [CMD, curl, --fail, --silent, http://localhost:8080/healthz]
       interval: 2s
@@ -52,6 +55,8 @@ services:
       - plex-config:/config
       - plex-transcode:/transcode
       - blackpearl-library:/blackpearl:ro
+    networks:
+      - plex-runtime
     healthcheck:
       test: [CMD, curl, --fail, --silent, http://localhost:32400/identity]
       interval: 2s
@@ -69,3 +74,7 @@ volumes:
       type: nfs
       device: :/
       o: addr=127.0.0.1,vers=3,tcp,nolock,port=${BLACKPEARL_TORBOX_NFS_PORT:-20492},mountport=${BLACKPEARL_TORBOX_NFS_PORT:-20492},ro
+
+networks:
+  blackpearl-control:
+  plex-runtime:

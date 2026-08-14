@@ -106,6 +106,39 @@ func TestRollingSourceReadAtEvictsWithinHardQuotaAndRefetches(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestRollingPoolSharesQuotaAcrossProviderRuntimes(t *testing.T) {
+	t.Parallel()
+	pool, err := cache.NewRollingPool(context.Background(), cache.RollingOptions{
+		Root: t.TempDir(), MaxBytes: 8, ChunkBytes: 4, FetchTimeout: time.Second,
+	})
+	require.NoError(t, err)
+	first, err := pool.Source(newFakeRangeOpener([]byte("abcdefgh")))
+	require.NoError(t, err)
+	second, err := pool.Source(newFakeRangeOpener([]byte("ijklmnop")))
+	require.NoError(t, err)
+	firstMedia, err := domain.NewMovie("first", "First", 2026, ".mp4", 8, domain.BackingRef{Provider: "http-range", ObjectID: "first.mp4"})
+	require.NoError(t, err)
+	secondMedia, err := domain.NewMovie("second", "Second", 2026, ".mp4", 8, domain.BackingRef{Provider: "http-range", ObjectID: "second.mp4"})
+	require.NoError(t, err)
+	firstHandle, err := first.Open(context.Background(), firstMedia)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, firstHandle.Close()) })
+	secondHandle, err := second.Open(context.Background(), secondMedia)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, secondHandle.Close()) })
+
+	require.Equal(t, "abcd", readRollingExact(t, firstHandle, 0, 4))
+	require.Equal(t, "ijkl", readRollingExact(t, secondHandle, 0, 4))
+	require.Equal(t, "mnop", readRollingExact(t, secondHandle, 4, 4))
+
+	firstStats := first.Stats()
+	secondStats := second.Stats()
+	require.Equal(t, firstStats, secondStats)
+	require.LessOrEqual(t, firstStats.CurrentBytes+firstStats.ReservedBytes, int64(8))
+	require.LessOrEqual(t, firstStats.HighWaterBytes, int64(8))
+	require.Equal(t, uint64(1), firstStats.Evictions)
+}
+
 func TestRollingSourceRejectsChangedObjectValidator(t *testing.T) {
 	t.Parallel()
 	opener := newFakeRangeOpener([]byte("abcdefgh"))

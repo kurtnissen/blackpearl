@@ -48,6 +48,8 @@ func TestHandlerDiscoverRequiresLoopbackOriginAndCSRF(t *testing.T) {
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Origin", "http://localhost:8082")
 	request.Header.Set("X-BlackPearl-CSRF", csrf)
+	request.Header.Set("X-BlackPearl-Session", "session-value")
+	request.Header.Set("X-BlackPearl-Bootstrap", "bootstrap-value")
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 
@@ -55,6 +57,10 @@ func TestHandlerDiscoverRequiresLoopbackOriginAndCSRF(t *testing.T) {
 	require.Contains(t, response.Body.String(), "Example.mkv")
 	require.NotContains(t, response.Body.String(), "private-token")
 	require.Equal(t, "private-token", service.discoverToken)
+	require.Equal(t, "session-value", service.authorizeSession)
+	require.Equal(t, "bootstrap-value", service.authorizeBootstrap)
+	require.Len(t, response.Header().Get("X-BlackPearl-Session"), 64)
+	require.Empty(t, response.Header().Get("Set-Cookie"))
 
 	badOrigin := httptest.NewRequest(http.MethodPost, "http://localhost:8082/api/setup/discover", bytes.NewBufferString(`{}`))
 	badOrigin.Host = "localhost:8082"
@@ -100,12 +106,15 @@ func TestHandlerNeverEchoesTokenOnProviderFailure(t *testing.T) {
 }
 
 type fakeService struct {
-	status        setupservice.Status
-	items         []domain.MediaCandidate
-	discoverToken string
-	discoverErr   error
-	selected      domain.SetupConfiguration
-	applyErr      error
+	status             setupservice.Status
+	items              []domain.MediaCandidate
+	discoverToken      string
+	discoverErr        error
+	selected           domain.SetupConfiguration
+	applyErr           error
+	authorizeErr       error
+	authorizeSession   string
+	authorizeBootstrap string
 }
 
 func (f *fakeService) Status() setupservice.Status { return f.status }
@@ -115,6 +124,14 @@ func (f *fakeService) Discover(_ context.Context, token string) ([]domain.MediaC
 }
 func (f *fakeService) Apply(context.Context, setupservice.ApplyRequest) (domain.SetupConfiguration, error) {
 	return f.selected, f.applyErr
+}
+func (f *fakeService) AuthorizeSetup(_ context.Context, _ string, session string, bootstrap string) error {
+	f.authorizeSession = session
+	f.authorizeBootstrap = bootstrap
+	return f.authorizeErr
+}
+func (*fakeService) IssueSession(context.Context, string) (string, error) {
+	return "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", nil
 }
 
 func fetchCSRF(t *testing.T, handler http.Handler) string {

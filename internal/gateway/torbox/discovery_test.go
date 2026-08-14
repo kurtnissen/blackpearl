@@ -87,3 +87,15 @@ func TestGatewayDiscoverHonorsCancellation(t *testing.T) {
 
 	require.ErrorIs(t, err, context.Canceled)
 }
+
+func TestGatewayDiscoverPreservesProviderAuthenticationFailure(t *testing.T) {
+	t.Parallel()
+	api := newTestAPI(t, func(writer http.ResponseWriter, _ *http.Request) {
+		http.Error(writer, "denied", http.StatusUnauthorized)
+	})
+	gateway := newTestGateway(t, api.URL+"/v1/api/", api.Client())
+
+	_, err := gateway.Discover(context.Background())
+
+	require.ErrorIs(t, err, domain.ErrUnauthorized)
+}

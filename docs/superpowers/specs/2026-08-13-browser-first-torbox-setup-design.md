@@ -8,7 +8,7 @@ The existing persistent-cache POC, HTTP rolling-cache POC, range-oriented `ReadA
 
 ## User Journey
 
-1. Run `docker compose -f compose.torbox.yaml up -d --build`.
+1. Run `./scripts/torbox-stack.sh start`.
 2. Open `http://localhost:8082`.
 3. Paste a TorBox API token and select **Find my videos**.
 4. Choose one eligible MP4 or MKV. The title and optional year are prefilled from its filename and may be edited.
@@ -23,8 +23,9 @@ The BlackPearl process owns four collaborating units:
 
 - A control-plane HTTP server serves diagnostics, a static Next.js application, and same-origin setup APIs.
 - A setup service validates credentials, discovers eligible account files, builds a candidate rolling runtime, persists configuration, and atomically activates it.
-- A catalog switch implements the existing catalog interface. Before setup it lists no media. After activation it delegates reads and readiness to the active range-backed catalog.
-- PearlNFS consumes the switch. Its reload operation builds a complete new namespace snapshot off-lock and swaps it under a mutex. Existing open handles keep their original source while new lookups see the selected file.
+- A catalog switch implements readiness for the existing catalog interface. Before setup it lists no media. After publication it delegates readiness to the active range-backed catalog.
+- PearlNFS publishes the namespace and its exact catalog as one snapshot. NFS file handles are pinned to the generation that issued them, so existing handles retain their source while new lookups see the replacement.
+- One process-lifetime rolling pool owns recovery, quota accounting, eviction, and chunk coordination across every browser-selected provider runtime.
 
 The data plane remains unchanged:
 
@@ -42,7 +43,7 @@ No component assumes that the complete media file exists locally. The configured
 ## Layer Boundaries
 
 - `internal/handler/setup`: HTTP parsing, security middleware, status mapping, and static UI delivery. It calls only the setup service.
-- `internal/service/setup`: discovery and apply orchestration. It depends on repository, gateway factory, runtime factory, and catalog reloader interfaces.
+- `internal/service/setup`: discovery and apply orchestration. It depends on repository, gateway factory, runtime factory, and atomic runtime publisher interfaces.
 - `internal/repository/setup`: atomic storage of the token and non-secret selection metadata.
 - `internal/gateway/torbox`: TorBox API mapping and normalization, including media discovery.
 - `internal/domain`: setup configuration and media candidate value objects with no internal-package dependencies.
@@ -52,7 +53,7 @@ The initial implementation keeps the existing `net/http` diagnostics surface to 
 
 ## Setup API
 
-All responses use JSON, `Cache-Control: no-store`, `Referrer-Policy: no-referrer`, `X-Content-Type-Options: nosniff`, and a restrictive Content Security Policy. Mutation requests must use a loopback `Host`, a matching loopback `Origin`, and an `X-BlackPearl-CSRF` value obtained from `GET /api/setup/status`.
+All responses use JSON, `Cache-Control: no-store`, `Referrer-Policy: no-referrer`, `X-Content-Type-Options: nosniff`, and a restrictive Content Security Policy. Mutation requests must use a loopback `Host`, a matching loopback `Origin`, and an `X-BlackPearl-CSRF` value obtained from `GET /api/setup/status`. First setup also requires a host-generated pairing value carried in the setup URL fragment and then in `X-BlackPearl-Bootstrap`. Successful mutations return `X-BlackPearl-Session`, derived from the saved high-entropy token and retained only in the setup origin's `sessionStorage`. Cookies are not used because localhost cookies would also be sent to Plex on its different port. Re-entering the exact saved TorBox token can recover a lost browser session.
 
 - `GET /api/setup/status`
   - Returns `setupRequired`, `tokenConfigured`, a per-process CSRF value, and selected media metadata.
@@ -84,8 +85,9 @@ Candidates are sorted case-insensitively by display name. Discovery does not req
 Setup data lives beneath `/var/lib/blackpearl/setup`, which is part of the existing named data volume:
 
 - directory mode `0700`;
-- `torbox.token` mode `0600`, containing exactly one token without surrounding whitespace;
-- `configuration.json` mode `0600`, containing only selection metadata.
+- `generations/<id>/torbox.token` mode `0600`, containing exactly one token without surrounding whitespace;
+- `generations/<id>/configuration.json` mode `0600`, containing only selection metadata; and
+- an atomically replaced `current` pointer that makes the token and configuration visible only as a complete pair.
 
 Writes use a same-directory temporary file, explicit mode, file sync, rename, and directory sync. No secret is stored in the repository, browser storage, Compose environment, logs, traces, SQLite, or API responses. The React component retains a newly typed token only in memory and clears it after a successful apply.
 
@@ -101,10 +103,10 @@ Applying a configuration follows prepare-commit-activate ordering:
 2. construct and probe the range provider and rolling source;
 3. register the logical file in the catalog;
 4. write token and configuration atomically;
-5. activate the new catalog and reload NFS;
+5. atomically publish the new NFS namespace and its catalog snapshot;
 6. close superseded runtime resources after the swap.
 
-If any step before activation fails, the old runtime remains active. If NFS reload fails, activation is rolled back and the API reports failure.
+If any step before activation fails, the old runtime remains active. If NFS publication fails, the committed setup pointer is restored and the API reports failure.
 
 ## Web Interface
 
@@ -114,7 +116,7 @@ The interface has explicit states for first setup, validating, choosing media, a
 
 ## Compose and Portability
 
-`compose.torbox.yaml` remains a standard Docker Compose stack using the existing NFS named-volume bridge. It publishes BlackPearl setup/diagnostics only as `127.0.0.1:8082` and Plex only as `127.0.0.1:32402`. The setup volume is the existing `blackpearl-data` named volume. No Linux host bind propagation, FUSE device, privileged mode, custom Plex client, or host command containing the API token is required.
+`compose.torbox.yaml` remains a standard Docker Compose stack using the existing NFS named-volume bridge. It publishes BlackPearl setup/diagnostics only as `127.0.0.1:8082` and Plex only as `127.0.0.1:32402`. BlackPearl and Plex use disjoint Docker networks, preventing direct service-name access. Because Docker Desktop can proxy a loopback-published host port through `host.docker.internal`, the launcher-generated pairing value and setup-origin session header provide the caller boundary described above. The setup volume is the existing `blackpearl-data` named volume. No Linux host bind propagation, FUSE device, privileged mode, custom Plex client, or host command containing the TorBox API token is required.
 
 This target applies equally to Docker Desktop on macOS and Windows and native Linux Docker. The existing NFS experiment already established the portable sibling-container mount approach; the new acceptance test must confirm the configured logical file is visible through the volume and supports non-sequential reads.
 

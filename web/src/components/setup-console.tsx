@@ -7,16 +7,21 @@ import {
   getStatus,
   SetupAPIError,
   type MediaCandidate,
+  type SetupAuthorization,
   type SetupConfiguration,
 } from "../lib/api";
 
 type Phase = "loading" | "credentials" | "select" | "ready";
+const setupSessionStorageKey = "blackpearl.setup.session";
+const setupBootstrapStorageKey = "blackpearl.setup.bootstrap";
 
 export function SetupConsole(): React.JSX.Element {
   const [phase, setPhase] = useState<Phase>("loading");
   const [csrf, setCSRF] = useState("");
   const [tokenConfigured, setTokenConfigured] = useState(false);
   const [token, setToken] = useState("");
+  const [session, setSession] = useState("");
+  const [bootstrap, setBootstrap] = useState("");
   const [candidates, setCandidates] = useState<MediaCandidate[]>([]);
   const [selectedID, setSelectedID] = useState("");
   const [title, setTitle] = useState("");
@@ -29,12 +34,17 @@ export function SetupConsole(): React.JSX.Element {
     () => candidates.find((candidate) => candidate.objectId === selectedID),
     [candidates, selectedID],
   );
+  const authorization: SetupAuthorization = { session, bootstrap };
+  const canUseSavedToken = tokenConfigured && (session !== "" || bootstrap !== "");
 
   useEffect(() => {
     let active = true;
+    const storedAuthorization = loadBrowserAuthorization();
     getStatus()
       .then((status) => {
         if (!active) return;
+        setSession(storedAuthorization.session ?? "");
+        setBootstrap(storedAuthorization.bootstrap ?? "");
         setCSRF(status.csrfToken);
         setTokenConfigured(status.tokenConfigured);
         if (!status.setupRequired && status.selected) {
@@ -43,11 +53,15 @@ export function SetupConsole(): React.JSX.Element {
           setMessage("BlackPearl is ready for Plex.");
         } else {
           setPhase("credentials");
-          setMessage("Enter your TorBox token to find ready videos.");
+          setMessage(status.tokenConfigured && !storedAuthorization.session && !storedAuthorization.bootstrap
+            ? "Re-enter your saved TorBox token to authorize this browser."
+            : "Enter your TorBox token to find ready videos.");
         }
       })
       .catch((error: unknown) => {
         if (!active) return;
+        setSession(storedAuthorization.session ?? "");
+        setBootstrap(storedAuthorization.bootstrap ?? "");
         setPhase("credentials");
         setMessage(publicMessage(error));
       });
@@ -58,15 +72,17 @@ export function SetupConsole(): React.JSX.Element {
     setPending(true);
     setMessage("Reading your completed TorBox files…");
     try {
-      const items = await discoverMedia(useSavedToken ? "" : token, csrf);
-      setCandidates(items);
+      const result = await discoverMedia(useSavedToken ? "" : token, csrf, authorization);
+      storeSession(result.session);
+      setSession(result.session);
+      setCandidates(result.candidates);
       setSelectedID("");
-      if (items.length === 0) {
+      if (result.candidates.length === 0) {
         setMessage("No ready MP4 or MKV files found");
         return;
       }
       setPhase("select");
-      setMessage(`${items.length} ready ${items.length === 1 ? "video" : "videos"} found.`);
+      setMessage(`${result.candidates.length} ready ${result.candidates.length === 1 ? "video" : "videos"} found.`);
     } catch (error: unknown) {
       setMessage(publicMessage(error));
     } finally {
@@ -85,15 +101,17 @@ export function SetupConsole(): React.JSX.Element {
     setPending(true);
     setMessage("Preparing the rolling stream for Plex…");
     try {
-      const configuration = await applyConfiguration({
+      const result = await applyConfiguration({
         token: token === "" ? undefined : token,
         objectId: selectedCandidate.objectId,
         title,
         year,
-      }, csrf);
+      }, csrf, authorization);
+      storeSession(result.session);
+      setSession(result.session);
       setToken("");
       setTokenConfigured(true);
-      setSelected(configuration);
+      setSelected(result.selected);
       setPhase("ready");
       setMessage("BlackPearl is ready for Plex.");
     } catch (error: unknown) {
@@ -143,7 +161,7 @@ export function SetupConsole(): React.JSX.Element {
             />
             <div className="actions">
               <button className="primary" type="submit" disabled={pending || (!tokenConfigured && token.length === 0)}>Find my videos</button>
-              {tokenConfigured && <button type="button" onClick={() => void findVideos(true)} disabled={pending}>Use saved token</button>}
+              {canUseSavedToken && <button type="button" onClick={() => void findVideos(true)} disabled={pending}>Use saved token</button>}
             </div>
           </form>
         )}
@@ -164,7 +182,7 @@ export function SetupConsole(): React.JSX.Element {
             </fieldset>
             {selectedCandidate && (
               <div className="plex-fields">
-                <label>Plex title<input value={title} onChange={(event) => setTitle(event.target.value)} /></label>
+                <label>Plex title<input value={title} maxLength={200} onChange={(event) => setTitle(event.target.value)} /></label>
                 <label>Year<input type="number" min="1888" max="2100" value={year} onChange={(event) => setYear(event.target.valueAsNumber)} /></label>
               </div>
             )}
@@ -187,7 +205,9 @@ export function SetupConsole(): React.JSX.Element {
             </dl>
             <div className="actions">
               <a className="primary button-link" href="http://localhost:32402/web" target="_blank" rel="noreferrer">Open Plex</a>
-              <button type="button" onClick={() => void findVideos(true)} disabled={pending}>Change video</button>
+              {canUseSavedToken
+                ? <button type="button" onClick={() => void findVideos(true)} disabled={pending}>Change video</button>
+                : <button type="button" onClick={() => { setToken(""); setPhase("credentials"); setMessage("Re-enter your saved TorBox token to authorize this browser."); }}>Change video</button>}
               <button type="button" onClick={() => { setToken(""); setPhase("credentials"); setMessage("Enter a replacement TorBox token."); }}>Replace token</button>
             </div>
           </div>
@@ -197,6 +217,29 @@ export function SetupConsole(): React.JSX.Element {
       <footer><span>LOCALHOST ONLY</span><span>NO COMPLETE FILE REQUIRED</span><span>DIRECT PLAY TARGET</span></footer>
     </main>
   );
+}
+
+function loadBrowserAuthorization(): SetupAuthorization {
+  const session = validSetupSecret(window.sessionStorage.getItem(setupSessionStorageKey));
+  let bootstrap = validSetupSecret(window.sessionStorage.getItem(setupBootstrapStorageKey));
+  const fragment = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+  const fragmentBootstrap = validSetupSecret(fragment.get("bootstrap"));
+  if (fragmentBootstrap) {
+    bootstrap = fragmentBootstrap;
+    window.sessionStorage.setItem(setupBootstrapStorageKey, fragmentBootstrap);
+  }
+  if (window.location.hash !== "") {
+    window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
+  }
+  return { session, bootstrap };
+}
+
+function storeSession(session: string): void {
+  window.sessionStorage.setItem(setupSessionStorageKey, session);
+}
+
+function validSetupSecret(value: string | null): string | undefined {
+  return value !== null && /^[0-9a-f]{64}$/.test(value) ? value : undefined;
 }
 
 function publicMessage(error: unknown): string {

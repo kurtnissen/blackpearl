@@ -44,6 +44,29 @@ func TestParseAcceptsNFSFilesystemMode(t *testing.T) {
 	require.Equal(t, "0.0.0.0:2049", cfg.NFSAddr)
 }
 
+func TestParseRequiresPrivateBootstrapWhenBrowserSetupEnabled(t *testing.T) {
+	t.Parallel()
+	base := map[string]string{
+		"BLACKPEARL_STORAGE_MODE":    "rolling",
+		"BLACKPEARL_CACHE_MAX_BYTES": "42949672960",
+		"BLACKPEARL_RANGE_PROVIDER":  "torbox-torrent",
+		"BLACKPEARL_FILESYSTEM_MODE": "nfs",
+	}
+
+	for _, bootstrap := range []string{"", "short", "ABCDEF0123456789abcdef0123456789abcdef0123456789abcdef0123456789"} {
+		environment := make(map[string]string, len(base)+2)
+		for key, value := range base {
+			environment[key] = value
+		}
+		environment["BLACKPEARL_SETUP_ENABLED"] = "true"
+		environment["BLACKPEARL_SETUP_BOOTSTRAP_TOKEN"] = bootstrap
+
+		_, err := config.Parse(environment)
+
+		require.ErrorContains(t, err, "SETUP_BOOTSTRAP_TOKEN")
+	}
+}
+
 func TestParseRejectsInvalidFilesystemConfiguration(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -136,12 +159,13 @@ func TestParseAcceptsBrowserSetupModeWithoutCredentialOrSelection(t *testing.T) 
 	t.Parallel()
 
 	cfg, err := config.Parse(map[string]string{
-		"BLACKPEARL_STORAGE_MODE":    "rolling",
-		"BLACKPEARL_CACHE_MAX_BYTES": "1048576",
-		"BLACKPEARL_RANGE_PROVIDER":  "torbox-torrent",
-		"BLACKPEARL_SETUP_ENABLED":   "true",
-		"BLACKPEARL_SETUP_DIR":       "/private/setup",
-		"BLACKPEARL_FILESYSTEM_MODE": "nfs",
+		"BLACKPEARL_STORAGE_MODE":          "rolling",
+		"BLACKPEARL_CACHE_MAX_BYTES":       "1048576",
+		"BLACKPEARL_RANGE_PROVIDER":        "torbox-torrent",
+		"BLACKPEARL_SETUP_ENABLED":         "true",
+		"BLACKPEARL_SETUP_DIR":             "/private/setup",
+		"BLACKPEARL_SETUP_BOOTSTRAP_TOKEN": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		"BLACKPEARL_FILESYSTEM_MODE":       "nfs",
 	})
 
 	require.NoError(t, err)
@@ -154,11 +178,12 @@ func TestParseAcceptsBrowserSetupModeWithoutCredentialOrSelection(t *testing.T) 
 func TestParseRejectsBrowserSetupOutsideRollingTorBoxNFS(t *testing.T) {
 	t.Parallel()
 	base := map[string]string{
-		"BLACKPEARL_STORAGE_MODE":    "rolling",
-		"BLACKPEARL_CACHE_MAX_BYTES": "1048576",
-		"BLACKPEARL_RANGE_PROVIDER":  "torbox-torrent",
-		"BLACKPEARL_SETUP_ENABLED":   "true",
-		"BLACKPEARL_FILESYSTEM_MODE": "nfs",
+		"BLACKPEARL_STORAGE_MODE":          "rolling",
+		"BLACKPEARL_CACHE_MAX_BYTES":       "1048576",
+		"BLACKPEARL_RANGE_PROVIDER":        "torbox-torrent",
+		"BLACKPEARL_SETUP_ENABLED":         "true",
+		"BLACKPEARL_FILESYSTEM_MODE":       "nfs",
+		"BLACKPEARL_SETUP_BOOTSTRAP_TOKEN": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 	}
 	tests := []struct{ name, key, value string }{
 		{name: "persistent", key: "BLACKPEARL_STORAGE_MODE", value: "persistent"},

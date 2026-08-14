@@ -57,9 +57,19 @@ type Stats struct {
 // RollingSource stores independently addressable remote object chunks under a
 // hard byte quota.
 type RollingSource struct {
+	shared *rollingShared
+	opener RangeOpener
+}
+
+// RollingPool owns one rolling-cache quota and chunk index shared by all
+// provider runtimes created during browser reconfiguration.
+type RollingPool struct {
+	shared *rollingShared
+}
+
+type rollingShared struct {
 	lifecycle context.Context
 	options   RollingOptions
-	opener    RangeOpener
 	root      string
 
 	mu        sync.Mutex
@@ -95,8 +105,18 @@ type fetchCall struct {
 
 // NewRolling creates a rolling cache rooted at an explicit absolute path.
 func NewRolling(ctx context.Context, options RollingOptions, opener RangeOpener) (*RollingSource, error) {
+	pool, err := NewRollingPool(ctx, options)
+	if err != nil {
+		return nil, err
+	}
+	return pool.Source(opener)
+}
+
+// NewRollingPool creates one process-lifetime cache owner that can serve
+// multiple immutable provider runtimes without duplicating quota accounting.
+func NewRollingPool(ctx context.Context, options RollingOptions) (*RollingPool, error) {
 	if err := ctx.Err(); err != nil {
-		return nil, fmt.Errorf("create rolling cache: %w", err)
+		return nil, fmt.Errorf("create rolling cache pool: %w", err)
 	}
 	if !filepath.IsAbs(options.Root) {
 		return nil, fmt.Errorf("rolling cache root must be absolute: %q", options.Root)
@@ -110,26 +130,34 @@ func NewRolling(ctx context.Context, options RollingOptions, opener RangeOpener)
 	if options.FetchTimeout <= 0 {
 		return nil, errors.New("rolling cache fetch timeout must be positive")
 	}
-	if opener == nil {
-		return nil, errors.New("rolling cache range opener is required")
-	}
 	root := filepath.Join(options.Root, rollingDirectory)
 	if err := os.MkdirAll(root, 0o750); err != nil {
 		return nil, fmt.Errorf("create rolling cache root: %w", err)
 	}
-	result := &RollingSource{
+	shared := &rollingShared{
 		lifecycle: ctx,
 		options:   options,
-		opener:    opener,
 		root:      root,
 		chunks:    make(map[chunkKey]*chunkEntry),
 		inflight:  make(map[chunkKey]*fetchCall),
 		notify:    make(chan struct{}),
 	}
-	if err := result.recoverChunks(); err != nil {
+	pool := &RollingPool{shared: shared}
+	if err := pool.recoverChunks(); err != nil {
 		return nil, err
 	}
-	return result, nil
+	return pool, nil
+}
+
+// Source binds an immutable provider gateway to the shared rolling cache.
+func (p *RollingPool) Source(opener RangeOpener) (*RollingSource, error) {
+	if p == nil || p.shared == nil {
+		return nil, errors.New("rolling cache pool is required")
+	}
+	if opener == nil {
+		return nil, errors.New("rolling cache range opener is required")
+	}
+	return &RollingSource{shared: p.shared, opener: opener}, nil
 }
 
 // Open creates a logical read handle without downloading the complete object.
@@ -156,12 +184,12 @@ func (s *RollingSource) Ready(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("check rolling cache readiness: %w", err)
 	}
-	info, err := os.Stat(s.root)
+	info, err := os.Stat(s.shared.root)
 	if err != nil {
 		return fmt.Errorf("stat rolling cache root: %w", err)
 	}
 	if !info.IsDir() {
-		return fmt.Errorf("rolling cache root is not a directory: %s", s.root)
+		return fmt.Errorf("rolling cache root is not a directory: %s", s.shared.root)
 	}
 	if err := s.opener.Ready(ctx); err != nil {
 		return fmt.Errorf("range opener is not ready: %w", err)
@@ -171,17 +199,17 @@ func (s *RollingSource) Ready(ctx context.Context) error {
 
 // Stats returns current quota accounting and cache counters.
 func (s *RollingSource) Stats() Stats {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.shared.mu.Lock()
+	defer s.shared.mu.Unlock()
 	return Stats{
-		CurrentBytes:   s.current,
-		ReservedBytes:  s.reserved,
-		HighWaterBytes: s.highWater,
-		ChunkCount:     int64(len(s.chunks)),
-		Hits:           s.hits,
-		Misses:         s.misses,
-		Fetches:        s.fetches,
-		Evictions:      s.evictions,
+		CurrentBytes:   s.shared.current,
+		ReservedBytes:  s.shared.reserved,
+		HighWaterBytes: s.shared.highWater,
+		ChunkCount:     int64(len(s.shared.chunks)),
+		Hits:           s.shared.hits,
+		Misses:         s.shared.misses,
+		Fetches:        s.shared.fetches,
+		Evictions:      s.shared.evictions,
 	}
 }
 
@@ -224,8 +252,8 @@ func (h *rollingHandle) ReadAt(ctx context.Context, destination []byte, offset i
 	written := 0
 	for int64(written) < wanted {
 		logicalOffset := offset + int64(written)
-		chunkIndex := logicalOffset / h.owner.options.ChunkBytes
-		withinChunk := logicalOffset % h.owner.options.ChunkBytes
+		chunkIndex := logicalOffset / h.owner.shared.options.ChunkBytes
+		withinChunk := logicalOffset % h.owner.shared.options.ChunkBytes
 		chunkLength := h.owner.chunkLength(h.media.Size, chunkIndex)
 		copyLength := chunkLength - withinChunk
 		if remaining := wanted - int64(written); copyLength > remaining {
@@ -269,18 +297,18 @@ func (s *RollingSource) acquireChunk(
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		s.mu.Lock()
-		if entry, ok := s.chunks[key]; ok {
-			s.tick++
-			entry.lastAccess = s.tick
+		s.shared.mu.Lock()
+		if entry, ok := s.shared.chunks[key]; ok {
+			s.shared.tick++
+			entry.lastAccess = s.shared.tick
 			entry.pins++
-			s.hits++
-			s.mu.Unlock()
+			s.shared.hits++
+			s.shared.mu.Unlock()
 			return entry, nil
 		}
-		if call, ok := s.inflight[key]; ok {
+		if call, ok := s.shared.inflight[key]; ok {
 			done := call.done
-			s.mu.Unlock()
+			s.shared.mu.Unlock()
 			select {
 			case <-ctx.Done():
 				return nil, ctx.Err()
@@ -293,12 +321,12 @@ func (s *RollingSource) acquireChunk(
 		}
 		reserved, err := s.tryReserveLocked(expected)
 		if err != nil {
-			s.mu.Unlock()
+			s.shared.mu.Unlock()
 			return nil, err
 		}
 		if !reserved {
-			notify := s.notify
-			s.mu.Unlock()
+			notify := s.shared.notify
+			s.shared.mu.Unlock()
 			select {
 			case <-ctx.Done():
 				return nil, ctx.Err()
@@ -307,10 +335,10 @@ func (s *RollingSource) acquireChunk(
 			}
 		}
 		call := &fetchCall{done: make(chan struct{})}
-		s.inflight[key] = call
-		s.misses++
-		s.mu.Unlock()
-		go s.runFetch(call, key, backing, validator, logicalSize, index*s.options.ChunkBytes, expected)
+		s.shared.inflight[key] = call
+		s.shared.misses++
+		s.shared.mu.Unlock()
+		go s.runFetch(call, key, backing, validator, logicalSize, index*s.shared.options.ChunkBytes, expected)
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
@@ -323,7 +351,7 @@ func (s *RollingSource) acquireChunk(
 }
 
 func (s *RollingSource) tryReserveLocked(expected int64) (bool, error) {
-	for s.current+s.reserved+expected > s.options.MaxBytes {
+	for s.shared.current+s.shared.reserved+expected > s.shared.options.MaxBytes {
 		key, entry, found := s.oldestUnpinnedLocked()
 		if !found {
 			return false, nil
@@ -331,13 +359,13 @@ func (s *RollingSource) tryReserveLocked(expected int64) (bool, error) {
 		if err := os.Remove(entry.path); err != nil {
 			return false, fmt.Errorf("evict rolling chunk: %w", err)
 		}
-		delete(s.chunks, key)
-		s.current -= entry.size
-		s.evictions++
+		delete(s.shared.chunks, key)
+		s.shared.current -= entry.size
+		s.shared.evictions++
 	}
-	s.reserved += expected
-	if usage := s.current + s.reserved; usage > s.highWater {
-		s.highWater = usage
+	s.shared.reserved += expected
+	if usage := s.shared.current + s.shared.reserved; usage > s.shared.highWater {
+		s.shared.highWater = usage
 	}
 	return true, nil
 }
@@ -345,7 +373,7 @@ func (s *RollingSource) tryReserveLocked(expected int64) (bool, error) {
 func (s *RollingSource) oldestUnpinnedLocked() (chunkKey, *chunkEntry, bool) {
 	var selectedKey chunkKey
 	var selected *chunkEntry
-	for key, entry := range s.chunks {
+	for key, entry := range s.shared.chunks {
 		if entry.pins != 0 {
 			continue
 		}
@@ -366,7 +394,7 @@ func (s *RollingSource) runFetch(
 	offset int64,
 	expected int64,
 ) {
-	fetchContext, cancel := context.WithTimeout(s.lifecycle, s.options.FetchTimeout)
+	fetchContext, cancel := context.WithTimeout(s.shared.lifecycle, s.shared.options.FetchTimeout)
 	defer cancel()
 	remote, err := s.opener.Open(fetchContext, backing)
 	if err == nil && remote.Size() != logicalSize {
@@ -384,18 +412,18 @@ func (s *RollingSource) runFetch(
 			err = errors.Join(err, fmt.Errorf("close remote range source: %w", closeErr))
 		}
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.reserved -= expected
+	s.shared.mu.Lock()
+	defer s.shared.mu.Unlock()
+	s.shared.reserved -= expected
 	if entry != nil {
-		s.current += expected
-		s.fetches++
-		s.tick++
-		entry.lastAccess = s.tick
-		s.chunks[key] = entry
+		s.shared.current += expected
+		s.shared.fetches++
+		s.shared.tick++
+		entry.lastAccess = s.shared.tick
+		s.shared.chunks[key] = entry
 	}
 	call.err = err
-	delete(s.inflight, key)
+	delete(s.shared.inflight, key)
 	close(call.done)
 	s.signalLocked()
 }
@@ -407,7 +435,7 @@ func (s *RollingSource) fetchChunk(
 	offset int64,
 	expected int64,
 ) (_ *chunkEntry, fetchErr error) {
-	objectDirectory := filepath.Join(s.root, key.object)
+	objectDirectory := filepath.Join(s.shared.root, key.object)
 	if err := os.MkdirAll(objectDirectory, 0o750); err != nil {
 		return nil, fmt.Errorf("create rolling object directory: %w", err)
 	}
@@ -465,15 +493,15 @@ func (s *RollingSource) fetchChunk(
 }
 
 func (s *RollingSource) releaseChunk(entry *chunkEntry) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.shared.mu.Lock()
+	defer s.shared.mu.Unlock()
 	entry.pins--
 	s.signalLocked()
 }
 
 func (s *RollingSource) signalLocked() {
-	close(s.notify)
-	s.notify = make(chan struct{})
+	close(s.shared.notify)
+	s.shared.notify = make(chan struct{})
 }
 
 type recoveredChunk struct {
@@ -482,8 +510,8 @@ type recoveredChunk struct {
 	modified time.Time
 }
 
-func (s *RollingSource) recoverChunks() error {
-	objectDirectories, err := os.ReadDir(s.root)
+func (p *RollingPool) recoverChunks() error {
+	objectDirectories, err := os.ReadDir(p.shared.root)
 	if err != nil {
 		return fmt.Errorf("read rolling cache root: %w", err)
 	}
@@ -492,7 +520,7 @@ func (s *RollingSource) recoverChunks() error {
 		if !objectDirectory.IsDir() || !rollingObjectPattern.MatchString(objectDirectory.Name()) {
 			return fmt.Errorf("unexpected entry in rolling cache root: %q", objectDirectory.Name())
 		}
-		objectPath := filepath.Join(s.root, objectDirectory.Name())
+		objectPath := filepath.Join(p.shared.root, objectDirectory.Name())
 		entries, readErr := os.ReadDir(objectPath)
 		if readErr != nil {
 			return fmt.Errorf("read rolling object directory: %w", readErr)
@@ -517,7 +545,7 @@ func (s *RollingSource) recoverChunks() error {
 			if infoErr != nil {
 				return fmt.Errorf("stat rolling chunk: %w", infoErr)
 			}
-			if !info.Mode().IsRegular() || info.Size() <= 0 || info.Size() > s.options.ChunkBytes {
+			if !info.Mode().IsRegular() || info.Size() <= 0 || info.Size() > p.shared.options.ChunkBytes {
 				return fmt.Errorf("invalid rolling chunk %q with size %d", entry.Name(), info.Size())
 			}
 			recovered = append(recovered, recoveredChunk{
@@ -534,34 +562,49 @@ func (s *RollingSource) recoverChunks() error {
 		return recovered[left].modified.Before(recovered[right].modified)
 	})
 	for _, item := range recovered {
-		s.tick++
-		item.entry.lastAccess = s.tick
-		s.chunks[item.key] = item.entry
-		s.current += item.entry.size
+		p.shared.tick++
+		item.entry.lastAccess = p.shared.tick
+		p.shared.chunks[item.key] = item.entry
+		p.shared.current += item.entry.size
 	}
-	for s.current > s.options.MaxBytes {
-		key, entry, found := s.oldestUnpinnedLocked()
+	for p.shared.current > p.shared.options.MaxBytes {
+		key, entry, found := p.oldestUnpinnedLocked()
 		if !found {
 			return errors.New("rolling cache recovery could not trim quota")
 		}
 		if err := os.Remove(entry.path); err != nil {
 			return fmt.Errorf("trim recovered rolling chunk: %w", err)
 		}
-		delete(s.chunks, key)
-		s.current -= entry.size
-		s.evictions++
+		delete(p.shared.chunks, key)
+		p.shared.current -= entry.size
+		p.shared.evictions++
 	}
-	s.highWater = s.current
+	p.shared.highWater = p.shared.current
 	return nil
 }
 
+func (p *RollingPool) oldestUnpinnedLocked() (chunkKey, *chunkEntry, bool) {
+	var selectedKey chunkKey
+	var selected *chunkEntry
+	for key, entry := range p.shared.chunks {
+		if entry.pins != 0 {
+			continue
+		}
+		if selected == nil || entry.lastAccess < selected.lastAccess {
+			selectedKey = key
+			selected = entry
+		}
+	}
+	return selectedKey, selected, selected != nil
+}
+
 func (s *RollingSource) chunkLength(logicalSize int64, index int64) int64 {
-	start := index * s.options.ChunkBytes
+	start := index * s.shared.options.ChunkBytes
 	remaining := logicalSize - start
-	if remaining < s.options.ChunkBytes {
+	if remaining < s.shared.options.ChunkBytes {
 		return remaining
 	}
-	return s.options.ChunkBytes
+	return s.shared.options.ChunkBytes
 }
 
 func readChunk(path string, destination []byte, offset int64) (count int, readErr error) {

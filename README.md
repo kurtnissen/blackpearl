@@ -89,11 +89,10 @@ TorBox can replace the synthetic HTTP origin while retaining the same rolling
 cache and filesystem path. Start the isolated browser-first profile:
 
 ```bash
-docker compose -f compose.torbox.yaml up -d --build --wait
-open http://localhost:8082
+./scripts/torbox-stack.sh start
 ```
 
-Paste a TorBox token, choose one completed MP4 or MKV, then open Plex at
+The launcher opens a locally paired setup page. Paste a TorBox token, choose one completed MP4 or MKV, then open Plex at
 `http://localhost:32402/web` and add a Movies library rooted at
 `/blackpearl/Movies`. The token is stored with private permissions only inside
 the named BlackPearl data volume. It is never returned to the browser after

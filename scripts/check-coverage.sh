@@ -9,7 +9,15 @@ if [[ ! -f "${profile}" ]]; then
   exit 1
 fi
 
-total="$(go tool cover -func="${profile}" | awk '/^total:/ {gsub(/%/, "", $3); print $3}')"
+filtered_profile="$(mktemp "${TMPDIR:-/tmp}/blackpearl-coverage.XXXXXX")"
+trap 'rm -f "${filtered_profile}"' EXIT
+
+# Bun dependencies can contain unrelated Go source. The Go package wildcard
+# discovers that generated dependency tree after `bun install`, but the
+# BlackPearl coverage floor applies only to this repository's Go code.
+awk 'NR == 1 || $0 !~ /\/web\/node_modules\//' "${profile}" >"${filtered_profile}"
+
+total="$(go tool cover -func="${filtered_profile}" | awk '/^total:/ {gsub(/%/, "", $3); print $3}')"
 if [[ -z "${total}" ]]; then
   printf 'Could not read total coverage from %s\n' "${profile}" >&2
   exit 1

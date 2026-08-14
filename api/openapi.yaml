@@ -18,8 +18,11 @@ paths:
   /api/setup/discover:
     post:
       operationId: discoverMedia
+      description: First setup requires the launcher-provided bootstrap header and an explicit token. Reusing a saved token requires the setup-origin session header, bootstrap header, or exact token re-entry.
       parameters:
         - $ref: "#/components/parameters/CSRF"
+        - $ref: "#/components/parameters/Session"
+        - $ref: "#/components/parameters/Bootstrap"
       requestBody:
         required: true
         content:
@@ -32,6 +35,9 @@ paths:
       responses:
         "200":
           description: Eligible completed account videos.
+          headers:
+            X-BlackPearl-Session:
+              $ref: "#/components/headers/Session"
           content:
             application/json:
               schema:
@@ -44,8 +50,11 @@ paths:
   /api/setup/configuration:
     put:
       operationId: applySetupConfiguration
+      description: First setup requires the launcher-provided bootstrap header and an explicit token. Reconfiguration requires a setup-origin session, bootstrap header, or exact token re-entry.
       parameters:
         - $ref: "#/components/parameters/CSRF"
+        - $ref: "#/components/parameters/Session"
+        - $ref: "#/components/parameters/Bootstrap"
       requestBody:
         required: true
         content:
@@ -57,11 +66,14 @@ paths:
               properties:
                 token: { type: string, minLength: 1, maxLength: 4096, writeOnly: true }
                 objectId: { type: string, pattern: "^[1-9][0-9]*:[1-9][0-9]*$" }
-                title: { type: string, minLength: 1, maxLength: 200 }
+                title: { type: string, minLength: 1, maxLength: 200, description: Maximum 200 UTF-8 bytes. }
                 year: { type: integer, minimum: 1888, maximum: 2100 }
       responses:
         "200":
           description: Activated public selection.
+          headers:
+            X-BlackPearl-Session:
+              $ref: "#/components/headers/Session"
           content:
             application/json:
               schema:
@@ -79,6 +91,23 @@ components:
       name: X-BlackPearl-CSRF
       required: true
       schema: { type: string, minLength: 64, maxLength: 64 }
+    Session:
+      in: header
+      name: X-BlackPearl-Session
+      required: false
+      description: Setup-origin browser authorization. It is never sent to Plex.
+      schema: { type: string, pattern: "^[0-9a-f]{64}$" }
+    Bootstrap:
+      in: header
+      name: X-BlackPearl-Bootstrap
+      required: false
+      description: Host-generated first-run pairing value carried in the setup URL fragment.
+      schema: { type: string, pattern: "^[0-9a-f]{64}$" }
+  headers:
+    Session:
+      required: true
+      description: Setup-origin browser authorization derived from the saved TorBox token.
+      schema: { type: string, pattern: "^[0-9a-f]{64}$" }
   schemas:
     MediaCandidate:
       type: object
@@ -95,7 +124,7 @@ components:
         - type: object
           required: [title, year]
           properties:
-            title: { type: string }
+            title: { type: string, maxLength: 200, description: Maximum 200 UTF-8 bytes. }
             year: { type: integer }
     SetupStatus:
       type: object

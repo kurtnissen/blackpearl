@@ -3,6 +3,8 @@ package setup
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/blackpearl-media/blackpearl/internal/domain"
 )
@@ -17,6 +20,8 @@ import (
 const (
 	tokenFilename         = "torbox.token"
 	configurationFilename = "configuration.json"
+	currentFilename       = "current"
+	generationsDirectory  = "generations"
 	maxTokenBytes         = 4096
 	maxConfigurationBytes = 64 * 1024
 )
@@ -24,6 +29,7 @@ const (
 // Repository stores setup state beneath one private directory.
 type Repository struct {
 	root string
+	mu   sync.RWMutex
 }
 
 // New creates or repairs the private setup directory.
@@ -37,19 +43,44 @@ func New(root string) (*Repository, error) {
 	if err := os.Chmod(root, 0o700); err != nil {
 		return nil, fmt.Errorf("protect setup directory: %w", err)
 	}
-	return &Repository{root: root}, nil
+	generations := filepath.Join(root, generationsDirectory)
+	if err := os.MkdirAll(generations, 0o700); err != nil {
+		return nil, fmt.Errorf("create setup generations directory: %w", err)
+	}
+	if err := os.Chmod(generations, 0o700); err != nil {
+		return nil, fmt.Errorf("protect setup generations directory: %w", err)
+	}
+	repository := &Repository{root: root}
+	current, err := readCurrentGeneration(root)
+	if errors.Is(err, os.ErrNotExist) {
+		current = ""
+	} else if err != nil {
+		return nil, errors.New("inspect saved setup generation")
+	}
+	if err := repository.cleanupInactiveGenerations(current); err != nil {
+		return nil, fmt.Errorf("clean inactive setup generations: %w", err)
+	}
+	return repository, nil
 }
 
 // Load reads the saved token and validated non-secret configuration.
 func (r *Repository) Load(ctx context.Context) (string, domain.SetupConfiguration, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
 	if err := ctx.Err(); err != nil {
 		return "", domain.SetupConfiguration{}, fmt.Errorf("load setup: %w", err)
 	}
-	token, tokenErr := readBounded(filepath.Join(r.root, tokenFilename), maxTokenBytes)
-	configurationJSON, configurationErr := readBounded(filepath.Join(r.root, configurationFilename), maxConfigurationBytes)
-	if errors.Is(tokenErr, os.ErrNotExist) && errors.Is(configurationErr, os.ErrNotExist) {
+	generation, generationErr := readCurrentGeneration(r.root)
+	if errors.Is(generationErr, os.ErrNotExist) {
 		return "", domain.SetupConfiguration{}, domain.ErrNotFound
 	}
+	if generationErr != nil {
+		return "", domain.SetupConfiguration{}, errors.New("read saved setup generation")
+	}
+	generationRoot := filepath.Join(r.root, generationsDirectory, generation)
+	token, tokenErr := readBounded(filepath.Join(generationRoot, tokenFilename), maxTokenBytes)
+	configurationJSON, configurationErr := readBounded(filepath.Join(generationRoot, configurationFilename), maxConfigurationBytes)
 	if tokenErr != nil {
 		return "", domain.SetupConfiguration{}, errors.New("read saved setup token")
 	}
@@ -71,8 +102,12 @@ func (r *Repository) Load(ctx context.Context) (string, domain.SetupConfiguratio
 	return tokenValue, validated, nil
 }
 
-// Save atomically replaces the private token and non-secret configuration files.
-func (r *Repository) Save(ctx context.Context, token string, configuration domain.SetupConfiguration) error {
+// Save atomically commits a pointer to one fully synchronized token and
+// configuration generation, so readers can never observe a mixed pair.
+func (r *Repository) Save(ctx context.Context, token string, configuration domain.SetupConfiguration) (resultErr error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("save setup: %w", err)
 	}
@@ -88,13 +123,109 @@ func (r *Repository) Save(ctx context.Context, token string, configuration domai
 		return errors.New("encode setup configuration")
 	}
 	content = append(content, '\n')
-	if err := writeAtomic(filepath.Join(r.root, tokenFilename), []byte(token+"\n")); err != nil {
+	generation, err := newGenerationID()
+	if err != nil {
+		return errors.New("create setup generation identifier")
+	}
+	generationRoot := filepath.Join(r.root, generationsDirectory, generation)
+	if err := os.Mkdir(generationRoot, 0o700); err != nil {
+		return errors.New("create setup generation")
+	}
+	committed := false
+	defer func() {
+		if committed {
+			return
+		}
+		if err := os.RemoveAll(generationRoot); err != nil {
+			resultErr = errors.Join(resultErr, errors.New("remove incomplete setup generation"))
+		}
+		if err := syncDirectory(filepath.Join(r.root, generationsDirectory)); err != nil {
+			resultErr = errors.Join(resultErr, errors.New("sync removal of incomplete setup generation"))
+		}
+	}()
+	if err := writeAtomic(filepath.Join(generationRoot, tokenFilename), []byte(token+"\n")); err != nil {
 		return errors.New("write setup token")
 	}
-	if err := writeAtomic(filepath.Join(r.root, configurationFilename), content); err != nil {
+	if err := writeAtomic(filepath.Join(generationRoot, configurationFilename), content); err != nil {
 		return errors.New("write setup configuration")
 	}
-	return syncDirectory(r.root)
+	if err := syncDirectory(generationRoot); err != nil {
+		return errors.New("sync setup generation")
+	}
+	if err := syncDirectory(filepath.Join(r.root, generationsDirectory)); err != nil {
+		return errors.New("sync setup generations directory")
+	}
+	if err := writeAtomic(filepath.Join(r.root, currentFilename), []byte(generation+"\n")); err != nil {
+		return errors.New("commit setup generation")
+	}
+	committed = true
+	if err := syncDirectory(r.root); err != nil {
+		return err
+	}
+	if err := r.cleanupInactiveGenerations(generation); err != nil {
+		return errors.Join(domain.ErrCleanupDeferred, fmt.Errorf("clean inactive setup generations: %w", err))
+	}
+	return nil
+}
+
+// Clear removes the committed generation pointer without exposing or deleting
+// any partially prepared generation.
+func (r *Repository) Clear(ctx context.Context) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("clear setup: %w", err)
+	}
+	err := os.Remove(filepath.Join(r.root, currentFilename))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return errors.New("clear saved setup generation")
+	}
+	if err := syncDirectory(r.root); err != nil {
+		return err
+	}
+	if err := r.cleanupInactiveGenerations(""); err != nil {
+		return fmt.Errorf("clean cleared setup generations: %w", err)
+	}
+	return nil
+}
+
+func (r *Repository) cleanupInactiveGenerations(keep string) error {
+	directory := filepath.Join(r.root, generationsDirectory)
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if entry.Name() == keep {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(directory, entry.Name())); err != nil {
+			return err
+		}
+	}
+	return syncDirectory(directory)
+}
+
+func newGenerationID() (string, error) {
+	value := make([]byte, 16)
+	if _, err := rand.Read(value); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(value), nil
+}
+
+func readCurrentGeneration(root string) (string, error) {
+	content, err := readBounded(filepath.Join(root, currentFilename), 128)
+	if err != nil {
+		return "", err
+	}
+	generation := strings.TrimSuffix(string(content), "\n")
+	decoded, decodeErr := hex.DecodeString(generation)
+	if decodeErr != nil || len(decoded) != 16 {
+		return "", errors.New("invalid setup generation")
+	}
+	return generation, nil
 }
 
 func validateToken(token string) error {

@@ -3,14 +3,21 @@ package setup
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/blackpearl-media/blackpearl/internal/core"
 	"github.com/blackpearl-media/blackpearl/internal/domain"
 )
+
+const setupSessionPurpose = "blackpearl-local-setup-session-v1"
 
 var (
 	// ErrUnauthorized is a public-safe provider authentication failure.
@@ -25,6 +32,7 @@ var (
 type Repository interface {
 	Load(ctx context.Context) (string, domain.SetupConfiguration, error)
 	Save(ctx context.Context, token string, configuration domain.SetupConfiguration) error
+	Clear(ctx context.Context) error
 }
 
 // Discoverer lists eligible account media without requesting content bytes.
@@ -38,14 +46,9 @@ type GatewayFactory func(token string) (Discoverer, error)
 // RuntimeFactory prepares and validates a range-backed catalog without activating it.
 type RuntimeFactory func(ctx context.Context, token string, configuration domain.SetupConfiguration) (core.CatalogService, error)
 
-// Activator atomically replaces the catalog used by new filesystem operations.
-type Activator interface {
-	Activate(next core.CatalogService) core.CatalogService
-}
-
-// Reloader publishes the currently active catalog namespace.
-type Reloader interface {
-	Reload(ctx context.Context) error
+// Publisher atomically publishes one namespace-and-catalog runtime snapshot.
+type Publisher interface {
+	Publish(ctx context.Context, next core.CatalogService) error
 }
 
 // ApplyRequest contains write-only credentials and public Plex metadata.
@@ -68,8 +71,8 @@ type Service struct {
 	repository     Repository
 	gatewayFactory GatewayFactory
 	runtimeFactory RuntimeFactory
-	activator      Activator
-	reloader       Reloader
+	publisher      Publisher
+	bootstrapToken string
 
 	mu              sync.RWMutex
 	transitionMu    sync.Mutex
@@ -78,11 +81,15 @@ type Service struct {
 }
 
 // New constructs a setup service from narrow infrastructure boundaries.
-func New(repository Repository, gatewayFactory GatewayFactory, runtimeFactory RuntimeFactory, activator Activator, reloader Reloader) *Service {
-	return &Service{
+func New(repository Repository, gatewayFactory GatewayFactory, runtimeFactory RuntimeFactory, publisher Publisher, bootstrapToken ...string) *Service {
+	service := &Service{
 		repository: repository, gatewayFactory: gatewayFactory, runtimeFactory: runtimeFactory,
-		activator: activator, reloader: reloader,
+		publisher: publisher,
 	}
+	if len(bootstrapToken) > 0 {
+		service.bootstrapToken = bootstrapToken[0]
+	}
+	return service
 }
 
 // Status reports only non-secret setup state.
@@ -109,12 +116,63 @@ func (s *Service) Discover(ctx context.Context, token string) ([]domain.MediaCan
 	}
 	items, err := gateway.Discover(ctx)
 	if err != nil {
+		if errors.Is(err, domain.ErrUnauthorized) {
+			return nil, fmt.Errorf("discover provider media: %w", ErrUnauthorized)
+		}
 		return nil, fmt.Errorf("discover provider media: %w", ErrUnavailable)
 	}
 	return items, nil
 }
 
-// Apply validates, activates, reloads, and then persists one selected video.
+// AuthorizeSetup permits first-time setup, a browser session derived from the
+// securely saved token, or explicit re-entry of that saved token.
+func (s *Service) AuthorizeSetup(ctx context.Context, suppliedToken string, session string, bootstrapToken string) error {
+	savedToken, _, err := s.repository.Load(ctx)
+	if err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			if suppliedToken == "" || !s.validBootstrap(bootstrapToken) {
+				return ErrUnauthorized
+			}
+			return nil
+		}
+		return fmt.Errorf("load setup authorization: %w", ErrUnavailable)
+	}
+	s.markTokenConfigured()
+	if s.validBootstrap(bootstrapToken) {
+		return nil
+	}
+	expected, err := sessionForToken(savedToken)
+	if err != nil {
+		return fmt.Errorf("derive setup authorization: %w", ErrUnavailable)
+	}
+	if len(session) == len(expected) && subtle.ConstantTimeCompare([]byte(session), []byte(expected)) == 1 {
+		return nil
+	}
+	if suppliedToken != "" && len(suppliedToken) == len(savedToken) && subtle.ConstantTimeCompare([]byte(suppliedToken), []byte(savedToken)) == 1 {
+		return nil
+	}
+	return ErrUnauthorized
+}
+
+func (s *Service) validBootstrap(provided string) bool {
+	return len(provided) == len(s.bootstrapToken) && len(provided) != 0 && subtle.ConstantTimeCompare([]byte(provided), []byte(s.bootstrapToken)) == 1
+}
+
+// IssueSession returns an opaque browser bearer derived from the active token.
+func (s *Service) IssueSession(ctx context.Context, token string) (string, error) {
+	resolved, err := s.resolveToken(ctx, token)
+	if err != nil {
+		return "", err
+	}
+	value, err := sessionForToken(resolved)
+	if err != nil {
+		return "", fmt.Errorf("derive setup session: %w", ErrUnavailable)
+	}
+	return value, nil
+}
+
+// Apply validates and probes one selected video, persists its credentials and
+// metadata, then atomically publishes the prepared runtime.
 func (s *Service) Apply(ctx context.Context, request ApplyRequest) (domain.SetupConfiguration, error) {
 	s.transitionMu.Lock()
 	defer s.transitionMu.Unlock()
@@ -148,12 +206,23 @@ func (s *Service) Apply(ctx context.Context, request ApplyRequest) (domain.Setup
 	if err := runtime.Ready(ctx); err != nil {
 		return domain.SetupConfiguration{}, fmt.Errorf("probe selected media: %w", ErrUnavailable)
 	}
-	previous := s.activator.Activate(runtime)
-	if err := s.reloader.Reload(ctx); err != nil {
-		return domain.SetupConfiguration{}, s.rollback(ctx, previous, "reload selected media", err)
+	previousToken, previousConfiguration, loadErr := s.repository.Load(ctx)
+	hadPrevious := loadErr == nil
+	if loadErr != nil && !errors.Is(loadErr, domain.ErrNotFound) {
+		return domain.SetupConfiguration{}, fmt.Errorf("load prior setup before commit: %w", ErrUnavailable)
 	}
 	if err := s.repository.Save(ctx, token, configuration); err != nil {
-		return domain.SetupConfiguration{}, s.rollback(ctx, previous, "persist selected media", err)
+		if !errors.Is(err, domain.ErrCleanupDeferred) {
+			return domain.SetupConfiguration{}, fmt.Errorf("persist selected media: %w", ErrUnavailable)
+		}
+		committedToken, committedConfiguration, loadAfterSaveErr := s.repository.Load(ctx)
+		if loadAfterSaveErr != nil || committedToken != token || committedConfiguration != configuration {
+			return domain.SetupConfiguration{}, fmt.Errorf("persist selected media: %w", ErrUnavailable)
+		}
+	}
+	if err := s.publisher.Publish(ctx, runtime); err != nil {
+		rollbackErr := s.rollbackPersistence(ctx, hadPrevious, previousToken, previousConfiguration)
+		return domain.SetupConfiguration{}, errors.Join(fmt.Errorf("publish selected media: %w", ErrUnavailable), rollbackErr)
 	}
 	s.setStatus(configuration)
 	return configuration, nil
@@ -167,6 +236,7 @@ func (s *Service) Restore(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	s.markTokenConfigured()
 	runtime, err := s.runtimeFactory(ctx, token, configuration)
 	if err != nil {
 		return fmt.Errorf("prepare saved setup: %w", ErrUnavailable)
@@ -174,9 +244,8 @@ func (s *Service) Restore(ctx context.Context) error {
 	if err := runtime.Ready(ctx); err != nil {
 		return fmt.Errorf("probe saved setup: %w", ErrUnavailable)
 	}
-	previous := s.activator.Activate(runtime)
-	if err := s.reloader.Reload(ctx); err != nil {
-		return s.rollback(ctx, previous, "reload saved setup", err)
+	if err := s.publisher.Publish(ctx, runtime); err != nil {
+		return fmt.Errorf("publish saved setup: %w", ErrUnavailable)
 	}
 	s.setStatus(configuration)
 	return nil
@@ -189,6 +258,9 @@ func (s *Service) discoverWithToken(ctx context.Context, token string) ([]domain
 	}
 	items, err := gateway.Discover(ctx)
 	if err != nil {
+		if errors.Is(err, domain.ErrUnauthorized) {
+			return nil, fmt.Errorf("discover provider media: %w", ErrUnauthorized)
+		}
 		return nil, fmt.Errorf("discover provider media: %w", ErrUnavailable)
 	}
 	return items, nil
@@ -208,13 +280,23 @@ func (s *Service) resolveToken(ctx context.Context, supplied string) (string, er
 		}
 		return "", fmt.Errorf("load saved provider credentials: %w", ErrUnavailable)
 	}
+	s.markTokenConfigured()
 	return token, nil
 }
 
-func (s *Service) rollback(ctx context.Context, previous core.CatalogService, operation string, cause error) error {
-	s.activator.Activate(previous)
-	rollbackErr := s.reloader.Reload(ctx)
-	return errors.Join(fmt.Errorf("%s: %w", operation, cause), rollbackErr)
+func (s *Service) rollbackPersistence(ctx context.Context, hadPrevious bool, token string, configuration domain.SetupConfiguration) error {
+	rollbackContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	if hadPrevious {
+		if err := s.repository.Save(rollbackContext, token, configuration); err != nil {
+			return fmt.Errorf("restore prior setup persistence: %w", err)
+		}
+		return nil
+	}
+	if err := s.repository.Clear(rollbackContext); err != nil {
+		return fmt.Errorf("clear failed setup persistence: %w", err)
+	}
+	return nil
 }
 
 func (s *Service) setStatus(configuration domain.SetupConfiguration) {
@@ -223,4 +305,18 @@ func (s *Service) setStatus(configuration domain.SetupConfiguration) {
 	s.selected = &copy
 	s.tokenConfigured = true
 	s.mu.Unlock()
+}
+
+func (s *Service) markTokenConfigured() {
+	s.mu.Lock()
+	s.tokenConfigured = true
+	s.mu.Unlock()
+}
+
+func sessionForToken(token string) (string, error) {
+	digest := hmac.New(sha256.New, []byte(token))
+	if _, err := digest.Write([]byte(setupSessionPurpose)); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(digest.Sum(nil)), nil
 }

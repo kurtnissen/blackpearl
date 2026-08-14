@@ -188,12 +188,12 @@ type SetupConfiguration struct {
 - Produces: a static export under `web/out`, embedded with `go:embed`, served at `/` with history-safe asset handling.
 
 - [ ] **Step 1: Scaffold the strict Next static-export project** with scripts `dev`, `build`, `test`, `lint`, and no runtime server dependency.
-- [ ] **Step 2: Write failing API-client tests** proving same-origin URLs, CSRF propagation, typed errors, and no use of `localStorage` or `sessionStorage`.
+- [ ] **Step 2: Write failing API-client tests** proving same-origin URLs, CSRF and setup-authorization propagation, typed errors, and no TorBox token persistence in browser storage.
 - [ ] **Step 3: Implement the typed API client** with discriminated UI errors and `cache: "no-store"`.
 - [ ] **Step 4: Write failing Testing Library tests** for first setup, discover success, no-results, invalid token, selection, apply, ready state, replace token, change video, token input clearing, and accessible live status.
 - [ ] **Step 5: Implement the setup console** as a single workflow with standard form controls, semantic table/list selection, disabled pending actions, and no credential persistence in the browser.
 - [ ] **Step 6: Implement the visual system** using ink, paper, and brass tokens; responsive single-column layout; compact operational header; visible keyboard focus; reduced-motion support; and no gradients or glass effects.
-- [ ] **Step 7: Run `cd web && bun run lint && bun test && bun run build`** and confirm strict types, tests, and static export pass.
+- [ ] **Step 7: Run `cd web && bun run lint && bun run test && bun run build`** and confirm strict types, Vitest tests, and static export pass.
 - [ ] **Step 8: Write failing Go asset-handler tests** for `/`, Next assets, SPA-safe not-found behavior, MIME types, and traversal rejection.
 - [ ] **Step 9: Embed `web/out` and integrate the UI handler** into the control-plane server.
 - [ ] **Step 10: Run `go test -race ./internal/handler/setupui ./internal/httpserver -count=1`** and confirm all tests pass.
@@ -212,13 +212,13 @@ type SetupConfiguration struct {
 - Modify: `docs/acceptance-evidence.md`
 
 **Interfaces:**
-- Produces: `docker compose -f compose.torbox.yaml up -d --build` with no required secret environment and UI at `http://localhost:8082`.
+- Produces: `./scripts/torbox-stack.sh start` with no TorBox token in the environment and a paired UI at `http://localhost:8082`.
 
 - [ ] **Step 1: Write failing static Compose tests** asserting no required token/object interpolation, no secret environment source, setup enabled, UI bound to `127.0.0.1`, `/healthz` healthcheck, and unchanged NFS volume driver options.
 - [ ] **Step 2: Run `./scripts/test-torbox-compose.sh`** and confirm the legacy required-token assertions fail.
 - [ ] **Step 3: Add a Bun frontend build stage** to Docker, copy the static export into the Go build context, and keep the final runtime image free of Bun/Node.
 - [ ] **Step 4: Update Compose and helper scripts** so plain `up -d --build` starts setup-required mode without placing a token in environment, command arguments, or Compose secrets.
-- [ ] **Step 5: Run `docker compose -f compose.torbox.yaml config`** with TorBox variables unset and confirm it succeeds and publishes only loopback host ports.
+- [ ] **Step 5: Run `./scripts/test-torbox-compose.sh`** with the non-provider bootstrap fixture and confirm only loopback host ports are published.
 - [ ] **Step 6: Run the fake-provider Compose acceptance test** that posts a test token, selects a synthetic remote MP4/MKV, verifies NFS metadata and non-sequential reads, restarts BlackPearl, and verifies selection restoration without storing a complete file.
 - [ ] **Step 7: Run browser visual QA** at desktop and narrow widths, capture the first-setup, candidate-list, and ready states, and fix any clipping, unreadable focus, or broken state transition.
 - [ ] **Step 8: Run full verification:**
@@ -226,12 +226,12 @@ type SetupConfiguration struct {
 ```bash
 go test -race -cover ./...
 go vet ./...
-(cd web && bun run lint && bun test && bun run build)
+(cd web && bun run lint && bun run test && bun run build)
 ./scripts/test-compose-paths.sh
 ./scripts/test-portable-compose.sh
 ./scripts/test-rolling-compose.sh
 ./scripts/test-torbox-compose.sh
-docker compose -f compose.torbox.yaml config
+./scripts/test-torbox-compose.sh
 ```
 
 - [ ] **Step 9: Update documentation and acceptance evidence** with exact commands, observed results, security boundaries, and a clear distinction between fake-provider evidence and pending live TorBox/Plex evidence when no credential is available.

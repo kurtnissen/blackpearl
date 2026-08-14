@@ -28,6 +28,21 @@ export type ApplyInput = {
   year: number;
 };
 
+export type SetupAuthorization = {
+  session?: string;
+  bootstrap?: string;
+};
+
+export type DiscoveryResult = {
+  candidates: MediaCandidate[];
+  session: string;
+};
+
+export type ApplyResult = {
+  selected: SetupConfiguration;
+  session: string;
+};
+
 export class SetupAPIError extends Error {
   readonly code: string;
 
@@ -43,30 +58,44 @@ export async function getStatus(): Promise<SetupStatus> {
   return readJSON(response, isSetupStatus, "invalid_status");
 }
 
-export async function discoverMedia(token: string, csrfToken: string): Promise<MediaCandidate[]> {
+export async function discoverMedia(token: string, csrfToken: string, authorization: SetupAuthorization): Promise<DiscoveryResult> {
   const response = await fetch("/api/setup/discover", {
     method: "POST",
     cache: "no-store",
-    headers: mutationHeaders(csrfToken),
+    headers: mutationHeaders(csrfToken, authorization),
     body: JSON.stringify(token === "" ? {} : { token }),
   });
   const envelope = await readJSON(response, isCandidateEnvelope, "invalid_candidates");
-  return envelope.candidates;
+  return { candidates: envelope.candidates, session: readSession(response) };
 }
 
-export async function applyConfiguration(input: ApplyInput, csrfToken: string): Promise<SetupConfiguration> {
+export async function applyConfiguration(input: ApplyInput, csrfToken: string, authorization: SetupAuthorization): Promise<ApplyResult> {
   const response = await fetch("/api/setup/configuration", {
     method: "PUT",
     cache: "no-store",
-    headers: mutationHeaders(csrfToken),
+    headers: mutationHeaders(csrfToken, authorization),
     body: JSON.stringify(input),
   });
   const envelope = await readJSON(response, isSelectionEnvelope, "invalid_configuration");
-  return envelope.selected;
+  return { selected: envelope.selected, session: readSession(response) };
 }
 
-function mutationHeaders(csrfToken: string): Record<string, string> {
-  return { "Content-Type": "application/json", "X-BlackPearl-CSRF": csrfToken };
+function mutationHeaders(csrfToken: string, authorization: SetupAuthorization): Record<string, string> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    "X-BlackPearl-CSRF": csrfToken,
+  };
+  if (authorization.session) headers["X-BlackPearl-Session"] = authorization.session;
+  if (authorization.bootstrap) headers["X-BlackPearl-Bootstrap"] = authorization.bootstrap;
+  return headers;
+}
+
+function readSession(response: Response): string {
+  const session = response.headers.get("X-BlackPearl-Session") ?? "";
+  if (!/^[0-9a-f]{64}$/.test(session)) {
+    throw new SetupAPIError("invalid_session", "BlackPearl returned an invalid setup authorization response.");
+  }
+  return session;
 }
 
 async function readJSON<T>(response: Response, validate: (value: unknown) => value is T, fallbackCode: string): Promise<T> {

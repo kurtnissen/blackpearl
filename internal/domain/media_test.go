@@ -1,6 +1,7 @@
 package domain_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/blackpearl-media/blackpearl/internal/domain"
@@ -40,6 +41,14 @@ func TestNewMovieRejectsUnsafePathSegments(t *testing.T) {
 			require.Error(t, err)
 		})
 	}
+}
+
+func TestNewMovieRejectsTitleBeyondPlexByteLimit(t *testing.T) {
+	t.Parallel()
+
+	_, err := domain.NewMovie("id", strings.Repeat("a", 201), 2026, ".mp4", 1, validBacking())
+
+	require.ErrorContains(t, err, "200 bytes")
 }
 
 func TestNewMovieRejectsInvalidRequiredValues(t *testing.T) {

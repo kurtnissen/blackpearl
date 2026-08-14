@@ -19,12 +19,18 @@ import (
 )
 
 const maximumRequestBytes = 8 * 1024
+const (
+	setupSessionHeader   = "X-BlackPearl-Session"
+	setupBootstrapHeader = "X-BlackPearl-Bootstrap"
+)
 
 // Service is the business boundary consumed by setup HTTP handlers.
 type Service interface {
 	Status() setupservice.Status
 	Discover(ctx context.Context, token string) ([]domain.MediaCandidate, error)
 	Apply(ctx context.Context, request setupservice.ApplyRequest) (domain.SetupConfiguration, error)
+	AuthorizeSetup(ctx context.Context, suppliedToken string, session string, bootstrap string) error
+	IssueSession(ctx context.Context, token string) (string, error)
 }
 
 type handler struct {
@@ -59,7 +65,7 @@ func (h *handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 			methodNotAllowed(writer, http.MethodPost)
 			return
 		}
-		if !h.authorizeMutation(request) {
+		if !h.authorizeBrowser(request) {
 			writeError(writer, http.StatusForbidden, "forbidden", "Setup requests are accepted only from this local page.")
 			return
 		}
@@ -70,8 +76,20 @@ func (h *handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 			writeError(writer, http.StatusBadRequest, "invalid_request", "Enter a valid setup request.")
 			return
 		}
+		if err := h.service.AuthorizeSetup(request.Context(), input.Token, request.Header.Get(setupSessionHeader), request.Header.Get(setupBootstrapHeader)); err != nil {
+			writeServiceError(writer, err)
+			return
+		}
 		items, err := h.service.Discover(request.Context(), input.Token)
 		if err != nil {
+			writeServiceError(writer, err)
+			return
+		}
+		sessionToken := input.Token
+		if h.service.Status().TokenConfigured {
+			sessionToken = ""
+		}
+		if err := h.issueSession(writer, request, sessionToken); err != nil {
 			writeServiceError(writer, err)
 			return
 		}
@@ -83,7 +101,7 @@ func (h *handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 			methodNotAllowed(writer, http.MethodPut)
 			return
 		}
-		if !h.authorizeMutation(request) {
+		if !h.authorizeBrowser(request) {
 			writeError(writer, http.StatusForbidden, "forbidden", "Setup requests are accepted only from this local page.")
 			return
 		}
@@ -92,8 +110,16 @@ func (h *handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 			writeError(writer, http.StatusBadRequest, "invalid_request", "Enter a valid setup request.")
 			return
 		}
+		if err := h.service.AuthorizeSetup(request.Context(), input.Token, request.Header.Get(setupSessionHeader), request.Header.Get(setupBootstrapHeader)); err != nil {
+			writeServiceError(writer, err)
+			return
+		}
 		selected, err := h.service.Apply(request.Context(), input)
 		if err != nil {
+			writeServiceError(writer, err)
+			return
+		}
+		if err := h.issueSession(writer, request, ""); err != nil {
 			writeServiceError(writer, err)
 			return
 		}
@@ -105,7 +131,7 @@ func (h *handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	}
 }
 
-func (h *handler) authorizeMutation(request *http.Request) bool {
+func (h *handler) authorizeBrowser(request *http.Request) bool {
 	if !loopbackHost(request.Host) {
 		return false
 	}
@@ -115,6 +141,15 @@ func (h *handler) authorizeMutation(request *http.Request) bool {
 	}
 	provided := request.Header.Get("X-BlackPearl-CSRF")
 	return len(provided) == len(h.csrf) && subtle.ConstantTimeCompare([]byte(provided), []byte(h.csrf)) == 1
+}
+
+func (h *handler) issueSession(writer http.ResponseWriter, request *http.Request, token string) error {
+	value, err := h.service.IssueSession(request.Context(), token)
+	if err != nil {
+		return err
+	}
+	writer.Header().Set(setupSessionHeader, value)
+	return nil
 }
 
 func loopbackHost(hostport string) bool {
