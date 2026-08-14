@@ -181,6 +181,8 @@ func decodeJSON(writer http.ResponseWriter, request *http.Request, destination a
 
 func writeServiceError(writer http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, setupservice.ErrSetupUnauthorized):
+		writeError(writer, http.StatusUnauthorized, "setup_not_paired", "This browser is not paired with BlackPearl. Reopen the setup page from the BlackPearl launcher and try again.")
 	case errors.Is(err, setupservice.ErrUnauthorized):
 		writeError(writer, http.StatusUnauthorized, "unauthorized", "That TorBox API key is invalid or expired. Open TorBox Settings, select Copy API Key, and try again.")
 	case errors.Is(err, setupservice.ErrInvalidSelection):

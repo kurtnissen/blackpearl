@@ -122,6 +122,24 @@ func TestHandlerExplainsHowToRecoverFromRejectedTorBoxAPIKey(t *testing.T) {
 	require.NotContains(t, response.Body.String(), "private-token")
 }
 
+func TestHandlerDistinguishesMissingBrowserPairingFromRejectedTorBoxAPIKey(t *testing.T) {
+	t.Parallel()
+	service := &fakeService{authorizeErr: setupservice.ErrSetupUnauthorized}
+	handler, err := setuphandler.New(service)
+	require.NoError(t, err)
+	csrf := fetchCSRF(t, handler)
+	request := newMutation(t, http.MethodPost, "/api/setup/discover", csrf, `{"token":"private-token"}`)
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	require.Equal(t, http.StatusUnauthorized, response.Code)
+	require.Contains(t, response.Body.String(), "setup_not_paired")
+	require.Contains(t, response.Body.String(), "not paired")
+	require.NotContains(t, response.Body.String(), "invalid or expired")
+	require.NotContains(t, response.Body.String(), "private-token")
+}
+
 type fakeService struct {
 	status             setupservice.Status
 	items              []domain.MediaCandidate

@@ -20,6 +20,9 @@ import (
 const setupSessionPurpose = "blackpearl-local-setup-session-v1"
 
 var (
+	// ErrSetupUnauthorized indicates that the local browser has not proven it
+	// received the host-generated setup pairing value or a saved-token session.
+	ErrSetupUnauthorized = errors.New("setup browser is not paired")
 	// ErrUnauthorized is a public-safe provider authentication failure.
 	ErrUnauthorized = errors.New("provider credentials were rejected")
 	// ErrUnavailable is a public-safe provider or runtime availability failure.
@@ -131,7 +134,7 @@ func (s *Service) AuthorizeSetup(ctx context.Context, suppliedToken string, sess
 	if err != nil {
 		if errors.Is(err, domain.ErrNotFound) {
 			if suppliedToken == "" || !s.validBootstrap(bootstrapToken) {
-				return ErrUnauthorized
+				return ErrSetupUnauthorized
 			}
 			return nil
 		}
@@ -151,7 +154,7 @@ func (s *Service) AuthorizeSetup(ctx context.Context, suppliedToken string, sess
 	if suppliedToken != "" && len(suppliedToken) == len(savedToken) && subtle.ConstantTimeCompare([]byte(suppliedToken), []byte(savedToken)) == 1 {
 		return nil
 	}
-	return ErrUnauthorized
+	return ErrSetupUnauthorized
 }
 
 func (s *Service) validBootstrap(provided string) bool {

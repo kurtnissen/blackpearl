@@ -63,7 +63,7 @@ func TestServiceSetupAuthorizationRequiresSavedTokenOrIssuedBrowserSession(t *te
 
 	require.NoError(t, service.AuthorizeSetup(context.Background(), "saved-token", "", ""))
 	require.NoError(t, service.AuthorizeSetup(context.Background(), "", session, ""))
-	require.ErrorIs(t, service.AuthorizeSetup(context.Background(), "replacement-token", "wrong-session", ""), setupservice.ErrUnauthorized)
+	require.ErrorIs(t, service.AuthorizeSetup(context.Background(), "replacement-token", "wrong-session", ""), setupservice.ErrSetupUnauthorized)
 	require.True(t, service.Status().TokenConfigured)
 }
 
@@ -78,8 +78,8 @@ func TestServiceSetupAuthorizationAllowsOnlyExplicitTokenBeforeFirstSave(t *test
 	)
 
 	require.NoError(t, service.AuthorizeSetup(context.Background(), "first-token", "", "bootstrap-token"))
-	require.ErrorIs(t, service.AuthorizeSetup(context.Background(), "first-token", "", "wrong-bootstrap"), setupservice.ErrUnauthorized)
-	require.ErrorIs(t, service.AuthorizeSetup(context.Background(), "", "invented-session", "bootstrap-token"), setupservice.ErrUnauthorized)
+	require.ErrorIs(t, service.AuthorizeSetup(context.Background(), "first-token", "", "wrong-bootstrap"), setupservice.ErrSetupUnauthorized)
+	require.ErrorIs(t, service.AuthorizeSetup(context.Background(), "", "invented-session", "bootstrap-token"), setupservice.ErrSetupUnauthorized)
 }
 
 func TestServiceApplyPersistsThenPublishesValidatedSelection(t *testing.T) {
