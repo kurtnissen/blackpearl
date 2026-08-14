@@ -9,12 +9,14 @@ Tested from `main` on an Apple Silicon Mac with Docker Desktop's Linux ARM64 VM.
 | Gate | Result | Evidence |
 |---|---|---|
 | Go race tests | Pass | `go test -race ./...` |
-| Go coverage | Pass | 80.6% of project statements from `go test -coverprofile=coverage.out ./...`; generated Go code inside `web/node_modules` is excluded from the project floor |
+| Go coverage | Pass | 80.7% of project statements from `go test -coverprofile=coverage.out ./...`; generated Go code inside `web/node_modules` is excluded from the project floor |
 | Static analysis | Pass | `go vet ./...`, Actionlint 1.7.7, and golangci-lint 2.12.2 with zero findings |
 | Dependency security | Pass locally | Go 1.26.6 plus updated OpenTelemetry, gRPC, Go networking, and go-billy modules produced `No vulnerabilities found` from govulncheck 1.7.0; `bun audit --production` also reported no vulnerabilities. |
 | Compose isolation | Pass | Rendered configuration checked by `scripts/test-compose-paths.sh`; every bind is under `runtime/`, Plex media is read-only `rslave`, and only BlackPearl receives FUSE privileges |
 | POC image build | Pass | `blackpearl:poc` built for local Linux ARM64 |
 | Portable runtime image matrix | Pass locally | Docker Buildx completed the `runtime` target for both `linux/amd64` and `linux/arm64` using the pinned Go 1.26.6 builder. This is local evidence, not hosted CI evidence. |
+| Public hosted CI | Pass | [GitHub Actions run 31842843917](https://github.com/kurtnissen/blackpearl/actions/runs/31842843917) completed on commit `50db03b8cd853b077e7621adca2a751055643adf`. All eight jobs passed: secret-history scan, race tests and 80.7% coverage, static lint, dependency vulnerability scan, setup UI, Compose safety, privileged Linux FUSE smoke, and the Linux image matrix. |
+| Hosted image matrix | Pass | The same public CI run built the complete `poc` target for both `linux/amd64` and `linux/arm64`. Architecture-independent frontend and fixture stages run on the build platform, while Go cross-compiles the target binary and each final runtime layer is built for its requested platform. |
 | Fixture media profile | Pass | 1280x720 H.264 `yuv420p` video, AAC 48 kHz mono audio, MP4 fast-start fixture |
 | Packaged FUSE bytes | Pass | The exact POC image mounted FUSE in a privileged Linux container; fixture and virtual SHA-256 matched and non-sequential range hashes matched |
 | Large logical object regression | Pass | PearlFS test read the final four bytes of a generated 1 TiB logical object without storing the object |
@@ -133,8 +135,8 @@ The current result includes locally verified FUSE and portable NFS adapters, per
 - [x] Discontinuous seeks and handle closes cancel stale read-ahead without surfacing cancellation to a foreground reader that joined the shared fetch.
 - [x] A longer rolling fixture demonstrates explicit forward and backward client seeks before playback completes.
 - [ ] A newly Watchlisted authorized show completes exact S01E01 provider preparation, publication, Plex scan, Direct Play, and seek acceptance.
-- [ ] CI passes after publishing the repository.
-- [ ] Both Linux AMD64 and ARM64 image builds pass in CI.
+- [x] CI passes after publishing the repository.
+- [x] Both Linux AMD64 and ARM64 image builds pass in CI.
 - [ ] Ubuntu host propagation makes the file readable in the Plex container.
 - [ ] Plex scans `BlackPearl POC (2026)`.
 - [ ] Plex begins Direct Play and seeking succeeds.

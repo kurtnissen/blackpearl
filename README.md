@@ -1,5 +1,7 @@
 # BlackPearl
 
+[![CI](https://github.com/kurtnissen/blackpearl/actions/workflows/ci.yaml/badge.svg)](https://github.com/kurtnissen/blackpearl/actions/workflows/ci.yaml)
+
 BlackPearl is an experimental, open-source Go service that exposes a virtual media library through read-only FUSE or NFS filesystem frontends. Milestone 1 is intentionally narrow: prove that Plex can scan and Direct Play a synthetic MP4 without touching an existing Plex, media, download, or `*arr` path.
 
 > Status: FUSE remains available for native Linux. The portable NFS profile is designed for Docker Desktop and mounts into an unmodified Plex container through Docker's built-in local-volume driver. Provider-backed persistent retention and quota-bounded rolling storage both work in the same binary. macOS Plex Web playback has been verified in both modes.
