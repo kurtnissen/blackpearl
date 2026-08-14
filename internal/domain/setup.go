@@ -147,6 +147,15 @@ func (c SetupConfiguration) Backing() BackingRef {
 	return BackingRef{Provider: c.providerOrDefault(), ObjectID: c.ObjectID}
 }
 
+// VirtualPath returns the validated canonical Plex-relative media path.
+func (c SetupConfiguration) VirtualPath() (string, error) {
+	validated, err := validateSetupConfiguration(c)
+	if err != nil {
+		return "", err
+	}
+	return setupVirtualPath(validated)
+}
+
 // Backing returns the provider-neutral object represented by this candidate.
 func (c MediaCandidate) Backing() BackingRef {
 	provider := c.Provider

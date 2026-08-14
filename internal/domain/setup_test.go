@@ -150,6 +150,26 @@ func TestNewSetupEpisodeConfigurationPreservesCanonicalTVMetadata(t *testing.T) 
 	require.Equal(t, 2, configuration.Episode)
 }
 
+func TestSetupConfigurationVirtualPathReturnsCanonicalMovieAndEpisodePaths(t *testing.T) {
+	t.Parallel()
+	movieCandidate, err := domain.NewMediaCandidate("17:3", "Movie.mp4", 1024)
+	require.NoError(t, err)
+	movie, err := domain.NewSetupConfiguration(movieCandidate, "Example Movie", 2026)
+	require.NoError(t, err)
+	episodeCandidate, err := domain.NewMediaCandidate("17:4", "Episode.mp4", 2048)
+	require.NoError(t, err)
+	episode, err := domain.NewSetupEpisodeConfiguration(episodeCandidate, "Example Show", 2024, 1, 2, "The Second")
+	require.NoError(t, err)
+
+	moviePath, err := movie.VirtualPath()
+	require.NoError(t, err)
+	episodePath, err := episode.VirtualPath()
+	require.NoError(t, err)
+
+	require.Equal(t, "Movies/Example Movie (2026)/Example Movie (2026).mp4", moviePath)
+	require.Equal(t, "TV Shows/Example Show (2024)/Season 01/Example Show (2024) - S01E02 - The Second.mp4", episodePath)
+}
+
 func TestNewSetupManifestNormalizesLegacyMovieAndValidatesEpisode(t *testing.T) {
 	t.Parallel()
 	movieCandidate, err := domain.NewMediaCandidate("17:3", "Movie.mp4", 1024)

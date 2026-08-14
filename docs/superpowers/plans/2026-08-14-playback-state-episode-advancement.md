@@ -193,7 +193,7 @@ git commit -m "feat: resolve exact next Plex episode"
 - Produces: `SetupConfiguration.VirtualPath() (string, error)` and `Service.FindPublishedEpisode(ctx context.Context, virtualPath string) (domain.SetupConfiguration, bool, error)`.
 - Consumes: the active validated setup manifest already held by `setup.Service`.
 
-- [ ] **Step 1: Write failing exact-path tests**
+- [x] **Step 1: Write failing exact-path tests**
 
 Prove canonical movie/episode path derivation, exact episode lookup, movie and missing-path rejection, unsafe path rejection, context cancellation, and lookup after restored and acquired manifests.
 
@@ -206,17 +206,17 @@ require.True(t, found)
 require.Equal(t, episode.Backing(), published.Backing())
 ```
 
-- [ ] **Step 2: Run tests and verify RED**
+- [x] **Step 2: Run tests and verify RED**
 
 Run: `go test ./internal/domain ./internal/service/setup -run 'Test.*VirtualPath|Test.*FindPublishedEpisode' -count=1`
 
 Expected: build failure because both methods are missing.
 
-- [ ] **Step 3: Implement path derivation and read-only lookup**
+- [x] **Step 3: Implement path derivation and read-only lookup**
 
 Move the existing private path derivation behind `SetupConfiguration.VirtualPath`, retaining validation through `NewMovie` and `NewEpisode`. `FindPublishedEpisode` must read the in-memory manifest under `RLock`, compare only validated episode paths, and return copied public configuration without loading the saved token.
 
-- [ ] **Step 4: Run affected race tests**
+- [x] **Step 4: Run affected race tests**
 
 Run:
 
@@ -226,7 +226,7 @@ go test -race ./internal/domain ./internal/service/setup -count=1
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit exact publication lookup**
+- [x] **Step 5: Commit exact publication lookup**
 
 ```bash
 git add internal/domain/setup.go internal/domain/setup_test.go internal/service/setup/service.go internal/service/setup/service_test.go

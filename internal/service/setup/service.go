@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"path"
 	"strings"
 	"sync"
 	"time"
@@ -287,6 +288,38 @@ func (s *Service) FindPublished(ctx context.Context, request acquisitiondomain.S
 		}
 	}
 	return "", false, nil
+}
+
+// FindPublishedEpisode returns one exact episode from the active manifest by
+// its canonical Plex-relative path, without loading a saved credential.
+func (s *Service) FindPublishedEpisode(ctx context.Context, virtualPath string) (domain.SetupConfiguration, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return domain.SetupConfiguration{}, false, fmt.Errorf("find published episode: %w", err)
+	}
+	if path.IsAbs(virtualPath) || path.Clean(virtualPath) != virtualPath || strings.ContainsAny(virtualPath, "\\\x00") {
+		return domain.SetupConfiguration{}, false, errors.New("published episode path is invalid")
+	}
+	if !strings.HasPrefix(virtualPath, "TV Shows/") {
+		return domain.SetupConfiguration{}, false, nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.manifest == nil {
+		return domain.SetupConfiguration{}, false, nil
+	}
+	for _, item := range s.manifest.Items {
+		if item.MediaType != domain.MediaTypeEpisode {
+			continue
+		}
+		itemPath, err := item.VirtualPath()
+		if err != nil {
+			return domain.SetupConfiguration{}, false, fmt.Errorf("derive published episode path: %w", ErrUnavailable)
+		}
+		if itemPath == virtualPath {
+			return item, true, nil
+		}
+	}
+	return domain.SetupConfiguration{}, false, nil
 }
 
 // FindPublishedMovie is retained for callers that have not yet adopted exact

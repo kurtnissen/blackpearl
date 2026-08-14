@@ -183,6 +183,41 @@ func TestServiceApplyBuildsExplicitEpisodeSelection(t *testing.T) {
 	require.Equal(t, 2, manifest.Items[0].Episode)
 }
 
+func TestServiceFindPublishedEpisodeUsesExactActiveManifestPath(t *testing.T) {
+	t.Parallel()
+	movieCandidate, err := domain.NewMediaCandidate("17:3", "Movie.mp4", 1024)
+	require.NoError(t, err)
+	movie, err := domain.NewSetupConfiguration(movieCandidate, "Example Movie", 2026)
+	require.NoError(t, err)
+	episodeCandidate, err := domain.NewMediaCandidate("17:4", "Episode.mp4", 2048)
+	require.NoError(t, err)
+	episode, err := domain.NewSetupEpisodeConfiguration(episodeCandidate, "Example Show", 2024, 1, 2, "The Second")
+	require.NoError(t, err)
+	manifest, err := domain.NewSetupManifest([]domain.SetupConfiguration{movie, episode})
+	require.NoError(t, err)
+	repository := &fakeSetupRepository{token: "saved-token", manifest: manifest}
+	service := newService(repository, nil)
+	require.NoError(t, service.Restore(context.Background()))
+	episodePath, err := episode.VirtualPath()
+	require.NoError(t, err)
+	moviePath, err := movie.VirtualPath()
+	require.NoError(t, err)
+
+	published, found, err := service.FindPublishedEpisode(context.Background(), episodePath)
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, episode, published)
+	_, found, err = service.FindPublishedEpisode(context.Background(), moviePath)
+	require.NoError(t, err)
+	require.False(t, found)
+	_, _, err = service.FindPublishedEpisode(context.Background(), "TV Shows/../private.mp4")
+	require.Error(t, err)
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, _, err = service.FindPublishedEpisode(canceled, episodePath)
+	require.ErrorIs(t, err, context.Canceled)
+}
+
 func TestServiceApplyKeepsRuntimeAndPersistenceWhenSaveOrPublishFails(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
