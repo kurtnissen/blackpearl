@@ -75,6 +75,155 @@ func TestWorkerPlansCachedFirstBoundedCandidateSetBeforeAnyProviderMutation(t *t
 	}
 }
 
+func TestWorkerOrdersCachedTorrentThenDirectRangeThenUncachedTorrent(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	repository, now, jobID := queuedJob(t, ctx)
+	releases := []acquisition.Release{
+		mustJobReleaseAt(t, 0), mustJobReleaseAt(t, 1), mustJobReleaseAt(t, 2),
+		mustJobReleaseAt(t, 3), mustJobReleaseAt(t, 4), mustJobReleaseAt(t, 5),
+	}
+	provider := &fakeJobProvider{
+		releases: releases,
+		cached:   []acquisition.Release{mustJobReleaseAt(t, 1), mustJobReleaseAt(t, 3), mustJobReleaseAt(t, 5)},
+	}
+	direct := &fakeDirectWorkerProvider{resolved: []acquisition.RangeCandidate{mustWorkerRangeCandidate(t)}}
+	worker := newDirectJobWorker(t, repository, provider, direct, &fakeJobPublisher{}, now)
+
+	state, err := worker.ProcessOne(ctx)
+
+	require.NoError(t, err)
+	require.Equal(t, acquisition.JobStateSelected, state)
+	candidates, err := repository.Candidates(ctx, jobID)
+	require.NoError(t, err)
+	require.Len(t, candidates, acquisition.MaximumJobCandidates)
+	require.Equal(t, acquisition.SelectionKindTorrent, candidates[0].Selection().Kind())
+	require.Equal(t, mustJobReleaseAt(t, 1).InfoHash(), candidates[0].Selection().Identity())
+	require.Equal(t, acquisition.SelectionKindTorrent, candidates[1].Selection().Kind())
+	require.Equal(t, mustJobReleaseAt(t, 3).InfoHash(), candidates[1].Selection().Identity())
+	require.Equal(t, acquisition.SelectionKindTorrent, candidates[2].Selection().Kind())
+	require.Equal(t, mustJobReleaseAt(t, 5).InfoHash(), candidates[2].Selection().Identity())
+	require.Equal(t, acquisition.SelectionKindRange, candidates[3].Selection().Kind())
+	require.Equal(t, mustWorkerRangeCandidate(t).Media().ObjectID, candidates[3].Selection().Identity())
+	require.Equal(t, acquisition.SelectionKindTorrent, candidates[4].Selection().Kind())
+	require.Equal(t, mustJobReleaseAt(t, 0).InfoHash(), candidates[4].Selection().Identity())
+}
+
+func TestWorkerPreparesPublishesAndSucceedsDirectRangeWithoutTorrentMutation(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	repository, now, jobID := queuedJob(t, ctx)
+	provider := &fakeJobProvider{releases: []acquisition.Release{mustJobRelease(t)}}
+	candidate := mustWorkerRangeCandidate(t)
+	created, err := acquisition.NewCreatedObject(candidate.Media().Backing().Provider, candidate.Media().ObjectID)
+	require.NoError(t, err)
+	inspection, err := acquisition.NewPreparationInspection([]domain.MediaCandidate{candidate.Media()}, 100)
+	require.NoError(t, err)
+	direct := &fakeDirectWorkerProvider{
+		resolved: []acquisition.RangeCandidate{candidate}, created: created, inspection: inspection,
+	}
+	publisher := &fakeJobPublisher{}
+	worker := newDirectJobWorker(t, repository, provider, direct, publisher, now)
+
+	state, err := worker.ProcessOne(ctx)
+	require.NoError(t, err)
+	require.Equal(t, acquisition.JobStateSelected, state)
+	selected, err := repository.Get(ctx, jobID)
+	require.NoError(t, err)
+	require.Equal(t, acquisition.SelectionKindRange, selected.Selection().Kind())
+
+	state, err = worker.ProcessOne(ctx)
+	require.NoError(t, err)
+	require.Equal(t, acquisition.JobStatePreparing, state)
+	state, err = worker.ProcessOne(ctx)
+	require.NoError(t, err)
+	require.Equal(t, acquisition.JobStateSucceeded, state)
+
+	completed, err := repository.Get(ctx, jobID)
+	require.NoError(t, err)
+	require.Equal(t, candidate.Media().ObjectID, completed.PublishedObjectID())
+	require.False(t, completed.CreatedByJob())
+	require.Equal(t, 1, direct.prepareCalls)
+	require.Equal(t, 1, direct.inspectCalls)
+	require.Len(t, publisher.published, 1)
+	require.Equal(t, candidate.Media(), publisher.published[0].Candidate())
+	require.Zero(t, provider.findCalls)
+	require.Zero(t, provider.createCalls)
+	require.Zero(t, provider.inspectionCalls)
+	require.Zero(t, provider.deleteCalls)
+}
+
+func TestWorkerAdvancesMissingDirectRangeWithoutDeletingRemoteMedia(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	repository, now, jobID := queuedJob(t, ctx)
+	provider := &fakeJobProvider{releases: []acquisition.Release{mustJobRelease(t)}}
+	direct := &fakeDirectWorkerProvider{
+		resolved:   []acquisition.RangeCandidate{mustWorkerRangeCandidate(t)},
+		prepareErr: domain.ErrNotFound,
+	}
+	worker := newDirectJobWorker(t, repository, provider, direct, &fakeJobPublisher{}, now)
+
+	state, err := worker.ProcessOne(ctx)
+	require.NoError(t, err)
+	require.Equal(t, acquisition.JobStateSelected, state)
+	state, err = worker.ProcessOne(ctx)
+
+	require.NoError(t, err)
+	require.Equal(t, acquisition.JobStateSelected, state)
+	next, err := repository.Get(ctx, jobID)
+	require.NoError(t, err)
+	require.Equal(t, acquisition.SelectionKindTorrent, next.Selection().Kind())
+	require.Equal(t, mustJobRelease(t).InfoHash(), next.Selection().Identity())
+	require.Zero(t, provider.deleteCalls)
+}
+
+func TestWorkerDefersTransientDirectRangePreparation(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	repository, now, jobID := queuedJob(t, ctx)
+	provider := &fakeJobProvider{releases: []acquisition.Release{mustJobRelease(t)}}
+	direct := &fakeDirectWorkerProvider{
+		resolved:   []acquisition.RangeCandidate{mustWorkerRangeCandidate(t)},
+		prepareErr: errors.New("temporary direct provider failure"),
+	}
+	worker := newDirectJobWorker(t, repository, provider, direct, &fakeJobPublisher{}, now)
+
+	_, err := worker.ProcessOne(ctx)
+	require.NoError(t, err)
+	state, err := worker.ProcessOne(ctx)
+
+	require.NoError(t, err)
+	require.Equal(t, acquisition.JobStateSelected, state)
+	deferred, err := repository.Get(ctx, jobID)
+	require.NoError(t, err)
+	require.Equal(t, acquisition.JobErrorProviderUnavailable, deferred.ErrorCode())
+	require.Equal(t, acquisition.SelectionKindRange, deferred.Selection().Kind())
+	require.Zero(t, provider.deleteCalls)
+}
+
+func TestWorkerRejectsHalfConfiguredDirectProviderSet(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	repository, now, jobID := queuedJob(t, ctx)
+	provider := &fakeJobProvider{releases: []acquisition.Release{mustJobRelease(t)}}
+	worker, err := acquisitionjobservice.NewWorker(repository, func(context.Context) (acquisitionjobservice.Providers, error) {
+		return acquisitionjobservice.Providers{
+			Searcher: provider, Materializer: provider, Preparer: provider,
+			DirectResolver: &fakeDirectWorkerProvider{},
+		}, nil
+	}, &fakeJobPublisher{}, workerOptions(now))
+	require.NoError(t, err)
+
+	state, err := worker.ProcessOne(ctx)
+
+	require.NoError(t, err)
+	require.Equal(t, acquisition.JobStateQueued, state)
+	job, err := repository.Get(ctx, jobID)
+	require.NoError(t, err)
+	require.Equal(t, acquisition.JobErrorProviderUnavailable, job.ErrorCode())
+}
+
 func TestWorkerBoundsCacheProbeBeforeProviderMutation(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -578,6 +727,33 @@ func newJobWorker(
 	return worker
 }
 
+func newDirectJobWorker(
+	t *testing.T,
+	repository *acquisitionjobrepo.Repository,
+	provider *fakeJobProvider,
+	direct *fakeDirectWorkerProvider,
+	publisher *fakeJobPublisher,
+	now time.Time,
+) *acquisitionjobservice.Worker {
+	t.Helper()
+	worker, err := acquisitionjobservice.NewWorker(repository, func(context.Context) (acquisitionjobservice.Providers, error) {
+		return acquisitionjobservice.Providers{
+			Searcher: provider, Materializer: provider, Preparer: provider,
+			DirectResolver: direct, RangePreparer: direct,
+		}, nil
+	}, publisher, workerOptions(now))
+	require.NoError(t, err)
+	return worker
+}
+
+func workerOptions(now time.Time) acquisitionjobservice.WorkerOptions {
+	return acquisitionjobservice.WorkerOptions{
+		LeaseDuration: time.Minute, OperationTimeout: 30 * time.Second,
+		IdleInterval: time.Second, PreparingPollInterval: 10 * time.Second,
+		RetryInterval: time.Minute, Now: func() time.Time { return now },
+	}
+}
+
 type fakeJobProvider struct {
 	releases           []acquisition.Release
 	searchErr          error
@@ -603,6 +779,31 @@ type fakeJobProvider struct {
 	deleted            acquisition.CreatedObject
 	deleteErr          error
 	deleteCalls        int
+}
+
+type fakeDirectWorkerProvider struct {
+	resolved     []acquisition.RangeCandidate
+	resolveErr   error
+	created      acquisition.CreatedObject
+	prepareErr   error
+	prepareCalls int
+	inspection   acquisition.PreparationInspection
+	inspectErr   error
+	inspectCalls int
+}
+
+func (f *fakeDirectWorkerProvider) Resolve(context.Context, acquisition.SearchRequest) ([]acquisition.RangeCandidate, error) {
+	return append([]acquisition.RangeCandidate(nil), f.resolved...), f.resolveErr
+}
+
+func (f *fakeDirectWorkerProvider) Prepare(context.Context, acquisition.RangeCandidate) (acquisition.CreatedObject, error) {
+	f.prepareCalls++
+	return f.created, f.prepareErr
+}
+
+func (f *fakeDirectWorkerProvider) Inspect(context.Context, acquisition.JobSelection, acquisition.CreatedObject) (acquisition.PreparationInspection, error) {
+	f.inspectCalls++
+	return f.inspection, f.inspectErr
 }
 
 func (f *fakeJobProvider) Search(context.Context, acquisition.SearchRequest) ([]acquisition.Release, error) {
@@ -723,6 +924,19 @@ func mustJobSelection(t *testing.T) acquisition.JobSelection {
 	selection, err := acquisition.NewJobSelection(mustJobRelease(t))
 	require.NoError(t, err)
 	return selection
+}
+
+func mustWorkerRangeCandidate(t *testing.T) acquisition.RangeCandidate {
+	t.Helper()
+	media, err := domain.NewProviderMediaCandidate(
+		domain.BackingRef{Provider: "internet-archive-file", ObjectID: "opaque-object"},
+		"Example.Movie.2026.mp4",
+		175_099_607,
+	)
+	require.NoError(t, err)
+	candidate, err := acquisition.NewRangeCandidate(media, "Internet Archive")
+	require.NoError(t, err)
+	return candidate
 }
 
 func mustJobTorrentInput(t *testing.T) acquisition.TorrentInput {

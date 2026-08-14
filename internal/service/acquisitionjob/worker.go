@@ -48,6 +48,17 @@ type Preparer interface {
 	DeleteCreatedTorrent(ctx context.Context, created acquisition.CreatedObject) error
 }
 
+// DirectResolver returns exact provider-backed media candidates.
+type DirectResolver interface {
+	Resolve(ctx context.Context, request acquisition.SearchRequest) ([]acquisition.RangeCandidate, error)
+}
+
+// RangePreparer verifies and inspects exact range-readable provider objects.
+type RangePreparer interface {
+	Prepare(ctx context.Context, candidate acquisition.RangeCandidate) (acquisition.CreatedObject, error)
+	Inspect(ctx context.Context, selection acquisition.JobSelection, created acquisition.CreatedObject) (acquisition.PreparationInspection, error)
+}
+
 // Publisher atomically exposes one completed media item to Plex's filesystem.
 type Publisher interface {
 	PublishAcquired(ctx context.Context, media acquisition.AcquiredMedia) error
@@ -55,9 +66,11 @@ type Publisher interface {
 
 // Providers is one request-local set created from private saved credentials.
 type Providers struct {
-	Searcher     Searcher
-	Materializer Materializer
-	Preparer     Preparer
+	Searcher       Searcher
+	Materializer   Materializer
+	Preparer       Preparer
+	DirectResolver DirectResolver
+	RangePreparer  RangePreparer
 }
 
 // ProviderFactory builds fresh provider gateways without exposing credentials
@@ -128,6 +141,9 @@ func (w *Worker) ProcessOne(ctx context.Context) (acquisition.JobState, error) {
 	if providers.Searcher == nil || providers.Materializer == nil || providers.Preparer == nil {
 		return w.deferProviderFailure(ctx, claim, errors.New("provider set is incomplete"))
 	}
+	if (providers.DirectResolver == nil) != (providers.RangePreparer == nil) {
+		return w.deferProviderFailure(ctx, claim, errors.New("direct range provider set is incomplete"))
+	}
 	switch claim.Job().State() {
 	case acquisition.JobStateQueued:
 		return w.resolve(ctx, operationContext, claim, providers)
@@ -141,10 +157,7 @@ func (w *Worker) ProcessOne(ctx context.Context) (acquisition.JobState, error) {
 }
 
 func (w *Worker) resolve(ctx context.Context, operationContext context.Context, claim acquisition.AcquisitionJobClaim, providers Providers) (acquisition.JobState, error) {
-	releases, err := providers.Searcher.Search(operationContext, claim.Job().Request())
-	if err != nil {
-		return w.deferProviderFailure(ctx, claim, err)
-	}
+	releases, searchErr := providers.Searcher.Search(operationContext, claim.Job().Request())
 	eligible := make([]acquisition.Release, 0, min(len(releases), maximumCacheProbeCandidates))
 	seen := make(map[string]struct{}, min(len(releases), maximumCacheProbeCandidates))
 	for _, release := range releases {
@@ -161,34 +174,62 @@ func (w *Worker) resolve(ctx context.Context, operationContext context.Context, 
 			break
 		}
 	}
-	if len(eligible) == 0 {
-		return w.fail(ctx, claim, acquisition.JobErrorNoRelease, false)
+	var direct []acquisition.RangeCandidate
+	var directErr error
+	if providers.DirectResolver != nil {
+		direct, directErr = providers.DirectResolver.Resolve(operationContext, claim.Job().Request())
 	}
-	cached, err := providers.Preparer.CachedTorrents(operationContext, eligible)
-	if err != nil {
-		return w.deferProviderFailure(ctx, claim, err)
+	if searchErr != nil && (directErr != nil || len(direct) == 0) {
+		return w.deferProviderFailure(ctx, claim, searchErr)
 	}
-	ordered := cachedFirst(eligible, cached)
-	if len(ordered) > acquisition.MaximumJobCandidates {
-		ordered = ordered[:acquisition.MaximumJobCandidates]
+	var cached []acquisition.Release
+	var cacheErr error
+	if len(eligible) > 0 {
+		cached, cacheErr = providers.Preparer.CachedTorrents(operationContext, eligible)
 	}
-	candidates := make([]acquisition.JobCandidate, 0, len(ordered))
-	for ordinal, release := range ordered {
-		selection, selectionErr := acquisition.NewJobSelection(release)
-		if selectionErr != nil {
-			continue
+	if cacheErr != nil && len(direct) == 0 {
+		return w.deferProviderFailure(ctx, claim, cacheErr)
+	}
+	if cacheErr != nil {
+		cached = nil
+	}
+	cachedReleases, uncachedReleases := partitionCached(eligible, cached)
+	candidates := make([]acquisition.JobCandidate, 0, acquisition.MaximumJobCandidates)
+	cachedLimit := acquisition.MaximumJobCandidates
+	if len(direct) > 0 {
+		cachedLimit--
+	}
+	for _, release := range cachedReleases {
+		if len(candidates) == cachedLimit {
+			break
 		}
-		outcome := acquisition.CandidateOutcomePending
-		if len(candidates) == 0 {
-			outcome = acquisition.CandidateOutcomeSelected
+		selection, selectionErr := acquisition.NewTorrentJobSelection(release)
+		if selectionErr == nil {
+			candidates = appendJobCandidate(candidates, selection)
 		}
-		candidate, candidateErr := acquisition.NewJobCandidate(selection, ordinal, outcome)
-		if candidateErr != nil {
-			continue
+	}
+	for _, directCandidate := range direct {
+		if len(candidates) == acquisition.MaximumJobCandidates {
+			break
 		}
-		candidates = append(candidates, candidate)
+		selection, selectionErr := acquisition.NewRangeJobSelection(directCandidate)
+		if selectionErr == nil {
+			candidates = appendJobCandidate(candidates, selection)
+		}
+	}
+	for _, release := range uncachedReleases {
+		if len(candidates) == acquisition.MaximumJobCandidates {
+			break
+		}
+		selection, selectionErr := acquisition.NewTorrentJobSelection(release)
+		if selectionErr == nil {
+			candidates = appendJobCandidate(candidates, selection)
+		}
 	}
 	if len(candidates) == 0 {
+		if directErr != nil {
+			return w.deferProviderFailure(ctx, claim, directErr)
+		}
 		return w.fail(ctx, claim, acquisition.JobErrorNoRelease, false)
 	}
 	if err := w.commit(ctx, func(commitContext context.Context) error {
@@ -199,7 +240,7 @@ func (w *Worker) resolve(ctx context.Context, operationContext context.Context, 
 	return acquisition.JobStateSelected, nil
 }
 
-func cachedFirst(eligible []acquisition.Release, cached []acquisition.Release) []acquisition.Release {
+func partitionCached(eligible []acquisition.Release, cached []acquisition.Release) ([]acquisition.Release, []acquisition.Release) {
 	cachedHashes := make(map[string]struct{}, len(cached))
 	eligibleHashes := make(map[string]struct{}, len(eligible))
 	for _, release := range eligible {
@@ -210,22 +251,55 @@ func cachedFirst(eligible []acquisition.Release, cached []acquisition.Release) [
 			cachedHashes[release.InfoHash()] = struct{}{}
 		}
 	}
-	ordered := make([]acquisition.Release, 0, len(eligible))
+	cachedResult := make([]acquisition.Release, 0, len(cachedHashes))
+	uncachedResult := make([]acquisition.Release, 0, len(eligible)-len(cachedHashes))
 	for _, release := range eligible {
 		if _, isCached := cachedHashes[release.InfoHash()]; isCached {
-			ordered = append(ordered, release)
+			cachedResult = append(cachedResult, release)
 		}
 	}
 	for _, release := range eligible {
 		if _, isCached := cachedHashes[release.InfoHash()]; !isCached {
-			ordered = append(ordered, release)
+			uncachedResult = append(uncachedResult, release)
 		}
 	}
-	return ordered
+	return cachedResult, uncachedResult
+}
+
+func appendJobCandidate(candidates []acquisition.JobCandidate, selection acquisition.JobSelection) []acquisition.JobCandidate {
+	outcome := acquisition.CandidateOutcomePending
+	if len(candidates) == 0 {
+		outcome = acquisition.CandidateOutcomeSelected
+	}
+	candidate, err := acquisition.NewJobCandidate(selection, len(candidates), outcome)
+	if err != nil {
+		return candidates
+	}
+	return append(candidates, candidate)
 }
 
 func (w *Worker) prepare(ctx context.Context, operationContext context.Context, claim acquisition.AcquisitionJobClaim, providers Providers) (acquisition.JobState, error) {
 	selection := claim.Job().Selection()
+	if selection.Kind() == acquisition.SelectionKindRange {
+		candidate, ok := selection.RangeCandidate()
+		if !ok {
+			return w.fail(ctx, claim, acquisition.JobErrorNoPlayableMedia, false)
+		}
+		created, err := providers.RangePreparer.Prepare(operationContext, candidate)
+		if err == nil {
+			return w.attach(ctx, claim, created, false)
+		}
+		if errors.Is(err, domain.ErrNotFound) {
+			if _, planned := claim.Job().SelectedCandidateOrdinal(); planned {
+				return w.abandonCandidate(ctx, operationContext, claim, providers.Preparer, acquisition.CandidateOutcomeMissing, acquisition.JobErrorNoPlayableMedia, true)
+			}
+			return w.fail(ctx, claim, acquisition.JobErrorNoPlayableMedia, false)
+		}
+		return w.deferProviderFailure(ctx, claim, err)
+	}
+	if selection.Kind() != acquisition.SelectionKindTorrent {
+		return w.fail(ctx, claim, acquisition.JobErrorNoRelease, false)
+	}
 	created, err := providers.Preparer.FindTorrentByHash(operationContext, selection.InfoHash())
 	switch {
 	case err == nil:
@@ -275,6 +349,9 @@ func (w *Worker) prepare(ctx context.Context, operationContext context.Context, 
 }
 
 func (w *Worker) publish(ctx context.Context, operationContext context.Context, claim acquisition.AcquisitionJobClaim, providers Providers) (acquisition.JobState, error) {
+	if claim.Job().Selection().Kind() == acquisition.SelectionKindRange {
+		return w.publishRange(ctx, operationContext, claim, providers)
+	}
 	inspection, err := providers.Preparer.InspectCreatedTorrent(operationContext, claim.Job().CreatedObject())
 	if errors.Is(err, acquisition.ErrStalled) {
 		if _, planned := claim.Job().SelectedCandidateOrdinal(); planned {
@@ -306,6 +383,46 @@ func (w *Worker) publish(ctx context.Context, operationContext context.Context, 
 		return w.fail(ctx, claim, acquisition.JobErrorNoPlayableMedia, false)
 	}
 	media, err := acquisition.NewAcquiredMedia(claim.Job().Request(), claim.Job().Selection().Release(), selected)
+	if err != nil {
+		if _, planned := claim.Job().SelectedCandidateOrdinal(); planned {
+			return w.abandonCandidate(ctx, operationContext, claim, providers.Preparer, acquisition.CandidateOutcomeUnplayable, acquisition.JobErrorNoPlayableMedia, false)
+		}
+		return w.fail(ctx, claim, acquisition.JobErrorNoPlayableMedia, false)
+	}
+	if err := w.publisher.PublishAcquired(operationContext, media); err != nil {
+		return w.deferProviderFailure(ctx, claim, err)
+	}
+	if err := w.commit(ctx, func(commitContext context.Context) error {
+		return w.queue.Succeed(commitContext, claim, media.Candidate().ObjectID, w.now().UTC())
+	}); err != nil {
+		return "", err
+	}
+	return acquisition.JobStateSucceeded, nil
+}
+
+func (w *Worker) publishRange(ctx context.Context, operationContext context.Context, claim acquisition.AcquisitionJobClaim, providers Providers) (acquisition.JobState, error) {
+	inspection, err := providers.RangePreparer.Inspect(operationContext, claim.Job().Selection(), claim.Job().CreatedObject())
+	if errors.Is(err, acquisition.ErrNotReady) {
+		progress := max(claim.Job().Progress(), inspection.Progress())
+		return w.deferJobWithProgress(ctx, claim, acquisition.JobErrorNone, w.options.PreparingPollInterval, progress)
+	}
+	if errors.Is(err, domain.ErrNotFound) {
+		if _, planned := claim.Job().SelectedCandidateOrdinal(); planned {
+			return w.abandonCandidate(ctx, operationContext, claim, providers.Preparer, acquisition.CandidateOutcomeMissing, acquisition.JobErrorNoPlayableMedia, true)
+		}
+		return w.fail(ctx, claim, acquisition.JobErrorNoPlayableMedia, false)
+	}
+	if err != nil {
+		return w.deferProviderFailure(ctx, claim, err)
+	}
+	selected, err := acquisitionservice.SelectCandidate(claim.Job().Request(), inspection.Candidates())
+	if err != nil {
+		if _, planned := claim.Job().SelectedCandidateOrdinal(); planned {
+			return w.abandonCandidate(ctx, operationContext, claim, providers.Preparer, acquisition.CandidateOutcomeUnplayable, acquisition.JobErrorNoPlayableMedia, false)
+		}
+		return w.fail(ctx, claim, acquisition.JobErrorNoPlayableMedia, false)
+	}
+	media, err := acquisition.NewRangeAcquiredMedia(claim.Job().Request(), selected)
 	if err != nil {
 		if _, planned := claim.Job().SelectedCandidateOrdinal(); planned {
 			return w.abandonCandidate(ctx, operationContext, claim, providers.Preparer, acquisition.CandidateOutcomeUnplayable, acquisition.JobErrorNoPlayableMedia, false)

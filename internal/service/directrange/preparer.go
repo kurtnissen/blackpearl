@@ -73,6 +73,9 @@ func (p *Preparer) verify(ctx context.Context, candidate acquisition.RangeCandid
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return fmt.Errorf("open direct range media: %w", ctxErr)
 		}
+		if errors.Is(err, domain.ErrNotFound) {
+			return fmt.Errorf("open direct range media: %w", domain.ErrNotFound)
+		}
 		return errors.New("open direct range media is unavailable")
 	}
 	defer func() {

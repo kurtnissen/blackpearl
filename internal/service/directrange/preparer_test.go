@@ -81,6 +81,11 @@ func TestPreparerValidatesDependenciesVariantsAndCancellation(t *testing.T) {
 	cancel()
 	_, err = preparer.Prepare(canceled, directCandidate(t, "object", "Example.Movie.2026.mp4", 16))
 	require.ErrorIs(t, err, context.Canceled)
+
+	notFound, err := directrange.NewPreparer(&preparerOpener{err: domain.ErrNotFound})
+	require.NoError(t, err)
+	_, err = notFound.Prepare(context.Background(), directCandidate(t, "missing", "Missing.Movie.2026.mp4", 16))
+	require.ErrorIs(t, err, domain.ErrNotFound)
 }
 
 type preparerOpener struct {
