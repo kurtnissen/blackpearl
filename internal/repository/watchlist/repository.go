@@ -26,8 +26,9 @@ type Repository struct {
 	db *sql.DB
 }
 
-// Open opens the queue database and applies its embedded migrations.
-func Open(ctx context.Context, path string) (*Repository, error) {
+// Open opens the queue database, applies migrations, and seeds the durable
+// acquisition policy only when the database has no stored choice yet.
+func Open(ctx context.Context, path string, initialAcquisitionEnabled bool) (*Repository, error) {
 	if !filepath.IsAbs(path) {
 		return nil, errors.New("watchlist database path must be absolute")
 	}
@@ -46,7 +47,63 @@ func Open(ctx context.Context, path string) (*Repository, error) {
 	if err := repository.migrate(ctx); err != nil {
 		return nil, errors.Join(err, database.Close())
 	}
+	if err := repository.initializeAcquisitionPolicy(ctx, initialAcquisitionEnabled); err != nil {
+		return nil, errors.Join(err, database.Close())
+	}
 	return repository, nil
+}
+
+func (r *Repository) initializeAcquisitionPolicy(ctx context.Context, enabled bool) error {
+	value := 0
+	if enabled {
+		value = 1
+	}
+	if _, err := r.db.ExecContext(ctx, `
+		INSERT OR IGNORE INTO watchlist_settings (singleton, acquisition_enabled)
+		VALUES (1, ?)
+	`, value); err != nil {
+		return fmt.Errorf("initialize watchlist acquisition policy: %w", err)
+	}
+	return nil
+}
+
+// AcquisitionEnabled returns the durable automatic-acquisition policy.
+func (r *Repository) AcquisitionEnabled(ctx context.Context) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, fmt.Errorf("read watchlist acquisition policy: %w", err)
+	}
+	var value int
+	if err := r.db.QueryRowContext(ctx, `
+		SELECT acquisition_enabled FROM watchlist_settings WHERE singleton = 1
+	`).Scan(&value); err != nil {
+		return false, fmt.Errorf("read watchlist acquisition policy: %w", err)
+	}
+	return value == 1, nil
+}
+
+// SetAcquisitionEnabled replaces the durable automatic-acquisition policy.
+func (r *Repository) SetAcquisitionEnabled(ctx context.Context, enabled bool) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("set watchlist acquisition policy: %w", err)
+	}
+	value := 0
+	if enabled {
+		value = 1
+	}
+	result, err := r.db.ExecContext(ctx, `
+		UPDATE watchlist_settings SET acquisition_enabled = ? WHERE singleton = 1
+	`, value)
+	if err != nil {
+		return fmt.Errorf("set watchlist acquisition policy: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read watchlist acquisition policy update: %w", err)
+	}
+	if rows != 1 {
+		return errors.New("watchlist acquisition policy is unavailable")
+	}
+	return nil
 }
 
 func (r *Repository) configure(ctx context.Context) error {
@@ -192,7 +249,11 @@ func (r *Repository) Claim(ctx context.Context, now time.Time, leaseDuration tim
 		WITH eligible AS (
 			SELECT rowid
 			FROM watchlist_queue
-			WHERE media_type = 'movie'
+			WHERE EXISTS (
+				SELECT 1 FROM watchlist_settings
+				WHERE singleton = 1 AND acquisition_enabled = 1
+			)
+			  AND media_type = 'movie'
 			  AND auto_eligible = 1
 			  AND (
 				(state IN ('pending', 'not_cached', 'retryable') AND next_attempt_unix_ms <= ?)

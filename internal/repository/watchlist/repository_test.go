@@ -94,7 +94,7 @@ func TestRepositoryDefersNotCachedMovieUntilCooldownExpires(t *testing.T) {
 func TestRepositoryAttachesDurableJobAndRecoversItAfterRestart(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "blackpearl.db")
-	repository, err := watchlistrepo.Open(context.Background(), path)
+	repository, err := watchlistrepo.Open(context.Background(), path, true)
 	require.NoError(t, err)
 	now := time.Date(2026, time.August, 14, 12, 0, 0, 0, time.UTC)
 	reconcileAt := now.Add(time.Minute)
@@ -211,7 +211,7 @@ func TestRepositoryAllowsOnlyOneConcurrentClaim(t *testing.T) {
 func TestRepositoryQueueSurvivesCloseAndReopen(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "blackpearl.db")
-	repository, err := watchlistrepo.Open(context.Background(), path)
+	repository, err := watchlistrepo.Open(context.Background(), path, true)
 	require.NoError(t, err)
 	now := time.Date(2026, time.August, 14, 12, 0, 0, 0, time.UTC)
 	require.NoError(t, repository.UpsertSnapshot(context.Background(), []acquisitiondomain.WatchlistItem{
@@ -219,7 +219,7 @@ func TestRepositoryQueueSurvivesCloseAndReopen(t *testing.T) {
 	}, now))
 	require.NoError(t, repository.Close())
 
-	reopened, err := watchlistrepo.Open(context.Background(), path)
+	reopened, err := watchlistrepo.Open(context.Background(), path, false)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, reopened.Close()) })
 	claim, err := reopened.Claim(context.Background(), now, time.Minute)
@@ -229,7 +229,7 @@ func TestRepositoryQueueSurvivesCloseAndReopen(t *testing.T) {
 
 func TestRepositoryRejectsInvalidArgumentsAndHonorsCancellation(t *testing.T) {
 	t.Parallel()
-	_, err := watchlistrepo.Open(context.Background(), "relative.db")
+	_, err := watchlistrepo.Open(context.Background(), "relative.db", true)
 	require.Error(t, err)
 	repository := openRepository(t, filepath.Join(t.TempDir(), "blackpearl.db"))
 	ctx, cancel := context.WithCancel(context.Background())
@@ -251,10 +251,38 @@ func TestRepositoryRejectsInvalidArgumentsAndHonorsCancellation(t *testing.T) {
 
 func openRepository(t *testing.T, path string) *watchlistrepo.Repository {
 	t.Helper()
-	repository, err := watchlistrepo.Open(context.Background(), path)
+	repository, err := watchlistrepo.Open(context.Background(), path, true)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, repository.Close()) })
 	return repository
+}
+
+func TestRepositoryPersistsAcquisitionPolicyAndGatesClaimsAtomically(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "blackpearl.db")
+	repository, err := watchlistrepo.Open(context.Background(), path, false)
+	require.NoError(t, err)
+	now := time.Date(2026, time.August, 14, 12, 0, 0, 0, time.UTC)
+	require.NoError(t, repository.UpsertSnapshot(context.Background(), []acquisitiondomain.WatchlistItem{
+		mustItem(t, "plex://movie/policy", acquisitiondomain.WatchlistMediaTypeMovie, "Policy"),
+	}, now))
+
+	enabled, err := repository.AcquisitionEnabled(context.Background())
+	require.NoError(t, err)
+	require.False(t, enabled)
+	_, err = repository.Claim(context.Background(), now, time.Minute)
+	require.ErrorIs(t, err, domain.ErrNotFound)
+	require.NoError(t, repository.SetAcquisitionEnabled(context.Background(), true))
+	_, err = repository.Claim(context.Background(), now, time.Minute)
+	require.NoError(t, err)
+	require.NoError(t, repository.Close())
+
+	reopened, err := watchlistrepo.Open(context.Background(), path, false)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, reopened.Close()) })
+	enabled, err = reopened.AcquisitionEnabled(context.Background())
+	require.NoError(t, err)
+	require.True(t, enabled)
 }
 
 func mustItem(t *testing.T, externalID string, mediaType acquisitiondomain.WatchlistMediaType, title string) acquisitiondomain.WatchlistItem {

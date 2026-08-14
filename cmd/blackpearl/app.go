@@ -563,7 +563,7 @@ func runBrowserSetup(ctx context.Context, cfg config.Config, logger *slog.Logger
 		if gatewayErr != nil {
 			return fmt.Errorf("configure Plex watchlist gateway: %w", gatewayErr)
 		}
-		openedRepository, repositoryErr := watchlistrepo.Open(ctx, cfg.DBPath)
+		openedRepository, repositoryErr := watchlistrepo.Open(ctx, cfg.DBPath, cfg.WatchlistAcquisitionEnabled)
 		if repositoryErr != nil {
 			return fmt.Errorf("open Plex watchlist queue: %w", repositoryErr)
 		}

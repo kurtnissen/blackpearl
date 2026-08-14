@@ -658,7 +658,7 @@ func TestRunBrowserSetupSubmitsWatchlistMovieToDurableQueue(t *testing.T) {
 	require.True(t, hasPlan)
 	require.Zero(t, selectedOrdinal)
 	require.NoError(t, jobQueue.Close())
-	queue, err := watchlistrepo.Open(context.Background(), cfg.DBPath)
+	queue, err := watchlistrepo.Open(context.Background(), cfg.DBPath, cfg.WatchlistAcquisitionEnabled)
 	require.NoError(t, err)
 	var queueStatus acquisitiondomain.WatchlistQueueStatus
 	require.Eventually(t, func() bool {
