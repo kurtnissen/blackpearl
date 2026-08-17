@@ -1,0 +1,57 @@
+name: Disposable Windows Docker capability probe
+
+on:
+  workflow_dispatch:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-capability:
+    if: github.event_name == 'workflow_dispatch' || github.head_ref == 'acceptance/ubuntu-fuse-plex'
+    runs-on: windows-2025
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - name: Inspect hosted Windows container capability
+        id: capability
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Continue"
+          $docker = Get-Command docker -ErrorAction SilentlyContinue
+          if ($null -eq $docker) {
+            "linux-docker=false" >> $env:GITHUB_OUTPUT
+            "## Windows Docker capability" >> $env:GITHUB_STEP_SUMMARY
+            "The hosted runner has no Docker client. This is not BlackPearl runtime acceptance." >> $env:GITHUB_STEP_SUMMARY
+            exit 0
+          }
+
+          docker version
+          $engineType = docker info --format '{{.OSType}}' 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            "linux-docker=false" >> $env:GITHUB_OUTPUT
+            "## Windows Docker capability" >> $env:GITHUB_STEP_SUMMARY
+            "The hosted runner has a Docker client but no reachable Docker engine. This is not BlackPearl runtime acceptance." >> $env:GITHUB_STEP_SUMMARY
+            exit 0
+          }
+
+          docker compose version
+          if ($engineType.Trim() -ne "linux") {
+            "linux-docker=false" >> $env:GITHUB_OUTPUT
+            "## Windows Docker capability" >> $env:GITHUB_STEP_SUMMARY
+            "The hosted runner exposes a $($engineType.Trim()) container engine, not the Linux engine required by BlackPearl. This is not BlackPearl runtime acceptance." >> $env:GITHUB_STEP_SUMMARY
+            exit 0
+          }
+
+          "linux-docker=true" >> $env:GITHUB_OUTPUT
+          "## Windows Docker capability" >> $env:GITHUB_STEP_SUMMARY
+          "A Linux Docker engine is reachable; the smoke probe will run." >> $env:GITHUB_STEP_SUMMARY
+      - name: Probe Linux containers and portable Compose rendering
+        if: steps.capability.outputs['linux-docker'] == 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          docker run --rm --platform linux/amd64 alpine:3.22 uname -a
+          docker compose -f compose.portable.yaml config --quiet
+          "Linux-container and Compose probes passed. This is capability evidence only, not Plex/NFS acceptance." >> $env:GITHUB_STEP_SUMMARY
