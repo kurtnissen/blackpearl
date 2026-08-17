@@ -166,9 +166,15 @@ uses the same hard quota, retains foreground headroom, stops instead of evicting
 current cache data, and never downloads the
 whole next episode unless the configured prefix itself spans the whole file.
 
-If TorBox is briefly unavailable while BlackPearl starts, saved setup restore
-retries with bounded exponential backoff. The setup page remains available, and
-the existing manifest is republished automatically when the provider recovers.
+If one or more saved providers are briefly unavailable while BlackPearl starts,
+the setup page and `/healthz` remain available while BlackPearl validates each
+backing. When at least one file is valid and every omission is a typed temporary
+failure, BlackPearl publishes that stable reachable subset, `/readyz` reports
+ready, and the page shows the exact active, saved, and unavailable counts. The
+complete saved manifest and token are not rewritten. Background restore keeps
+retrying and atomically replaces the partial catalog only after every saved file
+validates in one attempt. Bad credentials, missing objects, and changed size,
+validator, license, or path fail closed instead of silently removing a file.
 
 ## Inspect and stop
 
