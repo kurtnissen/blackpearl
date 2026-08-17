@@ -107,7 +107,7 @@ func (g *Gateway) fetchMetadata(ctx context.Context, identifier string) (_ archi
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return archiveMetadataEnvelope{}, fmt.Errorf("request Internet Archive metadata: %w", ctxErr)
 		}
-		return archiveMetadataEnvelope{}, errors.New("request Internet Archive metadata")
+		return archiveMetadataEnvelope{}, fmt.Errorf("request Internet Archive metadata: %w", domain.ErrUnavailable)
 	}
 	defer func() {
 		if closeErr := response.Body.Close(); closeErr != nil {
@@ -116,6 +116,9 @@ func (g *Gateway) fetchMetadata(ctx context.Context, identifier string) (_ archi
 	}()
 	if response.StatusCode == http.StatusNotFound || response.StatusCode == http.StatusGone {
 		return archiveMetadataEnvelope{}, fmt.Errorf("internet Archive metadata is unavailable: %w", domain.ErrNotFound)
+	}
+	if temporaryArchiveStatus(response.StatusCode) {
+		return archiveMetadataEnvelope{}, fmt.Errorf("internet Archive metadata is temporarily unavailable: status %d: %w", response.StatusCode, domain.ErrUnavailable)
 	}
 	if response.StatusCode != http.StatusOK {
 		return archiveMetadataEnvelope{}, fmt.Errorf("internet Archive metadata returned HTTP status %d", response.StatusCode)
@@ -132,6 +135,10 @@ func (g *Gateway) fetchMetadata(ctx context.Context, identifier string) (_ archi
 		return archiveMetadataEnvelope{}, errors.New("decode Internet Archive metadata response")
 	}
 	return metadata, nil
+}
+
+func temporaryArchiveStatus(status int) bool {
+	return status == http.StatusTooManyRequests || status >= http.StatusInternalServerError
 }
 
 func supportedLicense(raw json.RawMessage) bool {

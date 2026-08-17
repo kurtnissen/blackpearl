@@ -53,7 +53,7 @@ func (g *Gateway) Open(ctx context.Context, backing domain.BackingRef) (_ acquis
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return nil, fmt.Errorf("request Internet Archive file metadata: %w", ctxErr)
 		}
-		return nil, errors.New("request Internet Archive file metadata")
+		return nil, fmt.Errorf("request Internet Archive file metadata: %w", domain.ErrUnavailable)
 	}
 	defer func() {
 		if closeErr := response.Body.Close(); closeErr != nil {
@@ -62,6 +62,9 @@ func (g *Gateway) Open(ctx context.Context, backing domain.BackingRef) (_ acquis
 	}()
 	if response.StatusCode == http.StatusNotFound || response.StatusCode == http.StatusGone {
 		return nil, fmt.Errorf("internet Archive file metadata is unavailable: %w", domain.ErrNotFound)
+	}
+	if temporaryArchiveStatus(response.StatusCode) {
+		return nil, fmt.Errorf("internet Archive file metadata is temporarily unavailable: status %d: %w", response.StatusCode, domain.ErrUnavailable)
 	}
 	if response.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("internet Archive file metadata requires status 200: got %d", response.StatusCode)

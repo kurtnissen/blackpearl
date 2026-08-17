@@ -76,6 +76,13 @@ func (e *cdnStatusError) Error() string {
 	return fmt.Sprintf("TorBox CDN validation requires status 206: got %d", e.status)
 }
 
+func (e *cdnStatusError) Unwrap() error {
+	if temporaryProviderStatus(e.status) {
+		return domain.ErrUnavailable
+	}
+	return nil
+}
+
 type apiEnvelope[T any] struct {
 	Success bool   `json:"success"`
 	Detail  string `json:"detail"`
@@ -181,7 +188,10 @@ func (g *Gateway) validateDownload(ctx context.Context, downloadURL *url.URL, ex
 	request.Header.Set("Range", "bytes=0-0")
 	response, err := g.client.Do(request)
 	if err != nil {
-		return errors.New("request TorBox CDN validation range")
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return fmt.Errorf("request TorBox CDN validation range: %w", ctxErr)
+		}
+		return fmt.Errorf("request TorBox CDN validation range: %w", domain.ErrUnavailable)
 	}
 	defer func() { resultErr = errors.Join(resultErr, response.Body.Close()) }()
 	if response.StatusCode != http.StatusPartialContent {
@@ -383,11 +393,14 @@ func (g *Gateway) doJSONLimited(request *http.Request, destination any, maximumB
 		if contextErr := request.Context().Err(); contextErr != nil {
 			return fmt.Errorf("perform TorBox API request: %w", contextErr)
 		}
-		return errors.New("perform TorBox API request")
+		return fmt.Errorf("perform TorBox API request: %w", domain.ErrUnavailable)
 	}
 	defer func() { resultErr = errors.Join(resultErr, response.Body.Close()) }()
 	if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
 		return fmt.Errorf("TorBox API credentials rejected: %w", domain.ErrUnauthorized)
+	}
+	if temporaryProviderStatus(response.StatusCode) {
+		return fmt.Errorf("TorBox API is temporarily unavailable: status %d: %w", response.StatusCode, domain.ErrUnavailable)
 	}
 	if response.StatusCode != http.StatusOK {
 		return fmt.Errorf("TorBox API requires status 200: got %d", response.StatusCode)
@@ -401,6 +414,10 @@ func (g *Gateway) doJSONLimited(request *http.Request, destination any, maximumB
 		return errors.New("TorBox API response exceeds one JSON value")
 	}
 	return nil
+}
+
+func temporaryProviderStatus(status int) bool {
+	return status == http.StatusTooManyRequests || status >= http.StatusInternalServerError
 }
 
 func (g *Gateway) sanitizeDetail(value string) string {

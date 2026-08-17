@@ -158,6 +158,48 @@ func TestGatewayOpenMapsCompletedTorrentFile(t *testing.T) {
 	require.Equal(t, int64(1), linkCalls.Load())
 }
 
+func TestGatewayOpenClassifiesTemporaryAPIStatuses(t *testing.T) {
+	t.Parallel()
+	for _, status := range []int{http.StatusTooManyRequests, http.StatusServiceUnavailable} {
+		status := status
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			t.Parallel()
+			api := newTestAPI(t, func(writer http.ResponseWriter, _ *http.Request) {
+				writer.WriteHeader(status)
+			})
+			gateway := newTestGateway(t, api.URL+"/v1/api/", api.Client())
+
+			_, err := gateway.Open(context.Background(), domainBacking("17:3"))
+
+			require.ErrorIs(t, err, domain.ErrUnavailable)
+			require.NotErrorIs(t, err, domain.ErrUnauthorized)
+			require.NotErrorIs(t, err, domain.ErrNotFound)
+		})
+	}
+}
+
+func TestGatewayOpenClassifiesTemporaryCDNStatus(t *testing.T) {
+	t.Parallel()
+	cdn := newTestCDN(t, []byte("0123456789abcdef"), func(response *cdnResponse) {
+		response.status = http.StatusServiceUnavailable
+	})
+	api := newTestAPI(t, func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/v1/api/torrents/mylist":
+			writeTorrentMetadata(writer, 17, 3, 16)
+		case "/v1/api/torrents/requestdl":
+			writeEnvelope(writer, true, "ok", fmt.Sprintf("%q", cdn.URL))
+		default:
+			http.NotFound(writer, request)
+		}
+	})
+	gateway := newTestGateway(t, api.URL+"/v1/api/", cdn.Client())
+
+	_, err := gateway.Open(context.Background(), domainBacking("17:3"))
+
+	require.ErrorIs(t, err, domain.ErrUnavailable)
+}
+
 func TestGatewayOpenAcceptsCDNThatProvesRangesWithoutAdvertisingThemOnHead(t *testing.T) {
 	t.Parallel()
 	content := []byte("0123456789abcdef")
@@ -297,6 +339,7 @@ func TestGatewayDownloadTransportErrorNeverExposesToken(t *testing.T) {
 	_, err = gateway.requestDownloadURL(context.Background(), objectID{TorrentID: 17, FileID: 3})
 
 	require.ErrorContains(t, err, "request TorBox download link")
+	require.ErrorIs(t, err, domain.ErrUnavailable)
 	require.NotContains(t, err.Error(), secret)
 }
 

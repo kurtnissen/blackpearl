@@ -17,6 +17,8 @@ var (
 	ErrNotConfigured = errors.New("not configured")
 	// ErrUnauthorized indicates that an external provider rejected credentials.
 	ErrUnauthorized = errors.New("unauthorized")
+	// ErrUnavailable indicates that an external provider operation may succeed on retry.
+	ErrUnavailable = errors.New("temporarily unavailable")
 	// ErrCleanupDeferred indicates that primary state committed durably but
 	// removal of inactive private state must be retried later.
 	ErrCleanupDeferred = errors.New("cleanup deferred")

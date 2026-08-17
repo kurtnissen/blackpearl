@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 
 	"github.com/kurtnissen/blackpearl/internal/acquisition"
@@ -148,6 +149,71 @@ func TestGatewayOpenRejectsChangedSizeAndMissingHTTPValidator(t *testing.T) {
 			require.ErrorIs(t, err, acquisition.ErrRangeUnplayable)
 		})
 	}
+}
+
+func TestGatewayOpenClassifiesTemporaryMetadataAndFileStatuses(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name       string
+		failPath   string
+		statusCode int
+	}{
+		{name: "metadata rate limited", failPath: "/metadata/fixture", statusCode: http.StatusTooManyRequests},
+		{name: "metadata unavailable", failPath: "/metadata/fixture", statusCode: http.StatusServiceUnavailable},
+		{name: "file unavailable", failPath: "/download/fixture/movie.mp4", statusCode: http.StatusServiceUnavailable},
+	} {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			var failuresEnabled atomic.Bool
+			server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				if failuresEnabled.Load() && request.URL.Path == test.failPath {
+					writer.WriteHeader(test.statusCode)
+					return
+				}
+				switch request.URL.Path {
+				case "/metadata/fixture":
+					_, err := writer.Write([]byte(`{
+						"metadata":{"licenseurl":"https://creativecommons.org/licenses/by/4.0/"},
+						"files":[{"name":"movie.mp4","size":16,"sha1":"1111111111111111111111111111111111111111","source":"original"}]
+					}`))
+					require.NoError(t, err)
+				case "/download/fixture/movie.mp4":
+					writer.Header().Set("Content-Length", "16")
+					writer.Header().Set("ETag", `"fixture-etag"`)
+				default:
+					http.NotFound(writer, request)
+				}
+			}))
+			t.Cleanup(server.Close)
+			gateway, err := internetarchive.New(server.URL+"/", server.Client())
+			require.NoError(t, err)
+			candidates, err := gateway.ListRangeCandidates(context.Background(), archiveFixtureRelease(t, server.URL))
+			require.NoError(t, err)
+			failuresEnabled.Store(true)
+
+			_, err = gateway.Open(context.Background(), candidates[0].Media().Backing())
+
+			require.ErrorIs(t, err, domain.ErrUnavailable)
+			require.NotErrorIs(t, err, domain.ErrNotFound)
+			require.NotErrorIs(t, err, acquisition.ErrRangeUnplayable)
+		})
+	}
+}
+
+func TestGatewayOpenClassifiesTransportFailureAsTemporary(t *testing.T) {
+	t.Parallel()
+	server := archiveRangeServer(t, []byte("0123456789abcdef"), nil)
+	gateway, err := internetarchive.New(server.URL+"/", server.Client())
+	require.NoError(t, err)
+	candidates, err := gateway.ListRangeCandidates(context.Background(), archiveFixtureRelease(t, server.URL))
+	require.NoError(t, err)
+	server.Close()
+
+	_, err = gateway.Open(context.Background(), candidates[0].Media().Backing())
+
+	require.ErrorIs(t, err, domain.ErrUnavailable)
+	require.NotContains(t, err.Error(), server.URL)
 }
 
 func TestGatewayOpenClassifiesRemovedLicenseAndFile(t *testing.T) {
