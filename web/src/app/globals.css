@@ -95,6 +95,7 @@ legend { margin-bottom: 10px; }
 
 .ready-card { border-left: 5px solid var(--green); padding-left: 22px; }
 .ready-card h3 { margin: 5px 0 22px; font-family: Charter, "Iowan Old Style", serif; font-size: 34px; font-weight: 500; }
+.availability-warning { margin: -10px 0 22px; padding: 12px 14px; border-left: 4px solid var(--brass); background: rgba(173, 122, 36, .12); color: #59420f; line-height: 1.45; }
 dl { margin: 0; border-top: 1px solid var(--ink); }
 dl div { display: grid; grid-template-columns: 140px 1fr; gap: 16px; padding: 11px 0; border-bottom: 1px solid var(--line); }
 dt { color: #665b49; font-size: 12px; letter-spacing: .06em; text-transform: uppercase; }

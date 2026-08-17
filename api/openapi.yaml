@@ -340,11 +340,15 @@ components:
     SetupStatus:
       type: object
       additionalProperties: false
-      required: [setupRequired, tokenConfigured, csrfToken]
+      required: [setupRequired, tokenConfigured, csrfToken, savedItemCount, activeItemCount, unavailableItemCount, degraded]
       properties:
         setupRequired: { type: boolean }
         tokenConfigured: { type: boolean }
         csrfToken: { type: string }
+        savedItemCount: { type: integer, minimum: 0, maximum: 100 }
+        activeItemCount: { type: integer, minimum: 0, maximum: 100 }
+        unavailableItemCount: { type: integer, minimum: 0, maximum: 100 }
+        degraded: { type: boolean }
         selected: { $ref: "#/components/schemas/SetupConfiguration" }
         selectedItems:
           type: array

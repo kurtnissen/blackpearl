@@ -69,6 +69,37 @@ describe("setup API", () => {
     expect(fetchSpy).toHaveBeenLastCalledWith("/api/setup/configuration", expect.objectContaining({ method: "PUT", cache: "no-store" }));
   });
 
+  it("validates degraded setup availability counts against the active manifest", async () => {
+    const active = { objectId: "17:3", name: "Film.mkv", extension: ".mkv", size: 9, mediaType: "movie", title: "Film", year: 2026 };
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        setupRequired: false,
+        tokenConfigured: true,
+        csrfToken: "csrf",
+        selected: active,
+        selectedItems: [active],
+        savedItemCount: 2,
+        activeItemCount: 1,
+        unavailableItemCount: 1,
+        degraded: true,
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        setupRequired: false,
+        tokenConfigured: true,
+        csrfToken: "csrf",
+        selected: active,
+        selectedItems: [active],
+        savedItemCount: 2,
+        activeItemCount: 2,
+        unavailableItemCount: 0,
+        degraded: false,
+      }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchSpy);
+
+    await expect(getStatus()).resolves.toMatchObject({ degraded: true, activeItemCount: 1, savedItemCount: 2 });
+    await expect(getStatus()).rejects.toMatchObject({ code: "invalid_status" });
+  });
+
   it("rejects a successful mutation response without a valid setup session", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ candidates: [] }), { status: 200 })));
 

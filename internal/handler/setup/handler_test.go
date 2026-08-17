@@ -18,7 +18,10 @@ import (
 
 func TestHandlerStatusReturnsPublicStateAndCSRFWithNoStoreHeaders(t *testing.T) {
 	t.Parallel()
-	service := &fakeService{status: setupservice.Status{SetupRequired: true, TokenConfigured: false}}
+	service := &fakeService{status: setupservice.Status{
+		SetupRequired: false, TokenConfigured: true,
+		SavedItemCount: 15, ActiveItemCount: 12, UnavailableItemCount: 3, Degraded: true,
+	}}
 	handler, err := setuphandler.New(service)
 	require.NoError(t, err)
 	request := httptest.NewRequest(http.MethodGet, "http://localhost:8082/api/setup/status", nil)
@@ -32,7 +35,11 @@ func TestHandlerStatusReturnsPublicStateAndCSRFWithNoStoreHeaders(t *testing.T) 
 	require.Equal(t, "nosniff", response.Header().Get("X-Content-Type-Options"))
 	var body map[string]any
 	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &body))
-	require.Equal(t, true, body["setupRequired"])
+	require.Equal(t, false, body["setupRequired"])
+	require.Equal(t, float64(15), body["savedItemCount"])
+	require.Equal(t, float64(12), body["activeItemCount"])
+	require.Equal(t, float64(3), body["unavailableItemCount"])
+	require.Equal(t, true, body["degraded"])
 	require.NotEmpty(t, body["csrfToken"])
 	require.NotContains(t, response.Body.String(), "torbox.token")
 }

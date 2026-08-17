@@ -18,14 +18,16 @@ import {
 	type AcquisitionJob,
   type MediaCandidate,
 	type ApplyItemInput,
-  type SetupAuthorization,
-  type SetupConfiguration,
+	type SetupAuthorization,
+	type SetupConfiguration,
+	type SetupStatus,
 	type WatchlistStatus,
 	type WatchlistShowPolicy,
 } from "../lib/api";
 
 type Phase = "loading" | "credentials" | "select" | "ready";
 type AcquisitionView = "closed" | "loading" | "settings" | "search";
+type Availability = Pick<SetupStatus, "savedItemCount" | "activeItemCount" | "unavailableItemCount" | "degraded">;
 type SelectionDraft = {
 	objectId: string;
 	mediaType: "movie" | "episode";
@@ -52,6 +54,7 @@ export function SetupConsole(): React.JSX.Element {
 	const [query, setQuery] = useState("");
 	const [drafts, setDrafts] = useState<SelectionDraft[]>([]);
 	const [selectedItems, setSelectedItems] = useState<SetupConfiguration[]>([]);
+	const [availability, setAvailability] = useState<Availability>(completeAvailability([]));
   const [acquisitionView, setAcquisitionView] = useState<AcquisitionView>("closed");
   const [prowlarrURL, setProwlarrURL] = useState("http://prowlarr:9696");
   const [prowlarrKey, setProwlarrKey] = useState("");
@@ -92,10 +95,11 @@ export function SetupConsole(): React.JSX.Element {
         setCSRF(status.csrfToken);
         setTokenConfigured(status.tokenConfigured);
 				const restoredItems = status.selectedItems ?? (status.selected ? [status.selected] : []);
+				setAvailability(availabilityFromStatus(status));
 				if (!status.setupRequired && restoredItems.length > 0) {
 					setSelectedItems(restoredItems);
           setPhase("ready");
-          setMessage("BlackPearl is ready for Plex.");
+					setMessage(status.degraded ? degradedAvailabilityMessage(status) : "BlackPearl is ready for Plex.");
           if (storedAuthorization.session || storedAuthorization.bootstrap) {
             setWatchlistLoading(true);
             getWatchlistStatus(status.csrfToken, storedAuthorization)
@@ -142,6 +146,7 @@ export function SetupConsole(): React.JSX.Element {
 						const status = await getStatus();
 						if (!active) return;
 						setSelectedItems(status.selectedItems ?? (status.selected ? [status.selected] : []));
+						setAvailability(availabilityFromStatus(status));
 					}
 				})
 				.catch((error: unknown) => {
@@ -255,6 +260,7 @@ export function SetupConsole(): React.JSX.Element {
       setToken("");
       setTokenConfigured(true);
 			setSelectedItems(result.selectedItems);
+			setAvailability(completeAvailability(result.selectedItems));
       setPhase("ready");
       setMessage("BlackPearl is ready for Plex.");
     } catch (error: unknown) {
@@ -324,6 +330,7 @@ export function SetupConsole(): React.JSX.Element {
       storeSession(result.session);
       setSession(result.session);
       setSelectedItems(result.selectedItems);
+		setAvailability(completeAvailability(result.selectedItems));
 			setPreparationOffer(null);
       setAcquisitionTitle("");
       setMessage(`Added ${result.selected.title} to Plex. Scan the library if it does not appear automatically.`);
@@ -368,6 +375,7 @@ export function SetupConsole(): React.JSX.Element {
 			if (job.state === "succeeded") {
 				const status = await getStatus();
 				setSelectedItems(status.selectedItems ?? (status.selected ? [status.selected] : []));
+				setAvailability(availabilityFromStatus(status));
 			}
 		} catch (error: unknown) {
 			setMessage(publicMessage(error));
@@ -474,8 +482,11 @@ export function SetupConsole(): React.JSX.Element {
 
 				{phase === "ready" && selectedItems.length > 0 && (
           <div className="ready-card">
-            <p className="ready-kicker">ASSIGNED MEDIA</p>
-            <h3>BlackPearl is ready</h3>
+			<p className="ready-kicker">ASSIGNED MEDIA</p>
+			<h3>{availability.degraded ? "BlackPearl is partially ready" : "BlackPearl is ready"}</h3>
+			{availability.degraded && (
+				<p role="alert" className="availability-warning">{degradedAvailabilityMessage(availability)}</p>
+			)}
             <dl>
 						<div><dt>Plex library</dt><dd>{selectedItems.length} {selectedItems.length === 1 ? "video" : "videos"}</dd></div>
 						<div><dt>Manifest</dt><dd>{selectedItems.map(manifestLabel).join(" · ")}</dd></div>
@@ -649,6 +660,28 @@ function validSetupSecret(value: string | null): string | undefined {
 function publicMessage(error: unknown): string {
   if (error instanceof SetupAPIError) return error.message;
   return "BlackPearl could not reach its local setup service.";
+}
+
+function availabilityFromStatus(status: SetupStatus): Availability {
+	return {
+		savedItemCount: status.savedItemCount,
+		activeItemCount: status.activeItemCount,
+		unavailableItemCount: status.unavailableItemCount,
+		degraded: status.degraded,
+	};
+}
+
+function completeAvailability(items: SetupConfiguration[]): Availability {
+	return {
+		savedItemCount: items.length,
+		activeItemCount: items.length,
+		unavailableItemCount: 0,
+		degraded: false,
+	};
+}
+
+function degradedAvailabilityMessage(availability: Availability): string {
+	return `${availability.activeItemCount} of ${availability.savedItemCount} files are available. BlackPearl is retrying the other ${availability.unavailableItemCount} automatically.`;
 }
 
 function waitingItemCount(status: WatchlistStatus): number {

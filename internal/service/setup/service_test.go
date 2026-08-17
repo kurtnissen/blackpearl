@@ -510,7 +510,12 @@ func TestServiceRestorePreservesFatalPreparationCause(t *testing.T) {
 	require.ErrorIs(t, err, domain.ErrUnauthorized)
 	require.NotErrorIs(t, err, setupservice.ErrUnavailable)
 	require.Zero(t, publisher.calls)
-	require.True(t, service.Status().TokenConfigured)
+	status := service.Status()
+	require.True(t, status.TokenConfigured)
+	require.Equal(t, 1, status.SavedItemCount)
+	require.Zero(t, status.ActiveItemCount)
+	require.Equal(t, 1, status.UnavailableItemCount)
+	require.False(t, status.Degraded)
 }
 
 func TestServiceRestoreSerializesConcurrentApply(t *testing.T) {

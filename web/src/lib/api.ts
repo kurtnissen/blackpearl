@@ -25,6 +25,17 @@ export type SetupStatus = {
   csrfToken: string;
   selected?: SetupConfiguration;
 	selectedItems?: SetupConfiguration[];
+	savedItemCount: number;
+	activeItemCount: number;
+	unavailableItemCount: number;
+	degraded: boolean;
+};
+
+type SetupStatusPayload = Omit<SetupStatus, "savedItemCount" | "activeItemCount" | "unavailableItemCount" | "degraded"> & {
+	savedItemCount?: number;
+	activeItemCount?: number;
+	unavailableItemCount?: number;
+	degraded?: boolean;
 };
 
 export type ApplyItemInput = {
@@ -141,7 +152,29 @@ export class SetupAPIError extends Error {
 
 export async function getStatus(): Promise<SetupStatus> {
   const response = await fetch("/api/setup/status", { method: "GET", cache: "no-store" });
-  return readJSON(response, isSetupStatus, "invalid_status");
+	const payload = await readJSON(response, isSetupStatus, "invalid_status");
+	const selectedItems = payload.selectedItems ?? (payload.selected ? [payload.selected] : []);
+	if (
+		payload.savedItemCount !== undefined
+		&& payload.activeItemCount !== undefined
+		&& payload.unavailableItemCount !== undefined
+		&& payload.degraded !== undefined
+	) {
+		return {
+			...payload,
+			savedItemCount: payload.savedItemCount,
+			activeItemCount: payload.activeItemCount,
+			unavailableItemCount: payload.unavailableItemCount,
+			degraded: payload.degraded,
+		};
+	}
+	return {
+		...payload,
+		savedItemCount: selectedItems.length,
+		activeItemCount: selectedItems.length,
+		unavailableItemCount: 0,
+		degraded: false,
+	};
 }
 
 export async function discoverMedia(token: string, csrfToken: string, authorization: SetupAuthorization): Promise<DiscoveryResult> {
@@ -332,13 +365,35 @@ function isConfiguration(value: unknown): value is SetupConfiguration {
 		&& (value.episode === undefined || typeof value.episode === "number");
 }
 
-function isSetupStatus(value: unknown): value is SetupStatus {
-  return isRecord(value)
-    && typeof value.setupRequired === "boolean"
-    && typeof value.tokenConfigured === "boolean"
-    && typeof value.csrfToken === "string"
-		&& (value.selected === undefined || isConfiguration(value.selected))
-		&& (value.selectedItems === undefined || (Array.isArray(value.selectedItems) && value.selectedItems.every(isConfiguration)));
+function isSetupStatus(value: unknown): value is SetupStatusPayload {
+	if (!isRecord(value)
+		|| typeof value.setupRequired !== "boolean"
+		|| typeof value.tokenConfigured !== "boolean"
+		|| typeof value.csrfToken !== "string"
+		|| (value.selected !== undefined && !isConfiguration(value.selected))
+		|| (value.selectedItems !== undefined && (!Array.isArray(value.selectedItems) || !value.selectedItems.every(isConfiguration)))) {
+		return false;
+	}
+	const availabilityMissing = value.savedItemCount === undefined
+		&& value.activeItemCount === undefined
+		&& value.unavailableItemCount === undefined
+		&& value.degraded === undefined;
+	if (availabilityMissing) return true;
+	if (!isNonNegativeInteger(value.savedItemCount)
+		|| !isNonNegativeInteger(value.activeItemCount)
+		|| !isNonNegativeInteger(value.unavailableItemCount)
+		|| typeof value.degraded !== "boolean") {
+		return false;
+	}
+	const selectedCount = Array.isArray(value.selectedItems) ? value.selectedItems.length : value.selected === undefined ? 0 : 1;
+	return value.activeItemCount === selectedCount
+		&& value.savedItemCount >= value.activeItemCount
+		&& value.unavailableItemCount === value.savedItemCount - value.activeItemCount
+		&& value.degraded === (value.activeItemCount > 0 && value.unavailableItemCount > 0);
+}
+
+function isNonNegativeInteger(value: unknown): value is number {
+	return typeof value === "number" && Number.isInteger(value) && value >= 0;
 }
 
 function isCandidateEnvelope(value: unknown): value is { candidates: MediaCandidate[] } {

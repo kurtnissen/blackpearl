@@ -57,6 +57,35 @@ it("discovers videos, applies a multi-item manifest, and clears the token field"
   expect(screen.getByLabelText("TorBox API token")).toHaveValue("");
 });
 
+it("keeps Plex usable while clearly reporting a degraded saved manifest", async () => {
+	const activeItems = Array.from({ length: 12 }, (_, index) => ({
+		objectId: `17:${index + 1}`,
+		name: `Films/Existing-${index + 1}.mp4`,
+		extension: ".mp4",
+		size: 1024,
+		mediaType: "movie",
+		title: `Existing ${index + 1}`,
+		year: 2024,
+	}));
+	vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+		setupRequired: false,
+		tokenConfigured: true,
+		csrfToken: "csrf",
+		selected: activeItems[0],
+		selectedItems: activeItems,
+		savedItemCount: 15,
+		activeItemCount: 12,
+		unavailableItemCount: 3,
+		degraded: true,
+	}), { status: 200 })));
+
+	render(<SetupConsole />);
+
+	expect(await screen.findByText("BlackPearl is partially ready")).toBeInTheDocument();
+	expect(screen.getByRole("alert")).toHaveTextContent("12 of 15 files are available. BlackPearl is retrying the other 3 automatically.");
+	expect(screen.getByRole("link", { name: "Open Plex" })).toBeInTheDocument();
+});
+
 it("shows a helpful empty state when no eligible videos exist", async () => {
   const session = "a".repeat(64);
   vi.stubGlobal("fetch", vi.fn()

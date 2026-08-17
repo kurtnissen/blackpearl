@@ -156,13 +156,13 @@ func (s *Service) Status() Status {
 	if s.manifest != nil {
 		status.SelectedItems = append([]domain.SetupConfiguration(nil), s.manifest.Items...)
 		status.ActiveItemCount = len(status.SelectedItems)
-		status.UnavailableItemCount = max(0, status.SavedItemCount-status.ActiveItemCount)
-		status.Degraded = status.ActiveItemCount > 0 && status.UnavailableItemCount > 0
 		if len(status.SelectedItems) > 0 {
 			copy := status.SelectedItems[0]
 			status.Selected = &copy
 		}
 	}
+	status.UnavailableItemCount = max(0, status.SavedItemCount-status.ActiveItemCount)
+	status.Degraded = status.ActiveItemCount > 0 && status.UnavailableItemCount > 0
 	return status
 }
 
@@ -429,7 +429,7 @@ func (s *Service) Restore(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	s.markTokenConfigured()
+	s.markSavedManifest(len(manifest.Items))
 	preparation, err := s.restoreFactory(ctx, token, manifest)
 	if err != nil {
 		if errors.Is(err, domain.ErrUnavailable) {
@@ -616,6 +616,13 @@ func sameLogicalMedia(left domain.SetupConfiguration, right domain.SetupConfigur
 func (s *Service) markTokenConfigured() {
 	s.mu.Lock()
 	s.tokenConfigured = true
+	s.mu.Unlock()
+}
+
+func (s *Service) markSavedManifest(itemCount int) {
+	s.mu.Lock()
+	s.tokenConfigured = true
+	s.savedItemCount = itemCount
 	s.mu.Unlock()
 }
 
