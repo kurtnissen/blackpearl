@@ -767,6 +767,10 @@ type setupRestorer interface {
 }
 
 func startSetupRestore(ctx context.Context, restorer setupRestorer, logger *slog.Logger, retryDelay time.Duration) {
+	go restoreSavedSetup(ctx, restorer, logger, retryDelay)
+}
+
+func restoreSavedSetup(ctx context.Context, restorer setupRestorer, logger *slog.Logger, retryDelay time.Duration) {
 	err := restorer.Restore(ctx)
 	if err == nil || errors.Is(err, domain.ErrNotFound) {
 		return
@@ -775,7 +779,7 @@ func startSetupRestore(ctx context.Context, restorer setupRestorer, logger *slog
 	if !errors.Is(err, setupservice.ErrUnavailable) {
 		return
 	}
-	go retrySetupRestore(ctx, restorer, logger, retryDelay)
+	retrySetupRestore(ctx, restorer, logger, retryDelay)
 }
 
 func retrySetupRestore(ctx context.Context, restorer setupRestorer, logger *slog.Logger, retryDelay time.Duration) {

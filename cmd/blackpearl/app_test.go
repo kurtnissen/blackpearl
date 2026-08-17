@@ -1530,6 +1530,32 @@ func TestStartSetupRestoreRetriesTransientFailure(t *testing.T) {
 	}
 }
 
+func TestStartSetupRestoreDoesNotBlockProcessLivenessOnProviderIO(t *testing.T) {
+	t.Parallel()
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	restorer := setupRestorerFunc(func(context.Context) error {
+		close(entered)
+		<-release
+		return nil
+	})
+	returned := make(chan struct{})
+
+	go func() {
+		startSetupRestore(context.Background(), restorer, testLogger(), time.Millisecond)
+		close(returned)
+	}()
+	<-entered
+
+	select {
+	case <-returned:
+	case <-time.After(25 * time.Millisecond):
+		close(release)
+		t.Fatal("startup restore blocked process liveness on provider I/O")
+	}
+	close(release)
+}
+
 func TestStartSetupRestoreDoesNotRetryMissingState(t *testing.T) {
 	t.Parallel()
 	restorer := &fakeSetupRestorer{results: []error{domain.ErrNotFound}, calls: make(chan struct{}, 2)}
@@ -1736,6 +1762,12 @@ type fakeSetupRestorer struct {
 	mu      sync.Mutex
 	results []error
 	calls   chan struct{}
+}
+
+type setupRestorerFunc func(context.Context) error
+
+func (function setupRestorerFunc) Restore(ctx context.Context) error {
+	return function(ctx)
 }
 
 func (f *fakeSetupRestorer) Restore(context.Context) error {
