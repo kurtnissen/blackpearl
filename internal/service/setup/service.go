@@ -29,6 +29,9 @@ var (
 	ErrUnauthorized = errors.New("provider credentials were rejected")
 	// ErrUnavailable is a public-safe provider or runtime availability failure.
 	ErrUnavailable = errors.New("provider is temporarily unavailable")
+	// ErrDegraded indicates that a reachable saved subset is active while
+	// BlackPearl continues retrying the complete saved manifest.
+	ErrDegraded = errors.New("saved setup is partially available")
 	// ErrInvalidSelection indicates that the requested object is not eligible.
 	ErrInvalidSelection = errors.New("selected media is not available")
 )
@@ -50,6 +53,17 @@ type GatewayFactory func(token string) (Discoverer, error)
 
 // RuntimeFactory prepares and validates a range-backed catalog without activating it.
 type RuntimeFactory func(ctx context.Context, token string, manifest domain.SetupManifest) (core.CatalogService, error)
+
+// RestorePreparation contains one immutable startup catalog and the exact
+// saved-manifest subset it exposes.
+type RestorePreparation struct {
+	Runtime        core.CatalogService
+	ActiveManifest domain.SetupManifest
+}
+
+// RestoreRuntimeFactory prepares a complete or transiently reduced saved
+// manifest without activating or persisting it.
+type RestoreRuntimeFactory func(ctx context.Context, token string, manifest domain.SetupManifest) (RestorePreparation, error)
 
 // Publisher atomically publishes one namespace-and-catalog runtime snapshot.
 type Publisher interface {
@@ -78,10 +92,14 @@ type ApplyItemRequest struct {
 
 // Status is safe to return to an untrusted browser.
 type Status struct {
-	SetupRequired   bool                        `json:"setupRequired"`
-	TokenConfigured bool                        `json:"tokenConfigured"`
-	Selected        *domain.SetupConfiguration  `json:"selected,omitempty"`
-	SelectedItems   []domain.SetupConfiguration `json:"selectedItems,omitempty"`
+	SetupRequired        bool                        `json:"setupRequired"`
+	TokenConfigured      bool                        `json:"tokenConfigured"`
+	Selected             *domain.SetupConfiguration  `json:"selected,omitempty"`
+	SelectedItems        []domain.SetupConfiguration `json:"selectedItems,omitempty"`
+	SavedItemCount       int                         `json:"savedItemCount"`
+	ActiveItemCount      int                         `json:"activeItemCount"`
+	UnavailableItemCount int                         `json:"unavailableItemCount"`
+	Degraded             bool                        `json:"degraded"`
 }
 
 // Service owns setup state transitions.
@@ -89,6 +107,7 @@ type Service struct {
 	repository     Repository
 	gatewayFactory GatewayFactory
 	runtimeFactory RuntimeFactory
+	restoreFactory RestoreRuntimeFactory
 	publisher      Publisher
 	bootstrapToken string
 
@@ -96,13 +115,31 @@ type Service struct {
 	transitionMu    sync.Mutex
 	tokenConfigured bool
 	manifest        *domain.SetupManifest
+	savedItemCount  int
 }
 
 // New constructs a setup service from narrow infrastructure boundaries.
 func New(repository Repository, gatewayFactory GatewayFactory, runtimeFactory RuntimeFactory, publisher Publisher, bootstrapToken ...string) *Service {
+	restoreFactory := func(ctx context.Context, token string, manifest domain.SetupManifest) (RestorePreparation, error) {
+		runtime, err := runtimeFactory(ctx, token, manifest)
+		return RestorePreparation{Runtime: runtime, ActiveManifest: manifest}, err
+	}
+	return NewWithRestore(repository, gatewayFactory, runtimeFactory, restoreFactory, publisher, bootstrapToken...)
+}
+
+// NewWithRestore constructs a setup service with a restore-only degraded
+// preparation boundary while preserving full transactional runtime creation.
+func NewWithRestore(
+	repository Repository,
+	gatewayFactory GatewayFactory,
+	runtimeFactory RuntimeFactory,
+	restoreFactory RestoreRuntimeFactory,
+	publisher Publisher,
+	bootstrapToken ...string,
+) *Service {
 	service := &Service{
 		repository: repository, gatewayFactory: gatewayFactory, runtimeFactory: runtimeFactory,
-		publisher: publisher,
+		restoreFactory: restoreFactory, publisher: publisher,
 	}
 	if len(bootstrapToken) > 0 {
 		service.bootstrapToken = bootstrapToken[0]
@@ -115,8 +152,12 @@ func (s *Service) Status() Status {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	status := Status{SetupRequired: s.manifest == nil, TokenConfigured: s.tokenConfigured}
+	status.SavedItemCount = s.savedItemCount
 	if s.manifest != nil {
 		status.SelectedItems = append([]domain.SetupConfiguration(nil), s.manifest.Items...)
+		status.ActiveItemCount = len(status.SelectedItems)
+		status.UnavailableItemCount = max(0, status.SavedItemCount-status.ActiveItemCount)
+		status.Degraded = status.ActiveItemCount > 0 && status.UnavailableItemCount > 0
 		if len(status.SelectedItems) > 0 {
 			copy := status.SelectedItems[0]
 			status.Selected = &copy
@@ -376,7 +417,7 @@ func (s *Service) commitManifest(ctx context.Context, token string, manifest dom
 		rollbackErr := s.rollbackPersistence(ctx, hadPrevious, previousToken, previousManifest)
 		return domain.SetupManifest{}, errors.Join(fmt.Errorf("publish selected media: %w", ErrUnavailable), rollbackErr)
 	}
-	s.setStatus(manifest)
+	s.setStatus(manifest, len(manifest.Items))
 	return manifest, nil
 }
 
@@ -389,18 +430,60 @@ func (s *Service) Restore(ctx context.Context) error {
 		return err
 	}
 	s.markTokenConfigured()
-	runtime, err := s.runtimeFactory(ctx, token, manifest)
+	preparation, err := s.restoreFactory(ctx, token, manifest)
 	if err != nil {
-		return fmt.Errorf("prepare saved setup: %w", ErrUnavailable)
+		if errors.Is(err, domain.ErrUnavailable) {
+			return errors.Join(fmt.Errorf("prepare saved setup: %w", ErrUnavailable), err)
+		}
+		return fmt.Errorf("prepare saved setup: %w", err)
 	}
-	if err := runtime.Ready(ctx); err != nil {
+	if err := validateRestorePreparation(manifest, preparation); err != nil {
+		return fmt.Errorf("validate saved setup preparation: %w", err)
+	}
+	degraded := len(preparation.ActiveManifest.Items) < len(manifest.Items)
+	if degraded && s.hasActiveManifest() {
+		return errors.Join(ErrDegraded, ErrUnavailable)
+	}
+	if err := preparation.Runtime.Ready(ctx); err != nil {
 		return fmt.Errorf("probe saved setup: %w", ErrUnavailable)
 	}
-	if err := s.publisher.Publish(ctx, runtime); err != nil {
+	if err := s.publisher.Publish(ctx, preparation.Runtime); err != nil {
 		return fmt.Errorf("publish saved setup: %w", ErrUnavailable)
 	}
-	s.setStatus(manifest)
+	s.setStatus(preparation.ActiveManifest, len(manifest.Items))
+	if degraded {
+		return errors.Join(ErrDegraded, ErrUnavailable)
+	}
 	return nil
+}
+
+func validateRestorePreparation(saved domain.SetupManifest, preparation RestorePreparation) error {
+	if preparation.Runtime == nil {
+		return errors.New("restore runtime is required")
+	}
+	if len(preparation.ActiveManifest.Items) == 0 {
+		return errors.New("restore manifest must contain at least one active item")
+	}
+	if len(preparation.ActiveManifest.Items) > len(saved.Items) {
+		return errors.New("restore manifest exceeds saved manifest")
+	}
+	savedIndex := 0
+	for _, active := range preparation.ActiveManifest.Items {
+		for savedIndex < len(saved.Items) && saved.Items[savedIndex] != active {
+			savedIndex++
+		}
+		if savedIndex == len(saved.Items) {
+			return errors.New("restore manifest is not an ordered saved subset")
+		}
+		savedIndex++
+	}
+	return nil
+}
+
+func (s *Service) hasActiveManifest() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.manifest != nil
 }
 
 func (s *Service) discoverWithToken(ctx context.Context, token string) ([]domain.MediaCandidate, error) {
@@ -451,11 +534,12 @@ func (s *Service) rollbackPersistence(ctx context.Context, hadPrevious bool, tok
 	return nil
 }
 
-func (s *Service) setStatus(manifest domain.SetupManifest) {
+func (s *Service) setStatus(manifest domain.SetupManifest, savedItemCount int) {
 	s.mu.Lock()
 	copy := domain.SetupManifest{Items: append([]domain.SetupConfiguration(nil), manifest.Items...)}
 	s.manifest = &copy
 	s.tokenConfigured = true
+	s.savedItemCount = savedItemCount
 	s.mu.Unlock()
 }
 

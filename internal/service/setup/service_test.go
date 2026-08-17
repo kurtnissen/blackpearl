@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+	"time"
 
+	acquisitiondomain "github.com/kurtnissen/blackpearl/internal/acquisition"
 	"github.com/kurtnissen/blackpearl/internal/core"
 	"github.com/kurtnissen/blackpearl/internal/domain"
 	setupservice "github.com/kurtnissen/blackpearl/internal/service/setup"
@@ -356,6 +358,248 @@ func TestServiceRestoreActivatesSavedSelection(t *testing.T) {
 	require.False(t, service.Status().SetupRequired)
 }
 
+func TestServiceRestorePublishesReachableSubsetWithoutChangingSavedManifest(t *testing.T) {
+	t.Parallel()
+	first := mustConfiguration(t)
+	second := mustConfigurationWithID(t, "17:4", "Second.mkv", "Second", 2025)
+	saved, err := domain.NewSetupManifest([]domain.SetupConfiguration{first, second})
+	require.NoError(t, err)
+	active, err := domain.NewSetupManifest([]domain.SetupConfiguration{first})
+	require.NoError(t, err)
+	repository := &fakeSetupRepository{token: "saved-token", manifest: saved}
+	runtime := &fakeCatalog{}
+	publisher := &fakePublisher{}
+	service := setupservice.NewWithRestore(
+		repository,
+		func(string) (setupservice.Discoverer, error) { return &fakeDiscoverer{}, nil },
+		func(context.Context, string, domain.SetupManifest) (core.CatalogService, error) {
+			return &fakeCatalog{}, nil
+		},
+		func(context.Context, string, domain.SetupManifest) (setupservice.RestorePreparation, error) {
+			return setupservice.RestorePreparation{Runtime: runtime, ActiveManifest: active}, nil
+		},
+		publisher,
+	)
+
+	err = service.Restore(context.Background())
+
+	require.ErrorIs(t, err, setupservice.ErrDegraded)
+	require.ErrorIs(t, err, setupservice.ErrUnavailable)
+	require.Same(t, runtime, publisher.active)
+	require.Equal(t, 1, publisher.calls)
+	require.Equal(t, saved, repository.manifest)
+	status := service.Status()
+	require.False(t, status.SetupRequired)
+	require.True(t, status.TokenConfigured)
+	require.True(t, status.Degraded)
+	require.Equal(t, 2, status.SavedItemCount)
+	require.Equal(t, 1, status.ActiveItemCount)
+	require.Equal(t, 1, status.UnavailableItemCount)
+	require.Equal(t, active.Items, status.SelectedItems)
+}
+
+func TestServiceRestoreKeepsFirstPartialSnapshotUntilCompleteManifestIsReady(t *testing.T) {
+	t.Parallel()
+	first := mustConfiguration(t)
+	second := mustConfigurationWithID(t, "17:4", "Second.mkv", "Second", 2025)
+	saved, err := domain.NewSetupManifest([]domain.SetupConfiguration{first, second})
+	require.NoError(t, err)
+	firstOnly, err := domain.NewSetupManifest([]domain.SetupConfiguration{first})
+	require.NoError(t, err)
+	secondOnly, err := domain.NewSetupManifest([]domain.SetupConfiguration{second})
+	require.NoError(t, err)
+	repository := &fakeSetupRepository{token: "saved-token", manifest: saved}
+	firstRuntime := &fakeCatalog{}
+	secondRuntime := &fakeCatalog{}
+	fullRuntime := &fakeCatalog{}
+	preparations := []setupservice.RestorePreparation{
+		{Runtime: firstRuntime, ActiveManifest: firstOnly},
+		{Runtime: secondRuntime, ActiveManifest: secondOnly},
+		{Runtime: fullRuntime, ActiveManifest: saved},
+	}
+	call := 0
+	publisher := &fakePublisher{}
+	service := setupservice.NewWithRestore(
+		repository,
+		func(string) (setupservice.Discoverer, error) { return &fakeDiscoverer{}, nil },
+		func(context.Context, string, domain.SetupManifest) (core.CatalogService, error) {
+			return &fakeCatalog{}, nil
+		},
+		func(context.Context, string, domain.SetupManifest) (setupservice.RestorePreparation, error) {
+			preparation := preparations[call]
+			call++
+			return preparation, nil
+		},
+		publisher,
+	)
+
+	require.ErrorIs(t, service.Restore(context.Background()), setupservice.ErrDegraded)
+	require.Same(t, firstRuntime, publisher.active)
+	require.Equal(t, 1, publisher.calls)
+	require.ErrorIs(t, service.Restore(context.Background()), setupservice.ErrDegraded)
+	require.Same(t, firstRuntime, publisher.active)
+	require.Equal(t, 1, publisher.calls)
+	require.NoError(t, service.Restore(context.Background()))
+	require.Same(t, fullRuntime, publisher.active)
+	require.Equal(t, 2, publisher.calls)
+	status := service.Status()
+	require.False(t, status.Degraded)
+	require.Equal(t, 2, status.SavedItemCount)
+	require.Equal(t, 2, status.ActiveItemCount)
+	require.Zero(t, status.UnavailableItemCount)
+}
+
+func TestServiceRestoreRejectsEmptyOrInvalidPartialPreparation(t *testing.T) {
+	t.Parallel()
+	first := mustConfiguration(t)
+	second := mustConfigurationWithID(t, "17:4", "Second.mkv", "Second", 2025)
+	saved, err := domain.NewSetupManifest([]domain.SetupConfiguration{first, second})
+	require.NoError(t, err)
+	notSaved := mustConfigurationWithID(t, "17:5", "Other.mkv", "Other", 2024)
+	invalidManifest, err := domain.NewSetupManifest([]domain.SetupConfiguration{notSaved})
+	require.NoError(t, err)
+	for _, test := range []struct {
+		name        string
+		preparation setupservice.RestorePreparation
+	}{
+		{name: "empty", preparation: setupservice.RestorePreparation{Runtime: &fakeCatalog{}}},
+		{name: "not a saved subset", preparation: setupservice.RestorePreparation{Runtime: &fakeCatalog{}, ActiveManifest: invalidManifest}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			publisher := &fakePublisher{}
+			service := setupservice.NewWithRestore(
+				&fakeSetupRepository{token: "saved-token", manifest: saved},
+				func(string) (setupservice.Discoverer, error) { return &fakeDiscoverer{}, nil },
+				func(context.Context, string, domain.SetupManifest) (core.CatalogService, error) {
+					return &fakeCatalog{}, nil
+				},
+				func(context.Context, string, domain.SetupManifest) (setupservice.RestorePreparation, error) {
+					return test.preparation, nil
+				},
+				publisher,
+			)
+
+			err := service.Restore(context.Background())
+
+			require.Error(t, err)
+			require.NotErrorIs(t, err, setupservice.ErrDegraded)
+			require.Zero(t, publisher.calls)
+			require.True(t, service.Status().SetupRequired)
+		})
+	}
+}
+
+func TestServiceRestorePreservesFatalPreparationCause(t *testing.T) {
+	t.Parallel()
+	publisher := &fakePublisher{}
+	service := setupservice.NewWithRestore(
+		&fakeSetupRepository{token: "saved-token", configuration: mustConfiguration(t)},
+		func(string) (setupservice.Discoverer, error) { return &fakeDiscoverer{}, nil },
+		func(context.Context, string, domain.SetupManifest) (core.CatalogService, error) {
+			return &fakeCatalog{}, nil
+		},
+		func(context.Context, string, domain.SetupManifest) (setupservice.RestorePreparation, error) {
+			return setupservice.RestorePreparation{}, domain.ErrUnauthorized
+		},
+		publisher,
+	)
+
+	err := service.Restore(context.Background())
+
+	require.ErrorIs(t, err, domain.ErrUnauthorized)
+	require.NotErrorIs(t, err, setupservice.ErrUnavailable)
+	require.Zero(t, publisher.calls)
+	require.True(t, service.Status().TokenConfigured)
+}
+
+func TestServiceRestoreSerializesConcurrentApply(t *testing.T) {
+	repository := &fakeSetupRepository{token: "saved-token", configuration: mustConfiguration(t)}
+	replacement, err := domain.NewMediaCandidate("17:4", "Replacement.mkv", 2048)
+	require.NoError(t, err)
+	restoreEntered := make(chan struct{})
+	releaseRestore := make(chan struct{})
+	applyEntered := make(chan struct{})
+	service := setupservice.NewWithRestore(
+		repository,
+		func(string) (setupservice.Discoverer, error) {
+			return &fakeDiscoverer{items: []domain.MediaCandidate{replacement}}, nil
+		},
+		func(context.Context, string, domain.SetupManifest) (core.CatalogService, error) {
+			close(applyEntered)
+			return &fakeCatalog{}, nil
+		},
+		func(_ context.Context, _ string, manifest domain.SetupManifest) (setupservice.RestorePreparation, error) {
+			close(restoreEntered)
+			<-releaseRestore
+			return setupservice.RestorePreparation{Runtime: &fakeCatalog{}, ActiveManifest: manifest}, nil
+		},
+		&fakePublisher{},
+	)
+	restoreResult := make(chan error, 1)
+	go func() { restoreResult <- service.Restore(context.Background()) }()
+	<-restoreEntered
+	applyResult := make(chan error, 1)
+	go func() {
+		_, applyErr := service.Apply(context.Background(), setupservice.ApplyRequest{
+			Token: "saved-token", ObjectID: replacement.ObjectID, Title: "Replacement", Year: 2026,
+		})
+		applyResult <- applyErr
+	}()
+
+	select {
+	case <-applyEntered:
+		t.Fatal("apply entered runtime preparation before restore released the transition lock")
+	case <-time.After(25 * time.Millisecond):
+	}
+	close(releaseRestore)
+
+	require.NoError(t, <-restoreResult)
+	require.NoError(t, <-applyResult)
+	select {
+	case <-applyEntered:
+	default:
+		t.Fatal("apply never entered runtime preparation after restore completed")
+	}
+}
+
+func TestServiceDegradedRestoreKeepsDurableDeduplicationSeparateFromActivePlayback(t *testing.T) {
+	t.Parallel()
+	movie := mustConfiguration(t)
+	episodeCandidate, err := domain.NewMediaCandidate("17:4", "Example.Show.S01E02.mkv", 2048)
+	require.NoError(t, err)
+	episode, err := domain.NewSetupEpisodeConfiguration(episodeCandidate, "Example Show", 2024, 1, 2, "The Second")
+	require.NoError(t, err)
+	saved, err := domain.NewSetupManifest([]domain.SetupConfiguration{movie, episode})
+	require.NoError(t, err)
+	active, err := domain.NewSetupManifest([]domain.SetupConfiguration{movie})
+	require.NoError(t, err)
+	service := setupservice.NewWithRestore(
+		&fakeSetupRepository{token: "saved-token", manifest: saved},
+		func(string) (setupservice.Discoverer, error) { return &fakeDiscoverer{}, nil },
+		func(context.Context, string, domain.SetupManifest) (core.CatalogService, error) {
+			return &fakeCatalog{}, nil
+		},
+		func(context.Context, string, domain.SetupManifest) (setupservice.RestorePreparation, error) {
+			return setupservice.RestorePreparation{Runtime: &fakeCatalog{}, ActiveManifest: active}, nil
+		},
+		&fakePublisher{},
+	)
+	require.ErrorIs(t, service.Restore(context.Background()), setupservice.ErrDegraded)
+	search, err := acquisitiondomain.NewEpisodeSearch("Example Show", 2024, 1, 2)
+	require.NoError(t, err)
+	episodePath, err := episode.VirtualPath()
+	require.NoError(t, err)
+
+	objectID, found, err := service.FindPublished(context.Background(), search)
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, episode.ObjectID, objectID)
+	_, found, err = service.FindPublishedEpisode(context.Background(), episodePath)
+	require.NoError(t, err)
+	require.False(t, found)
+}
+
 func TestServiceRestoreReportsSavedTokenWhenSelectedMediaIsUnavailable(t *testing.T) {
 	t.Parallel()
 	repository := &fakeSetupRepository{token: "saved-token", configuration: mustConfiguration(t)}
@@ -513,6 +757,15 @@ func mustCandidate(t *testing.T) domain.MediaCandidate {
 func mustConfiguration(t *testing.T) domain.SetupConfiguration {
 	t.Helper()
 	configuration, err := domain.NewSetupConfiguration(mustCandidate(t), "Example", 2026)
+	require.NoError(t, err)
+	return configuration
+}
+
+func mustConfigurationWithID(t *testing.T, objectID string, name string, title string, year int) domain.SetupConfiguration {
+	t.Helper()
+	candidate, err := domain.NewMediaCandidate(objectID, name, 2048)
+	require.NoError(t, err)
+	configuration, err := domain.NewSetupConfiguration(candidate, title, year)
 	require.NoError(t, err)
 	return configuration
 }
