@@ -354,7 +354,7 @@ it("shows aggregate Plex Watchlist activity without exposing titles or identifie
 
   expect(await screen.findByRole("heading", { name: "Plex Watchlist" })).toBeInTheDocument();
   expect(screen.getByText("OBSERVING")).toBeInTheDocument();
-  expect(screen.getByText("3 movies observed")).toBeInTheDocument();
+  expect(screen.getByText("3 items waiting")).toBeInTheDocument();
   expect(screen.getByText("2 shows observed")).toBeInTheDocument();
   expect(screen.getByText(/Automatic adding stays off/)).toBeInTheDocument();
   expect(screen.queryByText(/objectId/i)).not.toBeInTheDocument();

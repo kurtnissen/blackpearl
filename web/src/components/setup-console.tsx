@@ -509,7 +509,7 @@ export function SetupConsole(): React.JSX.Element {
                 <>
                   <p className="watchlist-summary">{watchlistSummary(watchlistStatus)}</p>
                   <div className="watchlist-stats">
-                    <p><strong>{observedMovieCount(watchlistStatus)} movies observed</strong><span>Existing items stay observation-only; auto add starts with newly observed movies</span></p>
+                    <p><strong>{waitingItemCount(watchlistStatus)} items waiting</strong><span>Pending, acquiring, and retrying movies or episodes</span></p>
                     <p><strong>{watchlistStatus.queue.observedShows} shows observed</strong><span>{watchlistStatus.showPolicy === "pilot" ? "New shows stay exactly one episode ahead of playback" : "Observed without episode acquisition"}</span></p>
                     <p><strong>{watchlistStatus.queue.succeeded} added automatically</strong><span>Published into the BlackPearl manifest</span></p>
                     <p><strong>{watchlistStatus.queue.manualReview} need review</strong><span>Held instead of making an unsafe guess</span></p>
@@ -651,7 +651,7 @@ function publicMessage(error: unknown): string {
   return "BlackPearl could not reach its local setup service.";
 }
 
-function observedMovieCount(status: WatchlistStatus): number {
+function waitingItemCount(status: WatchlistStatus): number {
   return status.queue.pendingMovies + status.queue.acquiring + status.queue.notCached + status.queue.retryable;
 }
 
