@@ -411,7 +411,7 @@ func runBrowserSetup(ctx context.Context, cfg config.Config, logger *slog.Logger
 	gatewayFactory := func(token string) (setupservice.Discoverer, error) {
 		return newTorBoxGateway(token)
 	}
-	runtimeFactory := func(runtimeContext context.Context, token string, manifest domain.SetupManifest) (core.CatalogService, error) {
+	prepareRuntime := func(runtimeContext context.Context, token string, manifest domain.SetupManifest, allowPartial bool) (setupservice.RestorePreparation, error) {
 		client := *deps.torBoxClient
 		client.Timeout = cfg.RangeTimeout
 		gateway, gatewayErr := torbox.New(torbox.Options{
@@ -419,7 +419,7 @@ func runBrowserSetup(ctx context.Context, cfg config.Config, logger *slog.Logger
 			MetadataTTL: time.Minute, LinkTTL: 2 * time.Hour,
 		}, &client)
 		if gatewayErr != nil {
-			return nil, fmt.Errorf("configure selected TorBox source: %w", gatewayErr)
+			return setupservice.RestorePreparation{}, fmt.Errorf("configure selected TorBox source: %w", gatewayErr)
 		}
 		openers := map[string]cache.RangeOpener{"torbox-torrent": gateway}
 		if openMediaGateway != nil {
@@ -427,38 +427,20 @@ func runBrowserSetup(ctx context.Context, cfg config.Config, logger *slog.Logger
 		}
 		router, routerErr := cache.NewRangeRouter(openers)
 		if routerErr != nil {
-			return nil, fmt.Errorf("configure selected range providers: %w", routerErr)
+			return setupservice.RestorePreparation{}, fmt.Errorf("configure selected range providers: %w", routerErr)
 		}
 		rangeSource, rangeErr := rangePool.Source(router)
 		if rangeErr != nil {
-			return nil, fmt.Errorf("open selected range cache: %w", rangeErr)
+			return setupservice.RestorePreparation{}, fmt.Errorf("open selected range cache: %w", rangeErr)
 		}
-		catalog := core.NewCatalog(state.NewMemory(), nil, rangeSource)
-		for index := range manifest.Items {
-			configuration := manifest.Items[index]
-			backing := configuration.Backing()
-			metadata, openErr := router.Open(runtimeContext, backing)
-			if openErr != nil {
-				return nil, fmt.Errorf("validate selected range source: %w", openErr)
-			}
-			logicalSize := metadata.Size()
-			if closeErr := metadata.Close(); closeErr != nil {
-				return nil, fmt.Errorf("close selected range metadata: %w", closeErr)
-			}
-			if logicalSize != configuration.Size {
-				return nil, fmt.Errorf("selected range size changed: got %d want %d", logicalSize, configuration.Size)
-			}
-			var registerErr error
-			if configuration.MediaType == domain.MediaTypeEpisode {
-				_, registerErr = catalog.RegisterRemoteEpisode(runtimeContext, configuration, backing)
-			} else {
-				_, registerErr = catalog.RegisterRemoteMovie(runtimeContext, configuration, backing)
-			}
-			if registerErr != nil {
-				return nil, registerErr
-			}
-		}
-		return catalog, nil
+		return prepareRangeCatalog(runtimeContext, manifest, router, rangeSource, allowPartial)
+	}
+	runtimeFactory := func(runtimeContext context.Context, token string, manifest domain.SetupManifest) (core.CatalogService, error) {
+		preparation, prepareErr := prepareRuntime(runtimeContext, token, manifest, false)
+		return preparation.Runtime, prepareErr
+	}
+	restoreRuntimeFactory := func(runtimeContext context.Context, token string, manifest domain.SetupManifest) (setupservice.RestorePreparation, error) {
+		return prepareRuntime(runtimeContext, token, manifest, true)
 	}
 	publisher := &setupPublisher{switcher: switcher, nfs: nfs}
 	var plexRefreshWorker *plexrefreshservice.Worker
@@ -484,7 +466,9 @@ func runBrowserSetup(ctx context.Context, cfg config.Config, logger *slog.Logger
 		}
 		publisher.notifier = plexRefreshWorker
 	}
-	service := setupservice.New(setupRepository, gatewayFactory, runtimeFactory, publisher, cfg.SetupBootstrapToken)
+	service := setupservice.NewWithRestore(
+		setupRepository, gatewayFactory, runtimeFactory, restoreRuntimeFactory, publisher, cfg.SetupBootstrapToken,
+	)
 	searchFactory := func(settings acquisitiondomain.SearchProviderSettings) (acquisitionservice.ReadySearchProvider, error) {
 		if settings.Provider() != "prowlarr" {
 			return nil, errors.New("unsupported acquisition search provider")
@@ -724,6 +708,58 @@ func runBrowserSetup(ctx context.Context, cfg config.Config, logger *slog.Logger
 		}
 	}
 	return runErr
+}
+
+func prepareRangeCatalog(
+	ctx context.Context,
+	manifest domain.SetupManifest,
+	opener cache.RangeOpener,
+	mediaSource core.MediaSource,
+	allowPartial bool,
+) (setupservice.RestorePreparation, error) {
+	if err := ctx.Err(); err != nil {
+		return setupservice.RestorePreparation{}, fmt.Errorf("prepare range catalog: %w", err)
+	}
+	catalog := core.NewCatalog(state.NewMemory(), nil, mediaSource)
+	active := make([]domain.SetupConfiguration, 0, len(manifest.Items))
+	for index := range manifest.Items {
+		configuration := manifest.Items[index]
+		backing := configuration.Backing()
+		metadata, err := opener.Open(ctx, backing)
+		if err != nil {
+			if allowPartial && errors.Is(err, domain.ErrUnavailable) {
+				continue
+			}
+			return setupservice.RestorePreparation{}, fmt.Errorf("validate selected range source: %w", err)
+		}
+		logicalSize := metadata.Size()
+		if err := metadata.Close(); err != nil {
+			return setupservice.RestorePreparation{}, fmt.Errorf("close selected range metadata: %w", err)
+		}
+		if logicalSize != configuration.Size {
+			return setupservice.RestorePreparation{}, fmt.Errorf(
+				"selected range size changed: got %d want %d", logicalSize, configuration.Size,
+			)
+		}
+		var registerErr error
+		if configuration.MediaType == domain.MediaTypeEpisode {
+			_, registerErr = catalog.RegisterRemoteEpisode(ctx, configuration, backing)
+		} else {
+			_, registerErr = catalog.RegisterRemoteMovie(ctx, configuration, backing)
+		}
+		if registerErr != nil {
+			return setupservice.RestorePreparation{}, registerErr
+		}
+		active = append(active, configuration)
+	}
+	if len(active) == 0 {
+		return setupservice.RestorePreparation{}, fmt.Errorf("no saved range sources are reachable: %w", domain.ErrUnavailable)
+	}
+	activeManifest, err := domain.NewSetupManifest(active)
+	if err != nil {
+		return setupservice.RestorePreparation{}, fmt.Errorf("validate active range manifest: %w", err)
+	}
+	return setupservice.RestorePreparation{Runtime: catalog, ActiveManifest: activeManifest}, nil
 }
 
 type setupRestorer interface {

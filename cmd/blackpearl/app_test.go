@@ -20,6 +20,7 @@ import (
 	"time"
 
 	acquisitiondomain "github.com/kurtnissen/blackpearl/internal/acquisition"
+	"github.com/kurtnissen/blackpearl/internal/cache"
 	"github.com/kurtnissen/blackpearl/internal/config"
 	"github.com/kurtnissen/blackpearl/internal/core"
 	"github.com/kurtnissen/blackpearl/internal/domain"
@@ -1110,6 +1111,101 @@ func TestRunBrowserSetupRestoresMixedProviderManifest(t *testing.T) {
 	require.NoError(t, <-result)
 }
 
+func TestPrepareRangeCatalogPublishesOnlyTransientlyReachableItemsInSavedOrder(t *testing.T) {
+	t.Parallel()
+	first := mustRuntimeConfiguration(t, "provider-a", "one", "First.mp4", "First", 2024, 16)
+	second := mustRuntimeConfiguration(t, "provider-b", "two", "Second.mkv", "Second", 2025, 32)
+	third := mustRuntimeConfiguration(t, "provider-a", "three", "Third.mp4", "Third", 2026, 48)
+	manifest, err := domain.NewSetupManifest([]domain.SetupConfiguration{first, second, third})
+	require.NoError(t, err)
+	router, err := cache.NewRangeRouter(map[string]cache.RangeOpener{
+		"provider-a": &runtimeRangeOpener{objects: map[string]runtimeRangeResult{
+			"one":   {size: 16},
+			"three": {size: 48},
+		}},
+		"provider-b": &runtimeRangeOpener{objects: map[string]runtimeRangeResult{
+			"two": {err: domain.ErrUnavailable},
+		}},
+	})
+	require.NoError(t, err)
+
+	preparation, err := prepareRangeCatalog(context.Background(), manifest, router, &runtimeMediaSource{}, true)
+
+	require.NoError(t, err)
+	require.Equal(t, []domain.SetupConfiguration{first, third}, preparation.ActiveManifest.Items)
+	items, err := preparation.Runtime.List(context.Background())
+	require.NoError(t, err)
+	require.Len(t, items, 2)
+}
+
+func TestPrepareRangeCatalogFullModeRejectsTemporaryUnavailableItem(t *testing.T) {
+	t.Parallel()
+	configuration := mustRuntimeConfiguration(t, "provider-a", "one", "First.mp4", "First", 2024, 16)
+	manifest, err := domain.NewSetupManifest([]domain.SetupConfiguration{configuration})
+	require.NoError(t, err)
+	router, err := cache.NewRangeRouter(map[string]cache.RangeOpener{
+		"provider-a": &runtimeRangeOpener{objects: map[string]runtimeRangeResult{"one": {err: domain.ErrUnavailable}}},
+	})
+	require.NoError(t, err)
+
+	_, err = prepareRangeCatalog(context.Background(), manifest, router, &runtimeMediaSource{}, false)
+
+	require.ErrorIs(t, err, domain.ErrUnavailable)
+}
+
+func TestPrepareRangeCatalogRejectsFatalOrChangedSavedItems(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name   string
+		result runtimeRangeResult
+		want   error
+	}{
+		{name: "unauthorized", result: runtimeRangeResult{err: domain.ErrUnauthorized}, want: domain.ErrUnauthorized},
+		{name: "missing", result: runtimeRangeResult{err: domain.ErrNotFound}, want: domain.ErrNotFound},
+		{name: "unplayable", result: runtimeRangeResult{err: acquisitiondomain.ErrRangeUnplayable}, want: acquisitiondomain.ErrRangeUnplayable},
+		{name: "size changed", result: runtimeRangeResult{size: 15}},
+		{name: "close failed", result: runtimeRangeResult{size: 16, closeErr: errors.New("close failed")}},
+	} {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			configuration := mustRuntimeConfiguration(t, "provider-a", "one", "First.mp4", "First", 2024, 16)
+			manifest, err := domain.NewSetupManifest([]domain.SetupConfiguration{configuration})
+			require.NoError(t, err)
+			router, err := cache.NewRangeRouter(map[string]cache.RangeOpener{
+				"provider-a": &runtimeRangeOpener{objects: map[string]runtimeRangeResult{"one": test.result}},
+			})
+			require.NoError(t, err)
+
+			_, err = prepareRangeCatalog(context.Background(), manifest, router, &runtimeMediaSource{}, true)
+
+			require.Error(t, err)
+			if test.want != nil {
+				require.ErrorIs(t, err, test.want)
+			}
+			require.NotErrorIs(t, err, setupservice.ErrDegraded)
+		})
+	}
+}
+
+func TestPrepareRangeCatalogRejectsEmptySubsetAndPreservesCancellation(t *testing.T) {
+	t.Parallel()
+	configuration := mustRuntimeConfiguration(t, "provider-a", "one", "First.mp4", "First", 2024, 16)
+	manifest, err := domain.NewSetupManifest([]domain.SetupConfiguration{configuration})
+	require.NoError(t, err)
+	router, err := cache.NewRangeRouter(map[string]cache.RangeOpener{
+		"provider-a": &runtimeRangeOpener{objects: map[string]runtimeRangeResult{"one": {err: domain.ErrUnavailable}}},
+	})
+	require.NoError(t, err)
+
+	_, err = prepareRangeCatalog(context.Background(), manifest, router, &runtimeMediaSource{}, true)
+	require.ErrorIs(t, err, domain.ErrUnavailable)
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = prepareRangeCatalog(canceled, manifest, router, &runtimeMediaSource{}, true)
+	require.ErrorIs(t, err, context.Canceled)
+}
+
 func testRunBrowserSetupSelectedMediaUsesConfiguredRangeRetention(t *testing.T, storageMode domain.StorageMode) {
 	root := t.TempDir()
 	content := []byte("0123456789abcdef")
@@ -1416,7 +1512,10 @@ func TestReadinessGateRequiresMountAndDelegates(t *testing.T) {
 
 func TestStartSetupRestoreRetriesTransientFailure(t *testing.T) {
 	t.Parallel()
-	restorer := &fakeSetupRestorer{results: []error{setupservice.ErrUnavailable, nil}, calls: make(chan struct{}, 2)}
+	restorer := &fakeSetupRestorer{
+		results: []error{errors.Join(setupservice.ErrDegraded, setupservice.ErrUnavailable), nil},
+		calls:   make(chan struct{}, 2),
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
@@ -1552,6 +1651,69 @@ func (f *fakeMountServer) Wait() {}
 type fakeReadyCatalog struct {
 	err    error
 	called bool
+}
+
+type runtimeRangeResult struct {
+	size     int64
+	err      error
+	closeErr error
+}
+
+type runtimeRangeOpener struct {
+	objects map[string]runtimeRangeResult
+}
+
+func (o *runtimeRangeOpener) Open(_ context.Context, backing domain.BackingRef) (acquisitiondomain.RangeSource, error) {
+	result, found := o.objects[backing.ObjectID]
+	if !found {
+		return nil, domain.ErrNotFound
+	}
+	if result.err != nil {
+		return nil, result.err
+	}
+	return &runtimeOpenedRange{size: result.size, closeErr: result.closeErr}, nil
+}
+
+func (*runtimeRangeOpener) Ready(context.Context) error { return nil }
+
+type runtimeOpenedRange struct {
+	size     int64
+	closeErr error
+}
+
+func (*runtimeOpenedRange) ReadAt(context.Context, []byte, int64) (int, error) {
+	return 0, io.EOF
+}
+
+func (r *runtimeOpenedRange) Size() int64     { return r.size }
+func (*runtimeOpenedRange) Validator() string { return "runtime-fixture-v1" }
+func (r *runtimeOpenedRange) Close() error    { return r.closeErr }
+
+type runtimeMediaSource struct{}
+
+func (*runtimeMediaSource) Open(context.Context, domain.Media) (domain.ReadHandle, error) {
+	return nil, domain.ErrNotFound
+}
+
+func (*runtimeMediaSource) Ready(context.Context) error { return nil }
+
+func mustRuntimeConfiguration(
+	t *testing.T,
+	provider string,
+	objectID string,
+	name string,
+	title string,
+	year int,
+	size int64,
+) domain.SetupConfiguration {
+	t.Helper()
+	backing, err := domain.NewBackingRef(provider, objectID)
+	require.NoError(t, err)
+	candidate, err := domain.NewProviderMediaCandidate(backing, name, size)
+	require.NoError(t, err)
+	configuration, err := domain.NewSetupConfiguration(candidate, title, year)
+	require.NoError(t, err)
+	return configuration
 }
 
 func (f *fakeReadyCatalog) List(context.Context) ([]domain.Media, error) {
